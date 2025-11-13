@@ -2,21 +2,29 @@
 """
 tdSynchManager package initializer.
 
-- Provides a clean import surface:
-    from tdSynchManager import ThetaSyncManager, ThetaDataV3Client, ManagerConfig, build_default_client
-- Unrelated to class constructors (__init__ of classes).
+Clean public surface:
+    from tdSynchManager import (
+        ThetaSyncManager, ThetaDataV3Client, ManagerConfig,
+        build_default_client, new_manager, __version__
+    )
+
+Note: This file is unrelated to class constructors (__init__ methods).
 """
 
 # === >>> VERSION METADATA — BEGIN
-try:
-    from importlib.metadata import version, PackageNotFoundError
+def _detect_version() -> str:
     try:
-        # Try both the lowercase distribution name and the CamelCase fallback.
-        __version__ = version("tdsynchmanager")
-    except PackageNotFoundError:
-        __version__ = version("tdSynchManager")
-except Exception:
-    __version__ = "0.0.0"
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            # Prefer distribution-name in lowercase (recommended in pyproject)
+            return version("tdsynchmanager")
+        except PackageNotFoundError:
+            # Fallback if you published with CamelCase (not recommended)
+            return version("tdSynchManager")
+    except Exception:
+        return "0.0.0"
+
+__version__ = _detect_version()
 # === >>> VERSION METADATA — END
 
 # === >>> PUBLIC API RE-EXPORTS — BEGIN
@@ -29,6 +37,7 @@ __all__ = [
     "ThetaSyncManager",
     "ManagerConfig",
     "build_default_client",
+    "new_manager",
     "__version__",
 ]
 # === >>> PUBLIC API RE-EXPORTS — END
