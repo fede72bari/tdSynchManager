@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(move /Y:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(copy /Y:*)",
+      "Bash(copy /Y manager_reorganized_final.py manager.py:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(for method in \"__init__\" \"_make_request\" \"stock_list_symbols\" \"stock_snapshot_ohlc\" \"option_list_symbols\" \"option_snapshot_all_greeks\" \"index_list_symbols\" \"_list_day_files\")",
+      "Bash(do grep -q \"def $method\" client_reorganized.py)",
+      "Bash(echo:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

@@ -139,6 +139,11 @@ class ThetaSyncManager:
     and direct usage of your ThetaDataV3Client for HTTP I/O.
     """
 
+
+    # =========================================================================
+    # (BEGIN)
+    # INITIALIZATION
+    # =========================================================================
     def __init__(self, cfg: ManagerConfig, client: Any, tz_et: str = "America/New_York"):
         """Initializes the ThetaSyncManager with configuration, client, and timezone settings.
 
@@ -196,242 +201,16 @@ class ThetaSyncManager:
         os.makedirs(self._root_sink_dir, exist_ok=True)
 
 
-    def _as_utc(self, x):
-        """Converts an ISO8601 string or datetime object to a timezone-aware UTC datetime.
 
-        This helper method normalizes various datetime representations to a consistent UTC datetime format,
-        handling both timezone-naive and timezone-aware inputs.
+    # =========================================================================
+    # (END)
+    # INITIALIZATION
+    # =========================================================================
 
-        Parameters
-        ----------
-        x : str or datetime
-            An ISO8601 formatted datetime string (with or without 'Z' suffix) or a datetime object.
-            String format can be like '2024-01-15T10:30:00Z' or '2024-01-15T10:30:00+00:00'.
-
-        Returns
-        -------
-        datetime
-            A timezone-aware datetime object in UTC. If input was timezone-naive, UTC is assumed.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _sync_symbol() for normalizing start/end times
-        # - _compute_resume_start_datetime() for time conversions
-        # - Various date handling methods throughout the manager
-        """
-        if isinstance(x, str):
-            x = dt.fromisoformat(x.replace("Z", "+00:00"))
-        if x.tzinfo is None:
-            x = x.replace(tzinfo=self.UTC)
-        return x.astimezone(self.UTC)
-
-    def _floor_to_interval_et(self, ts_utc: dt, minutes: int) -> dt:
-        """Floors a UTC timestamp to the nearest interval boundary in Eastern Time, then converts back to UTC.
-
-        This method is used to align timestamps to bar boundaries (e.g., 5-minute, 15-minute intervals) according
-        to Eastern Time market hours, which is important for consistent bar alignment.
-
-        Parameters
-        ----------
-        ts_utc : datetime
-            A timezone-aware datetime in UTC that needs to be floored to an interval boundary.
-        minutes : int
-            The interval size in minutes. For example, 5 for 5-minute bars, 60 for hourly bars.
-
-        Returns
-        -------
-        datetime
-            A timezone-aware datetime in UTC, floored to the specified interval boundary in Eastern Time.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _sync_symbol() when computing resume start times for intraday bars
-        # - _force_start_hms_from_max_ts() (nested function) for bar alignment
-        """
-        et = ts_utc.astimezone(self.ET).replace(second=0, microsecond=0)
-        et = et.replace(minute=(et.minute // minutes) * minutes)
-        return et.astimezone(self.UTC)
-
-    # === >>> DATE PARAM HELPERS — BEGIN
-    def _iso_date_only(self, s: str) -> str:
-        """Extracts the date portion from an ISO datetime string, returning only 'YYYY-MM-DD'.
-
-        This helper handles various datetime string formats and extracts just the date component,
-        discarding any time information.
-
-        Parameters
-        ----------
-        s : str
-            A date or datetime string in formats like 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM:SS',
-            or 'YYYY-MM-DD HH:MM:SS'.
-
-        Returns
-        -------
-        str
-            The date portion in 'YYYY-MM-DD' format.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _td_ymd() to normalize date strings before formatting
-        # - Various methods that need to extract date from datetime strings
-        """
-        s = str(s)
-        if "T" in s:
-            s = s.split("T", 1)[0]
-        elif " " in s:
-            s = s.split(" ", 1)[0]
-        return s
-    
-    def _td_ymd(self, day_iso: str) -> str:
-        """Converts an ISO date string to ThetaData's YYYYMMDD format required for API date parameters.
-
-        This method normalizes various date formats to the compact YYYYMMDD format expected by ThetaData API
-        endpoints, with validation to ensure the result is exactly 8 digits.
-
-        Parameters
-        ----------
-        day_iso : str
-            An ISO date string like 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS'. The time portion is ignored.
-
-        Returns
-        -------
-        str
-            A date string in 'YYYYMMDD' format (8 digits, no separators).
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() when building API request parameters
-        # - _download_and_store_equity_or_index() for date parameter formatting
-        # - _expirations_that_traded() for daily expiration queries
-        """
-        d = self._iso_date_only(day_iso).replace("-", "")
-        if len(d) != 8 or not d.isdigit():
-            raise ValueError(f"Bad day_iso '{day_iso}' → '{d}' (expected YYYYMMDD)")
-        return d
-    # === <<< DATE PARAM HELPERS — END
-
-    
-    
-    def _skip_existing_middle_day(
-        self, *,
-        asset: str, symbol: str, interval: str, sink: str, day_iso: str,
-        first_last_hint: Optional[tuple[Optional[str], Optional[str]]] = None,
-    ) -> bool:
-        """Determines whether to skip downloading data for a day because it's already complete and is a middle day.
-
-        This method implements intelligent resume logic by skipping re-downloads of complete middle days (days
-        that fall strictly between the earliest and latest existing files). It always processes edge days (first
-        and last) to ensure they are complete, and handles retrograde start dates properly. For options, it also
-        checks whether daily parts are complete before deciding to skip.
-
-        Parameters
-        ----------
-        asset : str
-            The asset type (e.g., 'option', 'stock', 'index').
-        symbol : str
-            The ticker symbol or root symbol.
-        interval : str
-            The bar interval (e.g., '1d', '5m', '1h', 'tick').
-        sink : str
-            The output sink type. Only 'csv' and 'parquet' are supported; other sinks return False.
-        day_iso : str
-            The day being evaluated in 'YYYY-MM-DD' format.
-        first_last_hint : tuple of (str or None, str or None), optional
-            Default: None
-
-            A hint containing (first_existing_day, last_existing_day) to avoid re-scanning files.
-            If None, the method will scan files to determine the earliest and latest days.
-
-        Returns
-        -------
-        bool
-            True if the day should be skipped (complete middle day), False if it should be processed.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _sync_symbol() to decide whether to skip downloading for each day in the sync range
-        # - Download methods to optimize resume behavior and avoid redundant downloads
-        """
-
-        # ### >>> FAST RESUME — MIDDLE-DAY BYPASS (only strong 'skip') — BEGIN
-        # In strong 'skip' we bypass *checks*, ma NON dobbiamo saltare tutto alla cieca:
-        # Skippiamo soltanto i *middle day* veri (cioè day_iso strettamente tra first e last),
-        # lasciando elaborare edge day e futuro. Per confronto usiamo 'YYYY-MM-DD' lexicografico.
-        if getattr(self, "_fast_resume_skip_middle", False):
-            if first_last_hint and first_last_hint[0] and first_last_hint[1]:
-                first_day, last_day = first_last_hint
-                if first_day < day_iso < last_day:
-                    return True  # solo i middle-day
-            return False  # edge/futuro: NON skippare
-        # ### >>> FAST RESUME — MIDDLE-DAY BYPASS (only strong 'skip') — END
-
-            
-        if sink not in ("csv", "parquet"):
-            return False
-    
-   
-        base_dir = Path(self.cfg.root_dir) / "data" / asset / symbol / interval / sink
-        base_dir.mkdir(parents=True, exist_ok=True)
-    
-        out_name = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}.{sink}"
-        out_path = base_dir / out_name
-        day_has_any = bool(self._list_day_files(asset, symbol, interval, sink, day_iso))
-        print(f"[RESUME-DEBUG] day={day_iso} has_any={day_has_any}")
-
-        sink_lower = sink.lower()
-        if first_last_hint is not None:
-            first_existing, last_existing = first_last_hint
-        else:
-            first_existing, last_existing, _ = self._series_earliest_and_latest_day(
-                asset, symbol, interval, sink_lower
-            )
-        
-        if day_has_any:
-            # --- Edge-day policy (earliest vs latest) ---
-            if first_existing and day_iso == first_existing:
-                if asset == "option":
-                    st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
-                    parts = st.get("parts", [])
-                    # Se manca part01, ci sono buchi o mix -> procedi (ricostruzione completa del primo giorno)
-                    if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild") or (1 not in parts):
-                        print(f"[RESUME-DEBUG] proceed (edge-first needs rebuild): {day_iso}  edges={first_existing}..{last_existing}")
-                        return False
-                    # Altrimenti il primo giorno è completo con part01 -> SKIP giorno intero
-                    print(f"[RESUME-DEBUG] skip existing (edge-first complete with part01): {day_iso}  edges={first_existing}..{last_existing}")
-                    return True
-                # Non-option: preserva comportamento precedente (procedi sull'edge-first)
-                print(f"[RESUME-DEBUG] proceed (edge-first non-option): {day_iso}  edges={first_existing}..{last_existing}")
-                return False
-        
-            if last_existing and day_iso == last_existing:
-                # Ultimo giorno edge -> procedi (si mantiene il comportamento precedente)
-                print(f"[RESUME-DEBUG] proceed (edge-last): {day_iso}  edges={first_existing}..{last_existing}")
-                return False
-        
-            # --- Middle day ---
-            if asset == "option":
-                st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
-                # se giorno incompleto/misto -> NON skippare (lo ricostruiamo)
-                if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild"):
-                    print(f"[RESUME-DEBUG] proceed (day...ncomplete): {day_iso}  edges={first_existing}..{last_existing}")
-                    return False
-            # giorno medio completo -> skip
-            print(f"[RESUME-DEBUG] skip existing (middle day): {day_iso}  edges={first_existing}..{last_existing}")
-            return True
-
-
-        
-        print(f"[RESUME-DEBUG] proceed (missing or edge day): {day_iso}  edges={first_existing}..{last_existing}")
-        return False
-
-
-    # -------------------------- PUBLIC API ---------------------------
-
+    # =========================================================================
+    # (BEGIN)
+    # PUBLIC API - Orchestration
+    # =========================================================================
     async def run(self, tasks: List[Task]) -> None:
         """Executes a batch of synchronization tasks concurrently for multiple symbols and intervals.
 
@@ -475,99 +254,1236 @@ class ThetaSyncManager:
         await asyncio.gather(*jobs)
         self._save_cache_file()
 
-    def clear_first_date_cache(self, asset: str, symbol: str, req_type: str) -> None:
-        """Deletes a specific first-date cache entry from memory and persists the change to disk.
 
-        This method is useful when you know the first available date for a symbol has changed (e.g., after
-        historical data becomes available) and you want to force a fresh discovery on the next sync.
+    # =========================================================================
+    # (END)
+    # PUBLIC API - Orchestration
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # PUBLIC API - Data Quality
+    # =========================================================================
+    def generate_duplicate_report(
+        self,
+        asset: str,
+        symbol: str,
+        intervals: Optional[List[str]] = None,
+        sinks: Optional[List[str]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        sample_limit: int = 5,
+        verbose: bool = True
+    ) -> dict:
+        """Generate a comprehensive duplicate detection report across multiple intervals and sinks.
+
+        This method creates a complete duplicate analysis report for a given symbol by iterating through
+        all specified time intervals (or all available intervals if not specified) and all storage sinks
+        (or all available sinks if not specified). For each combination of interval and sink, it calls
+        check_duplicates_multi_day() to perform the analysis and aggregates the results into a unified
+        report. This provides a holistic view of data quality across all dimensions, making it easy to
+        identify which intervals or sinks have duplicate issues. The report includes summary statistics,
+        per-interval-sink breakdowns, and actionable insights for data cleanup.
 
         Parameters
         ----------
         asset : str
-            The asset type (e.g., 'stock', 'option', 'index').
+            The asset type to analyze. Possible values: "option", "stock", "index".
+            Determines which data structure to analyze across all intervals and sinks.
         symbol : str
-            The ticker symbol or root symbol whose cache entry should be cleared.
-        req_type : str
-            The request type (e.g., 'trade', 'quote', 'ohlc') that identifies the specific cache entry.
+            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
+            The report will cover all data for this symbol across specified intervals and sinks.
+        intervals : list of str, optional
+            Default: None (checks all available intervals)
+            List of bar intervals to check (e.g., ["tick", "1m", "5m", "1h", "1d"]).
+            When None, automatically detects and checks all intervals that have data for this
+            symbol in any of the specified sinks. Common intervals: "tick", "1m", "5m", "10m",
+            "15m", "30m", "1h", "1d".
+        sinks : list of str, optional
+            Default: None (checks all available sinks)
+            List of storage backends to check. Possible values: ["influxdb", "csv", "parquet"].
+            When None, checks all three sink types. Each sink may have different data coverage
+            and duplicate patterns depending on ingestion history.
+        start_date : str, optional
+            Default: None (auto-detect from data)
+            The start date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
+            When None, uses the earliest available date across all interval-sink combinations.
+            Applied uniformly to all checks for consistency.
+        end_date : str, optional
+            Default: None (auto-detect from data)
+            The end date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
+            When None, uses the latest available date across all interval-sink combinations.
+            Applied uniformly to all checks for consistency.
+        sample_limit : int, optional
+            Default: 5
+            Maximum number of duplicate key examples to collect per day per interval-sink
+            combination. Lower values reduce memory usage and report size. Set to 0 to
+            disable example collection.
+        verbose : bool, optional
+            Default: True
+            If True, prints detailed progress and results for each interval-sink combination
+            as they are analyzed, plus a final summary table. If False, runs silently and
+            only returns the results dictionary. Useful for batch processing and automation.
 
         Returns
         -------
-        None
-            The cache entry is removed if it exists, and the cache file is saved immediately.
+        dict
+            A comprehensive report dictionary containing:
+            - 'symbol' (str): The analyzed symbol
+            - 'asset' (str): The asset type
+            - 'date_range' (dict): The date range analyzed with 'start' and 'end'
+            - 'intervals_checked' (list): List of intervals that were analyzed
+            - 'sinks_checked' (list): List of sinks that were analyzed
+            - 'total_combinations' (int): Total number of interval-sink combinations checked
+            - 'combinations_with_duplicates' (int): Number of combinations that have duplicates
+            - 'results' (list): List of per-combination results, each containing:
+                - 'interval' (str): The interval checked
+                - 'sink' (str): The sink checked
+                - 'days_analyzed' (int): Number of trading days checked
+                - 'total_rows' (int): Total rows in this combination
+                - 'total_duplicates' (int): Total duplicates found
+                - 'duplicate_rate' (float): Percentage of duplicates
+                - 'days_with_duplicates' (int): Number of days with duplicates
+                - 'status' (str): "CLEAN" or "DUPLICATES_FOUND"
+            - 'summary' (dict): Aggregate statistics across all combinations:
+                - 'total_rows_all' (int): Sum of rows across all combinations
+                - 'total_duplicates_all' (int): Sum of duplicates across all combinations
+                - 'overall_duplicate_rate' (float): Global duplicate percentage
+                - 'worst_combination' (dict): Interval-sink with highest duplicate rate
+                - 'cleanest_sinks' (list): Sinks with no duplicates
+                - 'problematic_intervals' (list): Intervals with duplicates in any sink
 
         Example Usage
         -------------
-        # Clear cached first date for SPY options to force re-discovery
-        manager.clear_first_date_cache("option", "SPY", "trade")
-        # Next sync will re-discover the first available date
+        # Example 1: Full comprehensive report (all intervals, all sinks, all dates)
+        manager = ThetaSyncManager(cfg, client=client)
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            verbose=True
+        )
+        print(f"Checked {report['total_combinations']} combinations")
+        print(f"Found issues in {report['combinations_with_duplicates']} combinations")
+
+        # Example 2: Specific intervals and date range
+        report = manager.generate_duplicate_report(
+            asset="stock",
+            symbol="AAPL",
+            intervals=["1m", "5m", "1h"],
+            sinks=["csv", "parquet"],
+            start_date="2025-11-01",
+            end_date="2025-11-30",
+            verbose=True
+        )
+
+        # Example 3: Silent mode for scripting
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            intervals=["tick", "5m"],
+            sinks=["influxdb"],
+            verbose=False
+        )
+        if report['combinations_with_duplicates'] > 0:
+            print("⚠️  Duplicates found! Check report['results'] for details")
+
+        # Example 4: Compare all sinks for a specific interval
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            intervals=["5m"],  # Only check 5-minute data
+            verbose=True
+        )
+        for result in report['results']:
+            print(f"{result['sink']}: {result['total_duplicates']} duplicates")
+
+        # Example 5: Process results programmatically
+        report = manager.generate_duplicate_report(
+            asset="stock",
+            symbol="AAPL",
+            verbose=False
+        )
+        worst = report['summary']['worst_combination']
+        if worst:
+            print(f"Worst: {worst['interval']} in {worst['sink']}: "
+                  f"{worst['duplicate_rate']}% duplicates")
         """
-        key = self._cache_key(asset, symbol, req_type)
-        if key in self._coverage_cache:
-            del self._coverage_cache[key]
-            self._save_cache_file()
+
+        # Determine which intervals to check
+        if intervals is None:
+            # Auto-detect: find all intervals that have data
+            intervals = []
+            test_sinks = sinks if sinks else ["csv", "parquet", "influxdb"]
+            for sink in test_sinks:
+                try:
+                    sink_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol)
+                    if os.path.exists(sink_dir):
+                        for interval_name in os.listdir(sink_dir):
+                            interval_path = os.path.join(sink_dir, interval_name)
+                            if os.path.isdir(interval_path) and interval_name not in intervals:
+                                intervals.append(interval_name)
+                except Exception:
+                    pass
+
+            if not intervals:
+                intervals = ["tick", "1m", "5m", "10m", "15m", "30m", "1h", "1d"]  # Default fallback
+
+        # Determine which sinks to check
+        if sinks is None:
+            sinks = ["csv", "parquet", "influxdb"]
+
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"COMPREHENSIVE DUPLICATE REPORT")
+            print(f"Symbol: {symbol} ({asset})")
+            print(f"Intervals: {', '.join(intervals)}")
+            print(f"Sinks: {', '.join(sinks)}")
+            if start_date and end_date:
+                print(f"Date range: {start_date} to {end_date}")
+            else:
+                print(f"Date range: Auto-detect")
+            print(f"{'='*80}\n")
+
+        # Collect results for each combination
+        results = []
+        total_rows_all = 0
+        total_duplicates_all = 0
+        combinations_with_duplicates = 0
+
+        for interval in intervals:
+            for sink in sinks:
+                if verbose:
+                    print(f"\n--- Checking {interval} in {sink.upper()} ---")
+
+                try:
+                    result = self.check_duplicates_multi_day(
+                        asset=asset,
+                        symbol=symbol,
+                        interval=interval,
+                        sink=sink,
+                        start_date=start_date,
+                        end_date=end_date,
+                        sample_limit=sample_limit,
+                        verbose=False  # Suppress individual reports
+                    )
+
+                    # Extract list of dates with duplicates
+                    dates_with_duplicates = [
+                        day_result['date']
+                        for day_result in result.get("daily_results", [])
+                        if day_result.get('duplicates', 0) > 0
+                    ]
+
+                    combination_result = {
+                        "interval": interval,
+                        "sink": sink,
+                        "days_analyzed": result.get("days_analyzed", 0),
+                        "total_rows": result.get("total_rows", 0),
+                        "total_duplicates": result.get("total_duplicates", 0),
+                        "duplicate_rate": result.get("global_duplicate_rate", 0.0),
+                        "days_with_duplicates": result.get("days_with_duplicates", 0),
+                        "dates_with_duplicates": dates_with_duplicates,
+                        "status": result.get("summary", {}).get("status", "unknown")
+                    }
+
+                    results.append(combination_result)
+
+                    total_rows_all += combination_result["total_rows"]
+                    total_duplicates_all += combination_result["total_duplicates"]
+
+                    if combination_result["total_duplicates"] > 0:
+                        combinations_with_duplicates += 1
+
+                    if verbose:
+                        status_icon = "✅" if combination_result["total_duplicates"] == 0 else "⚠️"
+                        print(f"  {status_icon} Rows: {combination_result['total_rows']:,}, "
+                              f"Duplicates: {combination_result['total_duplicates']:,} "
+                              f"({combination_result['duplicate_rate']:.2f}%)")
+
+                        # Print dates with duplicates if any
+                        if dates_with_duplicates:
+                            dates_str = ", ".join(dates_with_duplicates)
+                            print(f"      Dates with duplicates: {dates_str}")
+
+                except Exception as e:
+                    if verbose:
+                        print(f"  ❌ Error: {str(e)}")
+                    results.append({
+                        "interval": interval,
+                        "sink": sink,
+                        "error": str(e),
+                        "status": "error"
+                    })
+
+        # Calculate summary statistics
+        overall_duplicate_rate = (total_duplicates_all / total_rows_all * 100) if total_rows_all > 0 else 0.0
+
+        # Find worst combination
+        worst_combination = None
+        max_dup_rate = 0.0
+        for result in results:
+            if result.get("duplicate_rate", 0) > max_dup_rate:
+                max_dup_rate = result["duplicate_rate"]
+                worst_combination = result
+
+        # Find cleanest sinks
+        cleanest_sinks = []
+        for sink in sinks:
+            sink_results = [r for r in results if r.get("sink") == sink and r.get("status") != "error"]
+            if all(r.get("total_duplicates", 0) == 0 for r in sink_results):
+                cleanest_sinks.append(sink)
+
+        # Find problematic intervals
+        problematic_intervals = []
+        for interval in intervals:
+            interval_results = [r for r in results if r.get("interval") == interval and r.get("status") != "error"]
+            if any(r.get("total_duplicates", 0) > 0 for r in interval_results):
+                problematic_intervals.append(interval)
+
+        # Print summary
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"SUMMARY")
+            print(f"{'='*80}")
+            print(f"Total combinations checked: {len(results)}")
+            print(f"Combinations with duplicates: {combinations_with_duplicates}")
+            print(f"Total rows across all: {total_rows_all:,}")
+            print(f"Total duplicates across all: {total_duplicates_all:,}")
+            print(f"Overall duplicate rate: {overall_duplicate_rate:.2f}%")
+
+            if worst_combination and worst_combination.get("duplicate_rate", 0) > 0:
+                print(f"\n⚠️  Worst combination: {worst_combination['interval']} in {worst_combination['sink']} "
+                      f"({worst_combination['duplicate_rate']:.2f}% duplicates)")
+                if worst_combination.get("dates_with_duplicates"):
+                    dates_str = ", ".join(worst_combination["dates_with_duplicates"])
+                    print(f"    Affected dates: {dates_str}")
+
+            if cleanest_sinks:
+                print(f"\n✅ Clean sinks (no duplicates): {', '.join(cleanest_sinks)}")
+
+            if problematic_intervals:
+                print(f"\n⚠️  Intervals with duplicates: {', '.join(problematic_intervals)}")
+
+            # List all combinations with duplicates and their dates
+            problematic_combinations = [r for r in results if r.get("total_duplicates", 0) > 0]
+            if problematic_combinations:
+                print(f"\n{'='*80}")
+                print(f"DETAILED BREAKDOWN - COMBINATIONS WITH DUPLICATES")
+                print(f"{'='*80}")
+                for combo in problematic_combinations:
+                    print(f"\n  {combo['interval']} in {combo['sink'].upper()}: "
+                          f"{combo['total_duplicates']:,} duplicates ({combo['duplicate_rate']:.2f}%)")
+                    if combo.get("dates_with_duplicates"):
+                        dates_str = ", ".join(combo["dates_with_duplicates"])
+                        print(f"    Dates: {dates_str}")
+
+            print(f"\n{'='*80}\n")
+
+        return {
+            "symbol": symbol,
+            "asset": asset,
+            "date_range": {
+                "start": start_date,
+                "end": end_date
+            },
+            "intervals_checked": intervals,
+            "sinks_checked": sinks,
+            "total_combinations": len(results),
+            "combinations_with_duplicates": combinations_with_duplicates,
+            "results": results,
+            "summary": {
+                "total_rows_all": total_rows_all,
+                "total_duplicates_all": total_duplicates_all,
+                "overall_duplicate_rate": round(overall_duplicate_rate, 2),
+                "worst_combination": worst_combination,
+                "cleanest_sinks": cleanest_sinks,
+                "problematic_intervals": problematic_intervals
+            }
+        }
+
+    def duplication_and_strike_checks(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str = "csv",
+        start_date: str = None,
+        end_date: str = None,
+        show: bool = False,
+    ):
+        """
+        Audit per giorno: duplicazioni su chiave e contabilità strike×expiration.
+        - Key = timestamp + symbol + expiration + strike (+ right se presente).
+        - Conta le coppie uniche (strike, expiration) per giorno.
+        - Costruisce la matrice di overlap tra TUTTI i part del giorno:
+            * Diagonale  = duplicati INTRA-file (stesso part) sulla chiave
+            * Off-diagonale = intersezione tra chiavi di file diversi (inter-file)
+        Ritorna: (results_by_day: dict, summary_df: pd.DataFrame)
+    
+        Notes
+        -----
+        * Timestamps are normalized to naive UTC to avoid aware/naive mismatches.
+        * Intra-file duplicate count ignores rows with NaN in any key column.
+        """
+
+    
+        sink_lower = (sink or "csv").lower()
+        assert sink_lower in ("csv", "parquet")
+    
+        # Preferred columns (we enforce 'timestamp' for options)
+        tcol = "timestamp"
+        key_base = ["symbol", "expiration", "strike"]
+    
+        def _key_cols(df: pd.DataFrame):
+            """Return the effective key columns present in df."""
+            cols = [tcol] + key_base + (["right"] if "right" in df.columns else [])
+            return [c for c in cols if c in df.columns]
+    
+        def _read_minimal(path: str, usecols: list) -> pd.DataFrame:
+            """
+            Minimal, robust reader.
+            - If self._read_minimal_frame exists, use it.
+            - Otherwise, read only needed columns when possible.
+            - Normalize timestamp to naive UTC (no tz info).
+            """
+            if hasattr(self, "_read_minimal_frame"):
+                df = self._read_minimal_frame(path, usecols, sink_lower)
+            else:
+                if sink_lower == "csv":
+                    head = pd.read_csv(path, nrows=0)
+                    keep = [c for c in usecols if c in head.columns]
+                    df = pd.read_csv(path, usecols=keep) if keep else pd.read_csv(path)
+                else:
+                    try:
+                        df = pd.read_parquet(path, columns=usecols)
+                    except Exception:
+                        df = pd.read_parquet(path)
+                        keep = [c for c in usecols if c in df.columns]
+                        if keep:
+                            df = df[keep]
+    
+            if tcol in df.columns:
+                # normalize to naive UTC to avoid aware/naive comparison issues
+                df[tcol] = pd.to_datetime(df[tcol], errors="coerce", utc=True).dt.tz_localize(None)
+    
+            return df
+    
+        # Optional display
+        _display = ipy_display if show and ipy_display is not None else None
+    
+        results_by_day = {}
+        summary_rows = []
+    
+        # Iterate over days using manager helpers
+        for day in self._iter_days(start_date, end_date):
+
+            # ### >>> STRONG SKIP — MIDDLE-DAY SHORT-CIRCUIT (INFLUX & FILE) — BEGIN
+            # Se è attivo lo 'skip' forte, non fare NESSUN CHECK sui giorni *strictly in mezzo*.
+            if getattr(self, "_fast_resume_skip_middle", False):
+                # Recupera (una volta) il first/last day dal sink, se non li hai già.
+                # Usa variabili locali esistenti se le hai (es. first_day_et, last_day_et).
+                try:
+                    fl = (first_day_et, last_day_et)  # se già calcolate prima del loop
+                except NameError:
+                    fl = self._get_first_last_days_from_sink(task.asset, symbol, interval, task.sink)
+                if fl and fl[0] and fl[1]:
+                    _first, _last = fl
+                    if _first < day < _last:
+                        self._dbg(f"[FAST-SKIP] middle-day short-circuit day={day} first={_first} last={_last}")
+                        continue  # salta il giorno *senza* chiamare alcun check
+            # ### >>> STRONG SKIP — MIDDLE-DAY SHORT-CIRCUIT (INFLUX & FILE) — END
+
+
+            # --- ANTI-DUP DAY SCOPE (seen-by-key) ---
+            seen_keys_day: set[tuple] = set()
+            day_key_cols = ["timestamp","symbol","expiration","strike"]
+
+
+            # Get file list for the day using internal API if available
+            try:
+                parts = self._list_day_files(asset, symbol, interval, sink_lower, day)
+            except Exception:
+                ext = "csv" if sink_lower == "csv" else "parquet"
+                pattern = os.path.join(
+                    self.cfg.root_dir, "data", asset, symbol, interval, self._sink_dir_name(sink_lower),
+                    f"{day}T00-00-00Z-{symbol}-{asset}-{interval}_part*.{ext}"
+                )
+                parts = sorted(glob.glob(pattern))
+    
+            parts = [p for p in parts if os.path.exists(p)]
+            if not parts:
+                # No files for this day
+                results_by_day[day] = {
+                    "files": [],
+                    "total_rows": 0,
+                    "unique_key": 0,
+                    "duplicates_key": 0,
+                    "unique_strike_exp": 0,
+                    "overlap_matrix_key": pd.DataFrame(),
+                    "per_file_counts": {},
+                    "top_overlap_timestamps": pd.Series(dtype="int64"),
+                }
+                summary_rows.append({"date": day, "files": 0, "rows": 0, "unique_key": 0, "dup_key": 0, "uniq_strike_exp": 0})
+                continue
+    
+            # Read all parts for the day (only minimal columns)
+            usecols = [tcol, "symbol", "expiration", "strike", "right"]
+            per_file_df = []
+            per_file_key_sets = {}
+            per_file_counts = {}
+            per_file_intra_dup = {}
+    
+            for p in parts:
+                dfp = _read_minimal(p, usecols)
+    
+                # Normalize essential types
+                if "expiration" in dfp.columns:
+                    dfp["expiration"] = pd.to_datetime(dfp["expiration"], errors="coerce").dt.date
+                if "strike" in dfp.columns:
+                    dfp["strike"] = pd.to_numeric(dfp["strike"], errors="coerce")
+    
+                # Effective key columns for this file
+                kcols = _key_cols(dfp)
+                fname = os.path.basename(p)
+    
+                if tcol not in dfp.columns or not kcols:
+                    # Incompatible file: track as empty
+                    per_file_df.append(dfp.iloc[0:0])
+                    per_file_key_sets[fname] = set()
+                    per_file_counts[fname] = 0
+                    per_file_intra_dup[fname] = 0
+                    continue
+    
+                # Build key set for inter-file overlaps
+                key_tuples = set(map(tuple, dfp[kcols].dropna().itertuples(index=False, name=None)))
+                per_file_key_sets[fname] = key_tuples
+                per_file_counts[fname] = len(key_tuples)
+    
+                # Intra-file duplicates on the key (diagonal)
+                valid_mask = dfp[kcols].notna().all(axis=1)
+                valid_rows = int(valid_mask.sum())
+                unique_rows = int(dfp.loc[valid_mask, kcols].drop_duplicates().shape[0])
+                per_file_intra_dup[fname] = max(valid_rows - unique_rows, 0)
+    
+                per_file_df.append(dfp)
+    
+            # Concat all files for the day
+            day_df = pd.concat(per_file_df, ignore_index=True) if per_file_df else pd.DataFrame(columns=usecols)
+    
+            # Keep only rows with non-null timestamp
+            if tcol in day_df.columns:
+                day_df = day_df[day_df[tcol].notna()]
+    
+            # Day-level counts
+            kcols_all = _key_cols(day_df)
+            total_rows = int(len(day_df))
+            unique_key = int(day_df[kcols_all].dropna().drop_duplicates().shape[0]) if kcols_all else 0
+            duplicates_key = max(total_rows - unique_key, 0)
+    
+            # Unique (strike, expiration) pairs
+            if "strike" in day_df.columns and "expiration" in day_df.columns:
+                unique_strike_exp = int(day_df[["strike", "expiration"]].dropna().drop_duplicates().shape[0])
+            else:
+                unique_strike_exp = 0
+    
+            # Top timestamps where duplicates occurred (sum of excess per ts)
+            top_overlap_ts = pd.Series(dtype="int64")
+            if kcols_all:
+                grp = day_df[kcols_all].dropna().groupby(tcol).size()
+                uniq_per_ts = day_df[kcols_all].dropna().drop_duplicates().groupby(tcol).size()
+                over_ts = (grp - uniq_per_ts).astype("int64")
+                top_overlap_ts = over_ts[over_ts > 0].sort_values(ascending=False).head(10)
+    
+            # Build overlap matrix (diagonal = intra-file dup; off-diagonal = intersections)
+            file_names = [os.path.basename(p) for p in parts]
+            overlap_mat = pd.DataFrame(0, index=file_names, columns=file_names, dtype="int64")
+    
+            for i, f1 in enumerate(file_names):
+                s1 = per_file_key_sets.get(f1, set())
+                for j, f2 in enumerate(file_names):
+                    if j < i:
+                        overlap_mat.iat[i, j] = overlap_mat.iat[j, i]
+                        continue
+                    if i == j:
+                        overlap_mat.iat[i, j] = int(per_file_intra_dup.get(f1, 0))
+                        continue
+                    s2 = per_file_key_sets.get(f2, set())
+                    cnt = len(s1 & s2) if (s1 and s2) else 0
+
+                    # DEBUG: se troviamo una singola intersezione, stampa la chiave e verifica il ts
+                    if cnt and cnt <= 3:
+                        inter = list(s1 & s2)
+                        try:
+                            print(f"[DEBUG-OVERLAP] {f1} ∩ {f2} = {cnt}  sample={inter[:1]}")
+                        except Exception:
+                            pass
+
+                    
+                    overlap_mat.iat[i, j] = cnt
+    
+            # Store results for this day
+            results_by_day[day] = {
+                "files": parts,
+                "total_rows": total_rows,
+                "unique_key": unique_key,
+                "duplicates_key": duplicates_key,
+                "unique_strike_exp": unique_strike_exp,
+                "overlap_matrix_key": overlap_mat,
+                "per_file_counts": per_file_counts,
+                "top_overlap_timestamps": top_overlap_ts,
+            }
+    
+            summary_rows.append({
+                "date": day,
+                "files": len(parts),
+                "rows": total_rows,
+                "unique_key": unique_key,
+                "dup_key": duplicates_key,
+                "uniq_strike_exp": unique_strike_exp,
+            })
+    
+            # Optional display
+            if show:
+                print(f"\n[{day}] righe totali: {total_rows:,}  uniche(key): {unique_key:,}  overlap(dup): {duplicates_key:,}")
+                print(f"strike×expiration uniche: {unique_strike_exp:,}")
+                if not top_overlap_ts.empty:
+                    print("Top timestamp con overlap:")
+                    print(top_overlap_ts)
+                if _display is not None:
+                    try:
+                        print("Overlap/Dup matrix (diag = intra-file dup; off-diag = inter-file overlap):")
+                        _display(overlap_mat)
+                    except Exception:
+                        print(overlap_mat)
+    
+        summary_df = pd.DataFrame(summary_rows).sort_values("date").reset_index(drop=True)
+    
+        if show:
+            print("\n=== RIEPILOGO ===")
+            try:
+                if _display is not None:
+                    _display(summary_df)
+                else:
+                    print(summary_df)
+            except Exception:
+                print(summary_df)
+    
+        return results_by_day, summary_df
 
 
 
-    def _validate_interval(self, interval: str) -> None:
-        """Validates that the requested bar interval is supported by the ThetaData client.
+    def check_duplicates_in_sink(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str,
+        day_iso: Optional[str] = None,
+        sample_limit: int = 10
+    ) -> dict:
+        """
+        Verifica la presenza di duplicati nel sink specificato.
+        
+        Args:
+            asset: "option", "stock", o "index"
+            symbol: simbolo (es. "TLRY", "AAPL")
+            interval: timeframe (es. "tick", "1m", "1d")
+            sink: "influxdb", "csv", o "parquet"
+            day_iso: giorno specifico (es. "2025-11-07"), o None per tutto
+            sample_limit: numero max di chiavi duplicate da restituire come esempio
+            
+        Returns:
+            dict con:
+                - total_rows: numero totale righe
+                - unique_rows: numero righe uniche
+                - duplicates: numero duplicati
+                - duplicate_rate: percentuale duplicati
+                - duplicate_keys: lista primi N esempi di chiavi duplicate
+                - key_columns: colonne usate come chiave
+        """
+        sink_lower = sink.lower()
+        
+        if sink_lower == "influxdb":
+            return self._check_duplicates_influx(asset, symbol, interval, day_iso, sample_limit)
+        elif sink_lower in ("csv", "parquet"):
+            return self._check_duplicates_file(asset, symbol, interval, sink_lower, day_iso, sample_limit)
+        else:
+            return {
+                "error": f"Sink non supportato: {sink}",
+                "total_rows": 0,
+                "unique_rows": 0,
+                "duplicates": 0,
+                "duplicate_rate": 0.0,
+                "duplicate_keys": [],
+                "key_columns": []
+            }
+    
+    def check_duplicates_multi_day(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        sample_limit: int = 10,
+        verbose: bool = True
+    ) -> dict:
+        """Check for duplicate records across multiple trading days in the specified data sink.
 
-        This method checks the interval string against the allowed intervals defined in the client's
-        Interval type. If invalid, it raises an error with a helpful message listing all valid options.
+        This method performs a comprehensive duplicate detection analysis across a date range of trading
+        days (Monday-Friday), automatically skipping weekends. It iterates through each trading day in
+        the specified range, calls check_duplicates_in_sink() for each day, and aggregates the results
+        into a comprehensive multi-day report. The method can auto-detect the available date range from
+        the data sink if start_date and end_date are not provided. This is essential for data quality
+        assurance, identifying data ingestion issues, and maintaining clean historical datasets across
+        CSV, Parquet, and InfluxDB storage backends.
 
         Parameters
         ----------
+        asset : str
+            The asset type to check. Possible values: "option", "stock", "index".
+            Determines which data structure and key columns to use for duplicate detection.
+        symbol : str
+            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
+            Must match an existing symbol in the specified sink.
         interval : str
-            The interval string to validate (e.g., '1d', '5m', '1h', 'tick').
-
-        Returns
-        -------
-        None
-            Returns nothing if validation passes.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _sync_symbol() before starting any download to ensure interval is valid
-        # - Various download methods to fail fast on invalid intervals
-        """
-        if interval not in _ALLOWED_INTERVALS:
-            allowed = ", ".join(sorted(_ALLOWED_INTERVALS))
-            raise ValueError(
-                f"Unsupported interval '{interval}'. Allowed values are: {allowed}. "
-                f"For daily bars use '1d'."
-            )
-
-
-    def _validate_sink(self, sink: str) -> None:
-        """Validates that the requested output sink is supported.
-
-        This method checks that the sink parameter is one of the supported output formats.
-        If invalid, it raises an error listing all valid sink options.
-
-        Parameters
-        ----------
+            The bar interval or timeframe (e.g., "tick", "1m", "5m", "10m", "1h", "1d").
+            Determines which data series to check for duplicates.
         sink : str
-            The sink type to validate. Supported values: 'csv', 'parquet', 'influxdb'.
+            The storage backend to check. Possible values: "influxdb", "csv", "parquet".
+            Different sinks use different duplicate detection strategies:
+            - "influxdb": Queries InfluxDB for duplicate timestamps
+            - "csv": Reads CSV files and checks for duplicate composite keys
+            - "parquet": Reads Parquet files and checks for duplicate composite keys
+        start_date : str, optional
+            Default: None (auto-detect from data)
+            The start date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
+            When None, automatically detects the earliest date available in the sink. Only trading
+            days (Mon-Fri) within this range are analyzed.
+        end_date : str, optional
+            Default: None (auto-detect from data)
+            The end date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
+            When None, automatically detects the latest date available in the sink. Only trading
+            days (Mon-Fri) within this range are analyzed.
+        sample_limit : int, optional
+            Default: 10
+            Maximum number of duplicate key examples to collect and display per day. Limits the
+            size of the example lists in the daily results to prevent memory issues with large
+            duplicate sets. Set to 0 to disable example collection.
+        verbose : bool, optional
+            Default: True
+            If True, prints detailed daily progress reports to console including per-day statistics,
+            duplicate rates, and overall summary. If False, runs silently and only returns the
+            results dictionary. Useful for scripting and automated quality checks.
 
         Returns
         -------
-        None
-            Returns nothing if validation passes.
+        dict
+            A comprehensive results dictionary containing:
+            - 'days_analyzed' (int): Number of trading days checked (excludes weekends)
+            - 'total_rows' (int): Total number of data rows across all checked days
+            - 'total_duplicates' (int): Total number of duplicate records found across all days
+            - 'global_duplicate_rate' (float): Overall percentage of duplicates (0.0-100.0)
+            - 'days_with_duplicates' (int): Number of days that contain at least one duplicate
+            - 'daily_results' (list): List of per-day result dictionaries, each containing:
+                - 'date' (str): ISO date "YYYY-MM-DD"
+                - 'rows' (int): Number of rows for that day
+                - 'duplicates' (int): Number of duplicates found
+                - 'duplicate_rate' (float): Percentage of duplicates for that day
+                - 'duplicate_keys' (list): Sample duplicate keys (limited by sample_limit)
+            - 'summary' (dict): Summary information with:
+                - 'start_date' (str): Actual start date checked
+                - 'end_date' (str): Actual end date checked
+                - 'status' (str): "CLEAN" if no duplicates, "DUPLICATES_FOUND" otherwise
+            - 'error' (str, optional): Error message if date detection or parsing failed
 
         Example Usage
         -------------
-        # This is an internal helper method called by:
-        # - _sync_symbol() before starting downloads to ensure sink is valid
-        # - Methods that write data to verify the output format is supported
+        # Example 1: Auto-detect date range (checks all available data)
+        manager = ThetaSyncManager(cfg, client=client)
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="tick",
+            sink="influxdb",
+            verbose=True  # Print detailed progress
+        )
+        print(f"Days analyzed: {result['days_analyzed']}")
+        print(f"Total duplicates: {result['total_duplicates']:,}")
+        print(f"Duplicate rate: {result['global_duplicate_rate']}%")
+
+        # Example 2: Specify explicit date range
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="5m",
+            sink="influxdb",
+            start_date="2025-11-03",
+            end_date="2025-11-07",
+            sample_limit=5,  # Show up to 5 duplicate examples per day
+            verbose=True
+        )
+
+        # Example 3: Silent mode (no console output)
+        result = manager.check_duplicates_multi_day(
+            asset="stock",
+            symbol="AAPL",
+            interval="1m",
+            sink="parquet",
+            start_date="2025-11-01",
+            end_date="2025-11-30",
+            verbose=False  # No console output
+        )
+        if result['days_with_duplicates'] > 0:
+            print(f"Found duplicates in {result['days_with_duplicates']} days")
+
+        # Example 4: Process results programmatically
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="5m",
+            sink="csv",
+            verbose=False
+        )
+        if result['days_with_duplicates'] > 0:
+            for day_result in result['daily_results']:
+                if day_result['duplicates'] > 0:
+                    print(f"{day_result['date']}: {day_result['duplicates']} duplicates")
+
+        # Example 5: Compare different sinks
+        for sink_type in ["csv", "parquet", "influxdb"]:
+            result = manager.check_duplicates_multi_day(
+                asset="option",
+                symbol="TLRY",
+                interval="5m",
+                sink=sink_type,
+                start_date="2025-11-03",
+                end_date="2025-11-07",
+                verbose=False
+            )
+            print(f"{sink_type}: {result['total_duplicates']:,} duplicates")
         """
-        s = (sink or "").strip().lower()
-        if s not in ("csv", "parquet", "influxdb"):
-            raise ValueError(f"Unsupported sink '{sink}'. Allowed: csv | parquet | influxdb")
+        
+        # START: Auto-detect date range if not provided
+        if not start_date or not end_date:
+            first_day, last_day = self._get_first_last_day_from_sink(
+                asset, symbol, interval, sink.lower()
+            )
+            
+            if not first_day or not last_day:
+                print("[MULTI-DAY-CHECK][ERROR] No data found in sink. Cannot determine date range.")
+                return {
+                    "error": "No data found in sink",
+                    "days_analyzed": 0,
+                    "total_rows": 0,
+                    "total_duplicates": 0,
+                    "global_duplicate_rate": 0.0,
+                    "days_with_duplicates": 0,
+                    "daily_results": [],
+                    "summary": {}
+                }
+            
+            start_date = start_date or first_day
+            end_date = end_date or last_day
+        # END: Auto-detect date range
+        
+        # Parse dates
+        try:
+            start_dt = dt.fromisoformat(start_date)
+            end_dt = dt.fromisoformat(end_date)
+        except ValueError as e:
+            return {
+                "error": f"Invalid date format: {e}",
+                "days_analyzed": 0,
+                "total_rows": 0,
+                "total_duplicates": 0,
+                "global_duplicate_rate": 0.0,
+                "days_with_duplicates": 0,
+                "daily_results": [],
+                "summary": {}
+            }
+        
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"DUPLICATE CHECK - {symbol} {asset} {interval} [{sink}]")
+            print(f"Date range: {start_date} -> {end_date}")
+            print(f"{'='*70}\n")
+        
+        # START: Iterate through all days and check duplicates
+        total_days = 0
+        total_rows_all = 0
+        total_duplicates_all = 0
+        daily_results = []
+        
+        current_dt = start_dt
+        while current_dt <= end_dt:
+            day_iso = current_dt.date().isoformat()
+            
+            # Skip weekends
+            if current_dt.weekday() >= 5:
+                current_dt += timedelta(days=1)
+                continue
+            
+            # Check duplicates for this day
+            result = self.check_duplicates_in_sink(
+                asset=asset,
+                symbol=symbol,
+                interval=interval,
+                sink=sink,
+                day_iso=day_iso,
+                sample_limit=sample_limit
+            )
+            
+            # Only process days with data
+            if result.get('total_rows', 0) > 0:
+                total_days += 1
+                total_rows_all += result['total_rows']
+                total_duplicates_all += result['duplicates']
+                
+                # Store daily result
+                daily_result = {
+                    'date': day_iso,
+                    'total_rows': result['total_rows'],
+                    'duplicates': result['duplicates'],
+                    'duplicate_rate': result['duplicate_rate'],
+                    'duplicate_keys': result['duplicate_keys'][:3]  # first 3 examples
+                }
+                daily_results.append(daily_result)
+                
+                # Print daily progress if verbose
+                if verbose:
+                    status = "✅" if result['duplicates'] == 0 else "❌"
+                    print(f"{status} {day_iso}: {result['total_rows']:6d} rows, "
+                          f"{result['duplicates']:4d} duplicates ({result['duplicate_rate']:5.2f}%)")
+            
+            current_dt += timedelta(days=1)
+        # END: Iterate through days
+        
+        # START: Calculate global statistics
+        global_dup_rate = (
+            100.0 * total_duplicates_all / total_rows_all 
+            if total_rows_all > 0 else 0.0
+        )
+        days_with_dups = sum(1 for r in daily_results if r['duplicates'] > 0)
+        # END: Calculate global statistics
+        
+        # START: Print summary report if verbose
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"SUMMARY")
+            print(f"{'='*70}")
+            print(f"Days analyzed:          {total_days}")
+            print(f"Total rows:             {total_rows_all:,}")
+            print(f"Total duplicates:       {total_duplicates_all:,}")
+            print(f"Global duplicate rate:  {global_dup_rate:.2f}%")
+            print(f"Days with duplicates:   {days_with_dups}")
+            
+            # Show detailed breakdown for days with duplicates
+            if days_with_dups > 0:
+                print(f"\n{'='*70}")
+                print(f"DAYS WITH DUPLICATES - DETAILS")
+                print(f"{'='*70}")
+                for day_info in daily_results:
+                    if day_info['duplicates'] > 0:
+                        print(f"\n📅 {day_info['date']}: {day_info['duplicates']} duplicates "
+                              f"out of {day_info['total_rows']} rows ({day_info['duplicate_rate']:.2f}%)")
+                        if day_info['duplicate_keys']:
+                            print(f"   Example duplicate keys:")
+                            for i, key in enumerate(day_info['duplicate_keys'], 1):
+                                print(f"     {i}. {key}")
+            else:
+                print(f"\n✅ No duplicates found in any day!")
+            
+            print(f"\n{'='*70}\n")
+        # END: Print summary report
+        
+        return {
+            "days_analyzed": total_days,
+            "total_rows": total_rows_all,
+            "total_duplicates": total_duplicates_all,
+            "global_duplicate_rate": round(global_dup_rate, 2),
+            "days_with_duplicates": days_with_dups,
+            "daily_results": daily_results,
+            "summary": {
+                "symbol": symbol,
+                "asset": asset,
+                "interval": interval,
+                "sink": sink,
+                "start_date": start_date,
+                "end_date": end_date,
+                "status": "clean" if total_duplicates_all == 0 else "duplicates_found"
+            }
+        }
+    # --------------------------------------------------------------------------
+    # END: Multi-day duplicate check functionality
+    # --------------------------------------------------------------------------
+
+    async def screen_option_oi_concentration(
+        self,
+        symbols: list[str],
+        day_iso: str,
+        threshold_pct: float = 0.30,
+        scope: Literal["strike", "strike_and_right"] = "strike",
+        right: Literal["call", "put", "both"] = "both",
+        min_chain_oi: int = 5_000,
+        min_contract_oi: int = 500,
+        min_chain_contracts: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Screen for abnormal OI concentration by (symbol, expiration).
+    
+        Rules
+        -----
+        - Pull prior-day OI for the requested trading date via /option/history/open_interest (expiration="*").
+        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
+        - For each expiration, flag rows where share >= threshold_pct AND
+          contract_oi >= min_contract_oi AND chain_oi >= min_chain_oi AND distinct contracts >= min_chain_contracts.
+    
+        Returns
+        -------
+        pd.DataFrame with columns:
+            ['symbol','expiration','strike','right','contract_oi','chain_oi','share_pct',
+             'contracts_in_chain','rank_in_expiration','source_url']
+        """
+        async def _fetch_oi(sym: str):
+            csv_txt, url = await self.client.option_history_open_interest(
+                symbol=sym, expiration="*", date=day_iso, strike="*", right=right, format_type="csv"
+            )
+            return sym, csv_txt, url
+
+        eff_min_chain_contracts = (
+            min_chain_contracts
+            if min_chain_contracts is not None
+            else (5 if scope == "strike" else 10)
+        )
+    
+        tasks = [asyncio.create_task(_fetch_oi(s)) for s in symbols]
+        results = []
+    
+        for fut in asyncio.as_completed(tasks):
+            try:
+                sym, csv_txt, url = await fut
+            except Exception:
+                continue
+            if not csv_txt:
+                continue
+    
+            df = pd.read_csv(io.StringIO(csv_txt))
+            if df is None or df.empty:
+                continue
+    
+            # Robust column normalization
+            # expiration
+            if "expiration" not in df.columns:
+                # try fallback names (rare)
+                for alt in ("exp", "expiry"):
+                    if alt in df.columns:
+                        df = df.rename(columns={alt: "expiration"})
+                        break
+    
+            # strike
+            if "strike" not in df.columns:
+                for alt in ("option_strike", "OPTION_STRIKE"):
+                    if alt in df.columns:
+                        df = df.rename(columns={alt: "strike"})
+                        break
+    
+            # right
+            if "right" not in df.columns and "option_right" in df.columns:
+                df = df.rename(columns={"option_right": "right"})
+    
+            # open_interest
+            oi_col = next((c for c in ("open_interest", "oi", "OI", "openInterest") if c in df.columns), None)
+            if oi_col is None:
+                continue
+            df = df.rename(columns={oi_col: "oi"})
+    
+            # Normalize right values if present
+            if "right" in df.columns:
+                df["right"] = df["right"].map(
+                    {"C": "call", "P": "put", "CALL": "call", "PUT": "put", "call": "call", "put": "put"}
+                ).fillna(df.get("right"))
+    
+            # Aggregate by requested scope
+            if scope == "strike":
+                # Sum C+P at the same strike
+                grp_cols = ["expiration", "strike"]
+            else:
+                grp_cols = ["expiration", "strike", "right"]
+    
+            dfa = df.groupby(grp_cols, as_index=False, dropna=False)["oi"].sum().rename(columns={"oi": "contract_oi"})
+            # Count distinct contracts in the chain (per expiration)
+            chain_counts = dfa.groupby("expiration")["contract_oi"].transform("size")
+            # Chain total OI
+            chain_tot = dfa.groupby("expiration")["contract_oi"].transform("sum")
+            dfa["chain_oi"] = chain_tot
+            dfa["contracts_in_chain"] = chain_counts
+            dfa["share_pct"] = (dfa["contract_oi"] / dfa["chain_oi"]).astype(float)
+    
+            # Guards + threshold
+            mask = (
+                (dfa["share_pct"] >= threshold_pct)
+                & (dfa["contract_oi"] >= min_contract_oi)
+                & (dfa["chain_oi"] >= min_chain_oi)
+                & (dfa["contracts_in_chain"] >= eff_min_chain_contracts)
+            )
+            hits = dfa.loc[mask].copy()
+            if hits.empty:
+                continue
+    
+            # Ranking within expiration by share
+            hits["rank_in_expiration"] = hits.groupby("expiration")["share_pct"].rank(method="dense", ascending=False).astype(int)
+    
+            # Add symbol, right column if missing (scope=strike => synthetic "both")
+            hits.insert(0, "symbol", sym)
+            if "right" not in hits.columns:
+                hits["right"] = "both"
+    
+            # Useful for traceability
+            hits["source_url"] = url
+            results.append(hits)
+    
+        if not results:
+            return pd.DataFrame(columns=[
+                "symbol","expiration","strike","right","contract_oi","chain_oi","share_pct",
+                "contracts_in_chain","rank_in_expiration","source_url"
+            ])
+    
+        out = pd.concat(results, ignore_index=True)
+        # Order by severity
+        out = out.sort_values(["share_pct","chain_oi","contract_oi"], ascending=[False, False, False]).reset_index(drop=True)
+        return out
+    
+    
+    async def screen_option_volume_concentration(
+        self,
+        symbols: list[str],
+        day_iso: str,
+        threshold_pct: float = 0.25,
+        scope: Literal["strike", "contract"] = "strike",
+        right: Literal["call", "put", "both"] = "both",
+        min_chain_volume: int = 5_000,
+        min_contract_volume: int = 500,
+        min_chain_contracts: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Screen for abnormal daily VOLUME concentration by (symbol, expiration).
+    
+        Rules
+        -----
+        - Pull EOD daily rows for all expirations via /option/history/eod (expiration="*").
+        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
+        - For each expiration, flag rows where share >= threshold_pct AND
+          contract_volume >= min_contract_volume AND chain_volume >= min_chain_volume
+          AND distinct contracts >= min_chain_contracts.
+    
+        Returns
+        -------
+        pd.DataFrame with columns:
+            ['symbol','expiration','strike','right','contract_volume','chain_volume','share_pct',
+             'contracts_in_chain','rank_in_expiration','source_url']
+        """
+        async def _fetch_eod(sym: str):
+            csv_txt, url = await self.client.option_history_eod(
+                symbol=sym, expiration="*", start_date=day_iso, end_date=day_iso, strike="*", right=right, format_type="csv"
+            )
+            return sym, csv_txt, url
+
+        eff_min_chain_contracts = (
+            min_chain_contracts
+            if min_chain_contracts is not None
+            else (5 if scope == "strike" else 10)
+        )
+    
+        tasks = [asyncio.create_task(_fetch_eod(s)) for s in symbols]
+        results = []
+    
+        for fut in asyncio.as_completed(tasks):
+            try:
+                sym, csv_txt, url = await fut
+            except Exception:
+                continue
+            if not csv_txt:
+                continue
+    
+            df = pd.read_csv(io.StringIO(csv_txt))
+            if df is None or df.empty:
+                continue
+    
+            # Columns
+            if "expiration" not in df.columns:
+                for alt in ("exp", "expiry"):
+                    if alt in df.columns:
+                        df = df.rename(columns={alt: "expiration"})
+                        break
+            if "strike" not in df.columns:
+                for alt in ("option_strike", "OPTION_STRIKE"):
+                    if alt in df.columns:
+                        df = df.rename(columns={alt: "strike"})
+                        break
+            if "right" not in df.columns and "option_right" in df.columns:
+                df = df.rename(columns={"option_right": "right"})
+    
+            vol_col = next((c for c in ("volume", "vol", "Volume") if c in df.columns), None)
+            if vol_col is None:
+                continue
+            df = df.rename(columns={vol_col: "volume"})
+    
+            if "right" in df.columns:
+                df["right"] = df["right"].map(
+                    {"C": "call", "P": "put", "CALL": "call", "PUT": "put", "call": "call", "put": "put"}
+                ).fillna(df.get("right"))
+    
+            if scope == "strike":
+                grp_cols = ["expiration", "strike"]
+            else:
+                grp_cols = ["expiration", "strike", "right"]
+    
+            dfa = df.groupby(grp_cols, as_index=False, dropna=False)["volume"].sum().rename(columns={"volume": "contract_volume"})
+            chain_counts = dfa.groupby("expiration")["contract_volume"].transform("size")
+            chain_tot = dfa.groupby("expiration")["contract_volume"].transform("sum")
+            dfa["chain_volume"] = chain_tot
+            dfa["contracts_in_chain"] = chain_counts
+            dfa["share_pct"] = (dfa["contract_volume"] / dfa["chain_volume"]).astype(float)
+    
+            mask = (
+                (dfa["share_pct"] >= threshold_pct)
+                & (dfa["contract_volume"] >= min_contract_volume)
+                & (dfa["chain_volume"] >= min_chain_volume)
+                & (dfa["contracts_in_chain"] >= eff_min_chain_contracts)
+            )
+            hits = dfa.loc[mask].copy()
+            if hits.empty:
+                continue
+    
+            hits["rank_in_expiration"] = hits.groupby("expiration")["share_pct"].rank(method="dense", ascending=False).astype(int)
+            hits.insert(0, "symbol", sym)
+            if "right" not in hits.columns:
+                hits["right"] = "both"
+            hits["source_url"] = url
+            results.append(hits)
+    
+        if not results:
+            return pd.DataFrame(columns=[
+                "symbol","expiration","strike","right","contract_volume","chain_volume","share_pct",
+                "contracts_in_chain","rank_in_expiration","source_url"
+            ])
+    
+        out = pd.concat(results, ignore_index=True)
+        out = out.sort_values(["share_pct","chain_volume","contract_volume"], ascending=[False, False, False]).reset_index(drop=True)
+        return out
 
 
+    # =========================================================================
+    # (END)
+    # PUBLIC API - Data Quality
+    # =========================================================================
 
-    # ------------------------- CORE SYNC -----------------------------
-
+    # =========================================================================
+    # (BEGIN)
+    # DOWNLOAD & FETCH - Private Helpers
+    # =========================================================================
     async def _spawn_sync(self, task: Task, symbol: str, interval: str, first_date: Optional[str]) -> None:
         """Wraps a single symbol sync job with semaphore-based concurrency control.
 
@@ -1059,48 +1975,6 @@ class ThetaSyncManager:
     # --------------------- DATA DOWNLOAD & STORE ---------------------
 
 
-    def _make_file_basepath(self, asset: str, symbol: str, interval: str, start_iso: str, ext: str) -> str:
-        """Constructs the full file path for storing market data based on asset, symbol, interval, and date.
-
-        This method creates a standardized directory structure and filename format for organizing market data
-        files. The directory hierarchy is: root/data/{asset}/{symbol}/{interval}/{sink}/, and files are named
-        with an ISO timestamp prefix for chronological sorting.
-
-        Parameters
-        ----------
-        asset : str
-            The asset type (e.g., 'option', 'stock', 'index').
-        symbol : str
-            The ticker symbol or root symbol.
-        interval : str
-            The bar interval (e.g., '1d', '5m', '1h').
-        start_iso : str
-            The ISO datetime string for the data start time (e.g., '2024-01-15T00-00-00Z').
-        ext : str
-            The file extension/sink type (e.g., 'csv', 'parquet', 'influxdb').
-
-        Returns
-        -------
-        str
-            The complete absolute file path including directory and filename.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() to determine where to save option data
-        # - _download_and_store_equity_or_index() to determine where to save stock/index data
-        # - Various methods that need to construct file paths for data persistence
-        """
-        sink_dir = self._sink_dir_name(ext)
-        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
-        # ⬇️ non creare cartelle per Influx
-        if sink_dir != "influxdb":
-            os.makedirs(folder, exist_ok=True)
-        fname = f"{start_iso}-{symbol}-{asset}-{interval}.{ext}"
-        return os.path.join(folder, fname)
-
-
-            
     async def _download_and_store_options(
         self,
         symbol: str,
@@ -2121,486 +2995,6 @@ class ThetaSyncManager:
         
                        
     
-    async def _expirations_that_traded(self, symbol: str, day_iso: str, req_type: str = "trade") -> list[str]:
-        """Fetches and caches the list of option expiration dates that had activity on a specific trading day.
-
-        This method queries the ThetaData API for all option contracts that traded or were quoted on the given
-        day, extracts their expiration dates, and caches the result for reuse. It handles multiple response
-        formats from the API including columnar dictionaries and lists of contract objects.
-
-        Parameters
-        ----------
-        symbol : str
-            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
-        day_iso : str
-            The trading day in 'YYYY-MM-DD' format to query for active expirations.
-        req_type : str, optional
-            Default: "trade"
-            Possible values: ["trade", "quote"]
-
-            The type of activity to query - either trades or quotes.
-
-        Returns
-        -------
-        list of str
-            A list of expiration dates in 'YYYYMMDD' format that had activity on the specified day.
-            Returns an empty list if no contracts traded/quoted or if the API call fails.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() to determine which expirations to download for a given day
-        # - First-date discovery methods to identify which expirations were active
-        """
-        cache_key = (symbol, day_iso, req_type)
-        if cache_key in self._exp_by_day_cache:
-            return self._exp_by_day_cache[cache_key]
-    
-        day_ymd = self._td_ymd(day_iso)
-        try:
-            payload, _ = await self.client.option_list_contracts(
-                request_type=req_type, date=day_ymd, symbol=symbol, format_type="json"
-            )
-        except Exception:
-            self._exp_by_day_cache[cache_key] = []
-            return []
-    
-        def _norm8(s: str) -> str | None:
-            s = (s or "").replace("-", "")
-            if len(s) == 8 and s.isdigit():
-                return s
-            if len(s) == 6 and s.isdigit():  # YYMMDD -> YYYYMMDD
-                yy = int(s[:2]); year = 2000 + yy
-                return f"{year:04d}{s[2:4]}{s[4:6]}"
-            return None
-    
-        exps: set[str] = set()
-    
-        # --- Fast path: COLUMNAR dict-of-arrays ---
-        if isinstance(payload, dict):
-            # Common column names used by ThetaData for this endpoint
-            for col in ("expiration", "expirationDate", "exp"):
-                colv = payload.get(col)
-                if isinstance(colv, list) and colv:
-                    for e in colv:
-                        e8 = _norm8(str(e))
-                        if e8:
-                            exps.add(e8)
-            if exps:
-                out = sorted(exps)
-                self._exp_by_day_cache[cache_key] = out
-                # debug opzionale
-                # print(f"[INFO] {symbol} {day_iso} ({req_type}) → {len(out)} expirations (columnar)")
-                return out
-    
-        # --- Fallback: LISTA di dict ---
-        def _dig_to_list(x):
-            if isinstance(x, list):
-                return x
-            if isinstance(x, dict):
-                for k in ("contracts", "items", "results", "data"):
-                    if k in x:
-                        r = _dig_to_list(x[k])
-                        if r:
-                            return r
-            return []
-    
-        items = _dig_to_list(payload) or []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            exp = it.get("expiration") or it.get("expirationDate") or it.get("exp")
-            if not exp:
-                # parse da OCC-style option symbol, se presente
-                sym = it.get("option_symbol") or it.get("symbol") or it.get("contractSymbol") or it.get("s")
-                if isinstance(sym, str):
-                    m8 = re.search(r"(\d{8})[CP]", sym)
-                    m6 = re.search(r"(\d{6})[CP]", sym)
-                    if m8:
-                        exp = m8.group(1)
-                    elif m6:
-                        exp = m6.group(1)
-            e8 = _norm8(str(exp)) if exp else None
-            if e8:
-                exps.add(e8)
-    
-        out = sorted(exps)
-        self._exp_by_day_cache[cache_key] = out
-    
-        if not out:
-            # Qui ora vedrai la chiave 'expiration' quando è columnar (come nel tuo file)
-            print(f"[DEBUG] No expirations parsed for {symbol} {day_iso} ({req_type}). "
-                  f"Payload keys sample: {list(payload.keys()) if isinstance(payload, dict) else type(payload)}")
-    
-        return out
-
-
-
-    async def _fetch_option_all_greeks_by_date(
-        self,
-        symbol: str,
-        day_iso: str,
-        interval: str,
-        strike: str = "*",
-        right: str = "both",
-        rate_type: str = "sofr",
-        annual_dividend: Optional[float] = None,
-        rate_value: Optional[float] = None,
-        expiration: str = "*",           # <— aggiunto: "*" per tutta la chain
-        fmt: str = "csv",
-    ) -> Tuple[str, str]:
-        """Fetches historical Greeks data for options from the ThetaData API for a single trading day.
-
-        This method retrieves Greeks (delta, gamma, theta, vega, rho, etc.) for option contracts on a
-        specific day using the /option/history/greeks/all endpoint. It supports filtering by strike,
-        right (call/put), and expiration, with wildcard support for fetching entire chains.
-
-        Parameters
-        ----------
-        symbol : str
-            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
-        day_iso : str
-            The trading day in 'YYYY-MM-DD' format.
-        interval : str
-            The bar interval for Greeks data (e.g., '1d', '5m', '1h').
-        strike : str, optional
-            Default: "*"
-
-            The strike price filter. Use "*" for all strikes or specify a specific strike.
-        right : str, optional
-            Default: "both"
-            Possible values: ["call", "put", "both"]
-
-            Filter for call options, put options, or both.
-        rate_type : str, optional
-            Default: "sofr"
-
-            The interest rate type to use for Greeks calculations.
-        annual_dividend : float or None, optional
-            Default: None
-
-            Annual dividend amount for the underlying. If None, the API uses its default.
-        rate_value : float or None, optional
-            Default: None
-
-            Specific interest rate value. If None, the API uses current market rates.
-        expiration : str, optional
-            Default: "*"
-
-            Expiration date filter in 'YYYYMMDD' format, or "*" for all expirations.
-        fmt : str, optional
-            Default: "csv"
-
-            Response format from the API ('csv' or 'json').
-
-        Returns
-        -------
-        tuple of (str, str)
-            A tuple containing (response_text, full_url). The response_text is the raw CSV or JSON data
-            from the API, and full_url is the complete request URL for debugging.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() when enrich_greeks=True to fetch companion Greeks data
-        # - Methods that need historical Greeks enrichment for options analysis
-        """
-        ymd = self._td_ymd(day_iso)
-        return await self.client.option_history_all_greeks(
-            symbol=symbol,
-            expiration=expiration,
-            date=ymd,
-            interval=interval,
-            strike=strike,
-            right=right,
-            rate_type=rate_type,
-            annual_dividend=annual_dividend,
-            rate_value=rate_value,
-            start_time=None,
-            end_time=None,
-            format_type=fmt,
-        )
-
-
-
-
-    async def _write_df_to_sink(self, base_path: str, df, sink: str) -> None:
-        """Writes a DataFrame to the configured sink (CSV, Parquet, or InfluxDB).
-
-        This method handles the persistence of data to different storage backends, routing the DataFrame
-        to the appropriate writer based on the sink type. Each sink type handles deduplication, rotation,
-        and overlap safety differently.
-
-        Parameters
-        ----------
-        base_path : str
-            The full file path (for CSV/Parquet) or measurement name (for InfluxDB) where data should be written.
-        df : pandas.DataFrame
-            The DataFrame containing market data to persist.
-        sink : str
-            The sink type. Supported values: 'csv', 'parquet', 'influxdb'.
-
-        Returns
-        -------
-        None
-            Data is written to the specified sink but no value is returned.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() after fetching and processing option data
-        # - _download_and_store_equity_or_index() after fetching stock/index data
-        """
-        s = (sink or "").strip().lower()
-        if s == "csv":
-            csv_text = df.to_csv(index=False)
-            await self._append_csv_text(base_path, csv_text)
-        elif s == "parquet":
-            self._append_parquet_df(base_path, df)
-        elif s == "influxdb":
-            await self._append_influx_df(base_path, df)
-        else:
-            raise ValueError(f"Unsupported sink: {sink}")
-
-        
-    
-    def _append_parquet_df(
-        self,
-        base_path: str,
-        df_new,
-        *,
-        force_first_part: int | None = None,
-        stop_before_part: int | None = None,
-    ) -> int:
-        """
-        Write DataFrame to Parquet format using atomic, size-capped, append-by-rotation part files.
-
-        This method provides intelligent data persistence with automatic deduplication, stable sorting,
-        and file size management. It never modifies existing Parquet files in-place; instead, it creates
-        new numbered part files (_partNN.parquet) with atomic write guarantees.
-
-        Parameters
-        ----------
-        base_path : str
-            Base file path. Any existing _partNN suffix is automatically removed before processing.
-            Example: "data/option/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-option-5m.parquet"
-        df_new : pandas.DataFrame
-            New data to append. Must contain valid data; empty DataFrames are skipped.
-        force_first_part : int, optional
-            Default: None
-            If specified, forces writing to start at this part number, bypassing latest part detection.
-            Used for head-refill operations.
-        stop_before_part : int, optional
-            Default: None
-            If specified, stops writing before reaching this part number. Prevents overwriting
-            existing parts during head-refill operations.
-
-        Returns
-        -------
-        int
-            Number of rows successfully written to disk.
-
-        Example Usage
-        -------------
-        # Called by _write_parquet_from_csv and option download methods
-        rows_written = manager._append_parquet_df(
-            base_path="data/stock/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-stock-5m.parquet",
-            df_new=dataframe_with_new_bars
-        )
-        # Returns: 1500 (number of rows written)
-
-        # Head-refill with constraints:
-        rows_written = manager._append_parquet_df(
-            base_path="...", df_new=df,
-            force_first_part=1, stop_before_part=8
-        )
-
-        Behavior
-        --------
-        1. Sorting: Orders by timestamp → expiration → strike → right (when columns present).
-        2. Deduplication: Removes duplicates within new batch and at boundary with last part.
-        3. Boundary handling: For options, uses complex key (timestamp, expiration, strike, right).
-           For stocks/indices, uses timestamp only with tail-based deduplication.
-        4. Size management: Binary searches to find maximum rows fitting within max_file_mb limit.
-        5. Rotation: Automatically creates next _partNN file when current exceeds size limit.
-        6. Atomic writes: Uses temporary file + os.replace to prevent corruption.
-
-        Notes
-        -----
-        - Never appends data inside existing Parquet files; always creates new part files.
-        - Assumes timestamps are ET-naive; no timezone conversion performed.
-        - Uses overlap_seconds config for boundary deduplication window.
-        - For options: deduplicates on (timestamp, expiration, strike, right).
-        - For stocks/indices: deduplicates on timestamp only.
-        - Implements binary search to efficiently pack maximum rows per part.
-        - Zero-byte files are automatically cleaned up.
-        - PyArrow engine used for optimal Parquet I/O performance.
-        """
-    
-        # normalizza: se arriva un path già con _partNN rimuovilo
-        base_path = re.sub(r"_part\d{2}(?=\.(?:csv|parquet)$)", "", base_path)
-    
-        if df_new is None or len(df_new) == 0:
-            return 0
-    
-        # --- keys & columns ---
-        ts_col = "timestamp"
-        key_candidates = [ts_col, "symbol", "expiration", "strike", "right", "sequence"]  # include 'sequence' for ticks
-        key_cols = [c for c in key_candidates if c in df_new.columns]
-        if not key_cols:
-            key_cols = [ts_col] if ts_col in df_new.columns else list(df_new.columns[:1])
-            
-        # --- FRONTIER DEDUPE vs latest part (tail-resume safe) ---
-        # HEAD-REFILL 
-        latest_part = None if force_first_part is not None else getattr(self, "_pick_latest_part", lambda *_: None)(base_path, "parquet")
-        if latest_part and os.path.exists(latest_part) and os.path.getsize(latest_part) > 0 and ts_col in df_new.columns:
-            cols_to_read = [c for c in key_cols if c in df_new.columns]
-            try:
-                last_df = pd.read_parquet(latest_part, columns=cols_to_read)
-            except Exception:
-                last_df = None
-
-            if last_df is not None and not last_df.empty and ts_col in last_df.columns:
-                last_max_ts = last_df[ts_col].max()
-                if pd.notna(last_max_ts):
-                    overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-                    cutoff = last_max_ts - pd.Timedelta(seconds=overlap)
-
-                    # 1) drop <= cutoff (solo tail-resume; per head-refill questa sezione è saltata)
-                    df_new = df_new[df_new[ts_col] > cutoff].copy()
-
-                    # 2) boundary dedupe: distingui opzioni (chiave complessa) vs stock/index (solo timestamp)
-                    if not df_new.empty:
-                        if len(cols_to_read) > 1:
-                            # OPZIONI: chiave complessa (timestamp + expiration + strike + right)
-                            same_ts_mask = df_new[ts_col].eq(last_max_ts)
-                            if same_ts_mask.any():
-                                existing_keys = set(map(tuple, last_df.loc[last_df[ts_col].eq(last_max_ts), cols_to_read].to_numpy()))
-                                if existing_keys:
-                                    eq_df = df_new.loc[same_ts_mask, cols_to_read]
-                                    keep_mask = ~eq_df.apply(tuple, axis=1).isin(existing_keys)
-                                    df_new = pd.concat(
-                                        [df_new.loc[~same_ts_mask], df_new.loc[same_ts_mask][keep_mask]],
-                                        ignore_index=True
-                                    )
-                        else:
-                            # STOCK/INDEX: solo timestamp
-                            try:
-                                tail_df = pd.read_parquet(latest_part).tail(500)
-                                if ts_col in tail_df.columns:
-                                    tail_ts = pd.to_datetime(tail_df[ts_col], errors="coerce")
-                                    if getattr(tail_ts.dtype, "tz", None) is not None:
-                                        tail_ts = tail_ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-                                    existing_ts = set(tail_ts.dropna())
-                                    if existing_ts:
-                                        use_seq = (interval == "tick" and "sequence" in df_new.columns and "sequence" in tail_df.columns)
-                                        
-                                        before = len(df_new)
-                                        
-                                        if use_seq:
-                                            # Dedup su coppia (timestamp, sequence) per evitare di collassare tick distinti
-                                            existing_keys = set(zip(tail_df[ts_col], tail_df["sequence"]))
-                                            new_keys = list(zip(df_new[ts_col], df_new["sequence"]))
-                                            df_new = df_new[[key not in existing_keys for key in new_keys]]
-                                        else:
-                                            new_ts = pd.to_datetime(df_new[ts_col], errors="coerce")
-                                            df_new = df_new[~new_ts.isin(existing_ts)]
-                                        
-                                        removed = before - len(df_new)
-                                        if removed > 0:
-                                            print(f"[PARQUET][BOUNDARY-DEDUP] removed {removed} {'tick (ts+seq)' if use_seq else 'stock/index (ts)'} duplicates")
-
-                            except Exception as e:
-                                print(f"[PARQUET][WARN] stock/index boundary dedup failed: {e}")
-
-    
-        if df_new is None or df_new.empty:
-            return 0
-    
-        # --- ORDER & INTRA-BATCH DEDUPE ---
-        order_cols = [c for c in [ts_col, "expiration", "strike", "right"] if c in df_new.columns]
-        if order_cols:
-            df_new = df_new.sort_values(order_cols, kind="mergesort")  # stable
-        df_new = df_new.drop_duplicates(subset=key_cols, keep="last")
-    
-        # --- SIZE-CAP chunking (Parquet usa fattore 6.4 rispetto al baseline CSV) ---
-        max_mb = float(getattr(self.cfg, "max_file_mb", 64) or 64.0)
-        max_bytes = int(max_mb * 1024 * 1024)
-    
-        rows = len(df_new)
-        if rows == 0:
-            return 0
-    
-        est_bytes = int(df_new.memory_usage(index=False, deep=True).sum())
-        bytes_per_row = max(1, est_bytes // max(rows, 1))
-        base_rows = max(1000, max_bytes // bytes_per_row)
-        rows_per_part = max(1000, int(base_rows * 6.4))
-    
-        # --- head-refill controls & naming helpers ---
-        def _part_num_from_path(p: str) -> int:
-            m = _re.search(r"_part(\d{2})\.parquet$", p or "")
-            return int(m.group(1)) if m else 0
-    
-        base_no_ext = os.path.splitext(base_path)[0]
-    
-        if force_first_part is not None:
-            next_part = int(force_first_part)
-        else:
-            latest = getattr(self, "_pick_latest_part")(base_path, "parquet")
-            next_part = _part_num_from_path(latest) + 1 if latest else 1
-    
-        def _make_target(n: int) -> str:
-            return f"{base_no_ext}_part{n:02d}.parquet"
-    
-        def _should_stop(n: int) -> bool:
-            return (stop_before_part is not None) and (n >= int(stop_before_part))
-    
-        # --- ATOMIC WRITE LOOP (one chunk -> one new part) ---
-        write_count = 0
-    
-        def _write_one_chunk(chunk: pd.DataFrame) -> bool:
-            nonlocal next_part, write_count
-    
-            # rispetto dello stop: non creare/oltrepassare part esistente successivo
-            if _should_stop(next_part):
-                return False
-    
-            target = _make_target(next_part)
-    
-            # non sovrascrivere: se esiste già e ha contenuto, avanza
-            while os.path.exists(target) and os.path.getsize(target) > 0:
-                next_part += 1
-                if _should_stop(next_part):
-                    return False
-                target = _make_target(next_part)
-    
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            tbl = pa.Table.from_pandas(chunk, preserve_index=False)
-            tmp = f"{target}.{uuid.uuid4().hex}.tmp"
-            pq.write_table(tbl, tmp)
-            try:
-                os.replace(tmp, target)
-            finally:
-                if os.path.exists(tmp):
-                    try:
-                        os.remove(tmp)
-                    except Exception:
-                        pass
-            write_count += len(chunk)
-            next_part += 1
-            return True
-    
-        if rows_per_part >= rows:
-            _write_one_chunk(df_new)
-        else:
-            for start in range(0, rows, rows_per_part):
-                if not _write_one_chunk(df_new.iloc[start:start + rows_per_part]):
-                    break
-    
-        return int(write_count)
-
-
-
     async def _download_and_store_equity_or_index(
         self,
         asset: str,
@@ -2951,23 +3345,250 @@ class ThetaSyncManager:
     # ---------------------- START DATE RESOLUTION --------------------
 
 
-    def _extract_days_from_df(self, df, fallback_day_iso: str) -> tuple[str, str]:
-        """Return (first_day, last_day) as 'YYYY-MM-DD'. Fallback to provided day if needed."""
+    async def _expirations_that_traded(self, symbol: str, day_iso: str, req_type: str = "trade") -> list[str]:
+        """Fetches and caches the list of option expiration dates that had activity on a specific trading day.
 
-        tcol = None
-        for c in ("created", "timestamp", "date"):
-            if c in df.columns:
-                tcol = c
-                break
-        if tcol in ("created", "timestamp"):
-            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True)
-            days = ts.dt.date.astype(str).dropna()
-        elif tcol == "date":
-            days = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str).dropna()
-        else:
-            days = pd.Series([fallback_day_iso], dtype=str)
-        return days.min(), days.max()
+        This method queries the ThetaData API for all option contracts that traded or were quoted on the given
+        day, extracts their expiration dates, and caches the result for reuse. It handles multiple response
+        formats from the API including columnar dictionaries and lists of contract objects.
 
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
+        day_iso : str
+            The trading day in 'YYYY-MM-DD' format to query for active expirations.
+        req_type : str, optional
+            Default: "trade"
+            Possible values: ["trade", "quote"]
+
+            The type of activity to query - either trades or quotes.
+
+        Returns
+        -------
+        list of str
+            A list of expiration dates in 'YYYYMMDD' format that had activity on the specified day.
+            Returns an empty list if no contracts traded/quoted or if the API call fails.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() to determine which expirations to download for a given day
+        # - First-date discovery methods to identify which expirations were active
+        """
+        cache_key = (symbol, day_iso, req_type)
+        if cache_key in self._exp_by_day_cache:
+            return self._exp_by_day_cache[cache_key]
+    
+        day_ymd = self._td_ymd(day_iso)
+        try:
+            payload, _ = await self.client.option_list_contracts(
+                request_type=req_type, date=day_ymd, symbol=symbol, format_type="json"
+            )
+        except Exception:
+            self._exp_by_day_cache[cache_key] = []
+            return []
+    
+        def _norm8(s: str) -> str | None:
+            s = (s or "").replace("-", "")
+            if len(s) == 8 and s.isdigit():
+                return s
+            if len(s) == 6 and s.isdigit():  # YYMMDD -> YYYYMMDD
+                yy = int(s[:2]); year = 2000 + yy
+                return f"{year:04d}{s[2:4]}{s[4:6]}"
+            return None
+    
+        exps: set[str] = set()
+    
+        # --- Fast path: COLUMNAR dict-of-arrays ---
+        if isinstance(payload, dict):
+            # Common column names used by ThetaData for this endpoint
+            for col in ("expiration", "expirationDate", "exp"):
+                colv = payload.get(col)
+                if isinstance(colv, list) and colv:
+                    for e in colv:
+                        e8 = _norm8(str(e))
+                        if e8:
+                            exps.add(e8)
+            if exps:
+                out = sorted(exps)
+                self._exp_by_day_cache[cache_key] = out
+                # debug opzionale
+                # print(f"[INFO] {symbol} {day_iso} ({req_type}) → {len(out)} expirations (columnar)")
+                return out
+    
+        # --- Fallback: LISTA di dict ---
+        def _dig_to_list(x):
+            if isinstance(x, list):
+                return x
+            if isinstance(x, dict):
+                for k in ("contracts", "items", "results", "data"):
+                    if k in x:
+                        r = _dig_to_list(x[k])
+                        if r:
+                            return r
+            return []
+    
+        items = _dig_to_list(payload) or []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            exp = it.get("expiration") or it.get("expirationDate") or it.get("exp")
+            if not exp:
+                # parse da OCC-style option symbol, se presente
+                sym = it.get("option_symbol") or it.get("symbol") or it.get("contractSymbol") or it.get("s")
+                if isinstance(sym, str):
+                    m8 = re.search(r"(\d{8})[CP]", sym)
+                    m6 = re.search(r"(\d{6})[CP]", sym)
+                    if m8:
+                        exp = m8.group(1)
+                    elif m6:
+                        exp = m6.group(1)
+            e8 = _norm8(str(exp)) if exp else None
+            if e8:
+                exps.add(e8)
+    
+        out = sorted(exps)
+        self._exp_by_day_cache[cache_key] = out
+    
+        if not out:
+            # Qui ora vedrai la chiave 'expiration' quando è columnar (come nel tuo file)
+            print(f"[DEBUG] No expirations parsed for {symbol} {day_iso} ({req_type}). "
+                  f"Payload keys sample: {list(payload.keys()) if isinstance(payload, dict) else type(payload)}")
+    
+        return out
+
+
+
+    async def _fetch_option_all_greeks_by_date(
+        self,
+        symbol: str,
+        day_iso: str,
+        interval: str,
+        strike: str = "*",
+        right: str = "both",
+        rate_type: str = "sofr",
+        annual_dividend: Optional[float] = None,
+        rate_value: Optional[float] = None,
+        expiration: str = "*",           # <— aggiunto: "*" per tutta la chain
+        fmt: str = "csv",
+    ) -> Tuple[str, str]:
+        """Fetches historical Greeks data for options from the ThetaData API for a single trading day.
+
+        This method retrieves Greeks (delta, gamma, theta, vega, rho, etc.) for option contracts on a
+        specific day using the /option/history/greeks/all endpoint. It supports filtering by strike,
+        right (call/put), and expiration, with wildcard support for fetching entire chains.
+
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
+        day_iso : str
+            The trading day in 'YYYY-MM-DD' format.
+        interval : str
+            The bar interval for Greeks data (e.g., '1d', '5m', '1h').
+        strike : str, optional
+            Default: "*"
+
+            The strike price filter. Use "*" for all strikes or specify a specific strike.
+        right : str, optional
+            Default: "both"
+            Possible values: ["call", "put", "both"]
+
+            Filter for call options, put options, or both.
+        rate_type : str, optional
+            Default: "sofr"
+
+            The interest rate type to use for Greeks calculations.
+        annual_dividend : float or None, optional
+            Default: None
+
+            Annual dividend amount for the underlying. If None, the API uses its default.
+        rate_value : float or None, optional
+            Default: None
+
+            Specific interest rate value. If None, the API uses current market rates.
+        expiration : str, optional
+            Default: "*"
+
+            Expiration date filter in 'YYYYMMDD' format, or "*" for all expirations.
+        fmt : str, optional
+            Default: "csv"
+
+            Response format from the API ('csv' or 'json').
+
+        Returns
+        -------
+        tuple of (str, str)
+            A tuple containing (response_text, full_url). The response_text is the raw CSV or JSON data
+            from the API, and full_url is the complete request URL for debugging.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() when enrich_greeks=True to fetch companion Greeks data
+        # - Methods that need historical Greeks enrichment for options analysis
+        """
+        ymd = self._td_ymd(day_iso)
+        return await self.client.option_history_all_greeks(
+            symbol=symbol,
+            expiration=expiration,
+            date=ymd,
+            interval=interval,
+            strike=strike,
+            right=right,
+            rate_type=rate_type,
+            annual_dividend=annual_dividend,
+            rate_value=rate_value,
+            start_time=None,
+            end_time=None,
+            format_type=fmt,
+        )
+
+
+
+
+    async def _td_get_with_retry(self, coro_factory, label: str, retries: int = 1):
+        """
+        Esegue la richiesta TD con 1 piccolo retry se fallisce per errori transitori
+        (timeout, disconnessione, cancel durante I/O). Ritorna (text, meta) o (None, None).
+        """
+    
+        for attempt in range(retries + 1):
+            try:
+                return await coro_factory()
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                print(f"[TD-HTTP][RETRY] {label} attempt={attempt+1} error={e}")
+                if attempt >= retries:
+                    print(f"[TD-HTTP][GIVEUP] {label}")
+                    return None, None
+                await asyncio.sleep(0.75)
+            except asyncio.CancelledError as e:
+                # a volte arriva da stream/flight; proviamo un solo retry "soft"
+                print(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
+                if attempt >= retries:
+                    print(f"[TD-HTTP][GIVEUP] {label} cancelled")
+                    return None, None
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"[TD-HTTP][ERROR] {label}: {e}")
+                return None, None
+
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # DUPLICATE CHECK UTILITIES
+    # ──────────────────────────────────────────────────────────────────────────
+    
+
+    # =========================================================================
+    # (END)
+    # DOWNLOAD & FETCH - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # DISCOVERY - Private Helpers
+    # =========================================================================
     async def _resolve_first_date(self, task: Task, symbol: str) -> Optional[str]:
         """Resolve the initial coverage date for this (asset, symbol) according to policy."""
         pol = task.discover_policy or DiscoverPolicy()
@@ -3286,373 +3907,52 @@ class ThetaSyncManager:
 
     # -------------------------- HELPERS -------------------------
 
-    def _next_part_path(self, path: str, ext: str) -> str:
-        base, _ = os.path.splitext(path)
-        if "_part" in base and base[-2:].isdigit():
-            prefix, n = base[:-2], int(base[-2:])
-            return f"{prefix}{n+1:02d}.{ext}"
-        return f"{base}_part01.{ext}"
+    def _extract_first_date_from_any(self, seq: List[Any]) -> Optional[str]:
+        dates: List[str] = []
+        for x in seq:
+            if isinstance(x, str):
+                ds = self._normalize_date_str(x)
+                if ds:
+                    dates.append(ds)
+            elif isinstance(x, dict):
+                for k in ("date", "Date", "trade_date", "tradingDay"):
+                    if k in x and x[k]:
+                        ds = self._normalize_date_str(str(x[k]))
+                        if ds:
+                            dates.append(ds)
+                        break
+        return min(dates) if dates else None
 
-    
-
-    
-    def _cache_key(self, asset: str, symbol: str, interval: str, sink: str) -> str:
-        """Constructs a standardized cache key for identifying a specific data series.
-
-        This method creates a unique string key by combining asset, symbol, interval, and sink parameters,
-        which is used for caching first-date coverage and other series metadata.
-
-        Parameters
-        ----------
-        asset : str
-            The asset type (e.g., 'stock', 'option', 'index').
-        symbol : str
-            The ticker symbol or root symbol.
-        interval : str
-            The bar interval (e.g., '1d', '5m', '1h').
-        sink : str
-            The sink type (e.g., 'csv', 'parquet', 'influxdb').
-
-        Returns
-        -------
-        str
-            A colon-separated cache key string in the format 'asset:symbol:interval:sink'.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - clear_first_date_cache() to delete specific cache entries
-        # - _touch_cache() to update cache entries
-        # - _load_cache_file() and _save_cache_file() for cache persistence operations
-        """
-        return f"{asset}:{symbol}:{interval}:{sink.lower()}"
-    
-    def _load_cache_file(self) -> Dict[str, Dict[str, str]]:
-        """Loads the coverage cache from disk containing first-date and last-date metadata for data series.
-
-        This method reads a JSON file that stores metadata about synchronized data series, including the
-        first and last dates of saved data. This cache enables efficient resume logic by avoiding redundant
-        discovery and file scanning.
-
-        Parameters
-        ----------
-        None
-            Uses the instance's _cache_path attribute to locate the cache file.
-
-        Returns
-        -------
-        dict of str to dict
-            A dictionary mapping cache keys to metadata dictionaries. Each metadata dict contains keys like
-            'series_last_day' and 'first_saved_day' with 'YYYY-MM-DD' date values. Returns an empty dict
-            if the cache file doesn't exist or is corrupted.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - __init__() during manager initialization to load existing cache
-        # - Methods that need to check cached first/last dates for series
-        """
-        path = getattr(self, "_cache_path", None)
-        if not path or not os.path.exists(path):
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            # Corrupted or unreadable -> start fresh
-            return {}
-    
-    def _save_cache_file(self) -> None:
-        """Persists the coverage cache to disk atomically using a temporary file and atomic replace.
-
-        This method safely writes the in-memory coverage cache to disk by first writing to a temporary
-        file, then atomically replacing the existing cache file. This prevents corruption from interrupted
-        writes and ensures cache consistency.
-
-        Parameters
-        ----------
-        None
-            Uses the instance's _cache_path and _coverage_cache attributes.
-
-        Returns
-        -------
-        None
-            The cache is written to disk but no value is returned.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - run() after completing all synchronization tasks
-        # - clear_first_date_cache() after removing a cache entry
-        # - _touch_cache() after updating cache metadata
-        """
-        cache_dir = os.path.dirname(self._cache_path)
-        os.makedirs(cache_dir, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(prefix="cov_", suffix=".json", dir=cache_dir)
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(self._coverage_cache, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self._cache_path)
-        except Exception:
-            # Best-effort: if atomic replace fails, try direct write (last resort)
-            try:
-                with open(self._cache_path, "w", encoding="utf-8") as f:
-                    json.dump(self._coverage_cache, f, ensure_ascii=False, indent=2)
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-    
-    def _touch_cache(
-        self,
-        asset: str,
-        symbol: str,
-        interval: str,
-        sink: str,
-        *,
-        first_day: Optional[str] = None,
-        last_day: Optional[str] = None,
-    ) -> None:
-        """Updates the coverage cache entry for a data series, expanding the known date coverage window.
-
-        This method updates the cached first and last dates for a series, ensuring the coverage window
-        only expands (never shrinks). It's used to track the extent of synchronized data without
-        needing to scan files on every run.
-
-        Parameters
-        ----------
-        asset : str
-            The asset type (e.g., 'stock', 'option', 'index').
-        symbol : str
-            The ticker symbol or root symbol.
-        interval : str
-            The bar interval (e.g., '1d', '5m', '1h').
-        sink : str
-            The sink type (e.g., 'csv', 'parquet', 'influxdb').
-        first_day : str or None, optional
-            Default: None
-
-            The first date with data in 'YYYY-MM-DD' format. If provided and earlier than the cached
-            first date, the cache is updated to this earlier date.
-        last_day : str or None, optional
-            Default: None
-
-            The last date with data in 'YYYY-MM-DD' format. If provided and later than the cached
-            last date, the cache is updated to this later date.
-
-        Returns
-        -------
-        None
-            The cache is updated in memory but not immediately persisted to disk.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _download_and_store_options() after successfully downloading option data for a day
-        # - _download_and_store_equity_or_index() after downloading stock/index data
-        # - Methods that modify data series and need to update coverage metadata
-        """
-        key = self._cache_key(asset, symbol, interval, sink)
-        entry = self._coverage_cache.get(key, {})
-        fd = entry.get("first_saved_day")
-        ld = entry.get("series_last_day")
-    
-        if first_day:
-            fd = first_day if (fd is None or first_day < fd) else fd
-        if last_day:
-            ld = last_day if (ld is None or last_day > ld) else ld
-    
-        new_entry = {}
-        if fd is not None:
-            new_entry["first_saved_day"] = fd
-        if ld is not None:
-            new_entry["series_last_day"] = ld
-    
-        if new_entry:
-            self._coverage_cache[key] = new_entry
-
-    
-
-    def _list_series_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> list:
-        """
-        Return only canonical daily-part files for (asset, symbol, interval, sink), sorted by name.
-        Canonical pattern (strict):
-            YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.(csv|parquet)
-    
-        Any non-matching file (e.g., "no dup 2025-11-07T...csv") is ignored.
-    
-        Parameters
-        ----------
-        asset : str
-            "option", "stock", or "index".
-        symbol : str
-            Underlying symbol (case-insensitive on matching).
-        interval : str
-            Timeframe (e.g., "5m", "1m", "1d").
-        sink_lower : str
-            "csv" or "parquet".
-    
-        Returns
-        -------
-        list
-            Sorted list of absolute file paths (canonical only).
-        """
-    
-        ext = ".csv" if sink_lower == "csv" else ".parquet"
-        series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
-        if not os.path.isdir(series_dir):
-            return []
-    
-        sym_u = symbol.upper()
-        asset_l = asset.lower()
-        interval_l = interval.lower()
-    
-        # Strict canonical filename:
-        #  YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext
-        pat = re.compile(
-            rf'^\d{{4}}-\d{{2}}-\d{{2}}T00-00-00Z-{re.escape(sym_u)}-{asset_l}-{interval_l}_part\d+{re.escape(ext)}$',
-            re.IGNORECASE
-        )
-    
-        files = []
-        for f in os.listdir(series_dir):
-            # Quick extension check
-            if not f.lower().endswith(ext):
-                continue
-            # Strict canonical check
-            if not pat.match(f):
-                continue
-            files.append(os.path.join(series_dir, f))
-    
-        files.sort()
-        return files
-
-        
-    
-    def _series_earliest_and_latest_day(self, asset: str, symbol: str, interval: str, sink_lower: str):
-        """
-        Determine the earliest and latest calendar days covered by a time series.
-
-        This method scans all canonical part files for a given series and extracts the date range
-        by inspecting filenames (which encode the starting day). It's used for coverage tracking
-        and determining what data already exists before downloading.
-
-        Parameters
-        ----------
-        asset : str
-            Asset type: "option", "stock", or "index".
-        symbol : str
-            Ticker symbol (case-insensitive matching).
-        interval : str
-            Timeframe (e.g., "5m", "1m", "1d").
-        sink_lower : str
-            Sink format: "csv" or "parquet".
-
-        Returns
-        -------
-        tuple[str or None, str or None, list]
-            Three-element tuple: (earliest_day, latest_day, files)
-            - earliest_day: ISO date "YYYY-MM-DD" from earliest filename prefix, or None.
-            - latest_day: ISO date "YYYY-MM-DD" from latest filename prefix, or None.
-            - files: List of absolute file paths for all canonical part files, sorted by name.
-            Returns (None, None, []) if no files exist.
-
-        Example Usage
-        -------------
-        # Called by _get_first_last_day_from_sink and coverage tracking methods
-        earliest, latest, files = manager._series_earliest_and_latest_day(
-            asset="stock", symbol="AAPL", interval="5m", sink_lower="parquet"
-        )
-        # Returns: ("2020-01-02", "2024-03-15", [list of file paths])
-
-        Notes
-        -----
-        - Uses _list_series_files to get canonical part files only (excludes legacy base files).
-        - Extracts dates from filename format: "YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext"
-        - Both earliest and latest are derived from filename prefixes (not file contents).
-        - For daily-part files, each file represents exactly one calendar day.
-        """
-    
-        files = self._list_series_files(asset, symbol, interval, sink_lower)
-        if not files:
-            return None, None, []
-    
-        def _start_from_filename(path: str) -> str | None:
-            base = os.path.basename(path)
-            # expected: 'YYYY-MM-DDT...-SYMBOL-asset-interval.csv'
-            return base.split("T", 1)[0] if "T" in base else None
-    
-        earliest = None
-        latest = None
-    
-        for path in files:
-            # compute earliest from filename
-            s = _start_from_filename(path)
-            if s and (earliest is None or s < earliest):
-                earliest = s
-    
-            # compute latest directly from filename prefix (daily files are one-day each)
-            if s and (latest is None or s > latest):
-                latest = s
-
-                
-        return earliest, latest, files
+    def _extract_expirations_as_dates(self, seq: List[Any]) -> List[str]:
+        out: List[str] = []
+        for x in seq:
+            if isinstance(x, str):
+                ds = self._normalize_date_str(x)
+                if ds:
+                    out.append(ds)
+            elif isinstance(x, dict):
+                val = x.get("expiration") or x.get("date") or x.get("expirationDate")
+                if val:
+                    ds = self._normalize_date_str(str(val))
+                    if ds:
+                        out.append(ds)
+        out.sort()
+        return out
 
 
-    def _get_first_last_day_from_sink(
-            self, asset: str, symbol: str, interval: str, sink: str
-        ) -> tuple[str | None, str | None]:
-            """
-            Ritorna (first_day, last_day) dal sink appropriato (file-based o Influx).
-            Universale per tutti asset/sink/tf.
-            """
-            sink_lower = (sink or "").lower()
-            
-            if sink_lower == "influxdb":
-                prefix = (self.cfg.influx_measure_prefix or "")
-                if asset == "option":
-                    meas = f"{prefix}{symbol}-option-{interval}"
-                else:
-                    meas = f"{prefix}{symbol}-{asset}-{interval}"
-                
-                try:
-                    cli = self._ensure_influx_client()
-                    
-                    # MIN(time)
-                    q_min = f'SELECT MIN(time) AS t FROM "{meas}"'
-                    t = cli.query(q_min)
-                    df_min = t.to_pandas() if hasattr(t, "to_pandas") else t
-                    first_ts = None
-                    if df_min is not None and len(df_min) and "t" in df_min.columns:
-                        v = df_min.iloc[0]["t"]
-                        first_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
-                    
-                    # MAX(time)
-                    q_max = f'SELECT MAX(time) AS t FROM "{meas}"'
-                    t = cli.query(q_max)
-                    df_max = t.to_pandas() if hasattr(t, "to_pandas") else t
-                    last_ts = None
-                    if df_max is not None and len(df_max) and "t" in df_max.columns:
-                        v = df_max.iloc[0]["t"]
-                        last_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
-                    
-                    first_day = first_ts.tz_convert("America/New_York").date().isoformat() if first_ts else None
-                    last_day = last_ts.tz_convert("America/New_York").date().isoformat() if last_ts else None
-                    
-                    return first_day, last_day
-                except Exception as e:
-                    print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
-                    return None, None
-            
-            elif sink_lower in ("csv", "parquet"):
-                first, last, _ = self._series_earliest_and_latest_day(asset, symbol, interval, sink_lower)
-                return first, last
-            
-                return None, None
+    # ------------- SCREENING FUNCTIONS -------------------------------
 
-                
+
+
+    # =========================================================================
+    # (END)
+    # DISCOVERY - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # RESUME LOGIC - Private Helpers
+    # =========================================================================
     async def _compute_resume_start_datetime(self, task: Task, symbol: str, interval: str, first_date: Optional[str]) -> datetime:
         """
         Decide the starting datetime for a task, honoring:
@@ -3812,75 +4112,174 @@ class ThetaSyncManager:
         return start_dt
     
     
-    def _compute_intraday_window_et(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Ritorna (start_et_hms, end_et_hms) per una singola day_iso.
-        start_et_hms è calcolato come (max timestamp del giorno già salvato) - overlap_seconds, in fuso ET.
-        >>> CON BUCKET ALIGNMENT per M/H frames <
-        """
-        ET = ZoneInfo("America/New_York")
-    
-        parts = self._list_day_files(asset, symbol, interval, sink, day_iso)
-        if not parts:
-            return (None, None)
-    
-        # >>> HEAD-REFILL GUARD
-        try:
-            part_list = self._list_day_part_files(asset, symbol, interval, sink, day_iso)
-            if part_list and part_list[0][0] > 1:
-                return (None, None)
-        except Exception:
-            pass
-        try:
-            st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
-            if st.get("missing") or st.get("has_mixed"):
-                return (None, None)
-        except Exception:
-            pass
-    
-        def _max_ts_from_file(path: str) -> Optional[pd.Timestamp]:
-            try:
-                if path.endswith(".csv"):
-                    head = pd.read_csv(path, nrows=0)
-                    cols = list(head.columns)
-                    tcol = next((c for c in ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"] if c in cols), None)
-                    if not tcol:
-                        return None
-                    s = pd.read_csv(path, usecols=[tcol])[tcol]
-                    ts = pd.to_datetime(s, errors="coerce")
-                else:
-                    df = pd.read_parquet(path, columns=["timestamp"])
-                    ts = pd.to_datetime(df["timestamp"], errors="coerce")
-                if getattr(ts.dtype, "tz", None) is not None:
-                    ts = ts.dt.tz_convert(ET).dt.tz_localize(None)
-                return ts.max() if ts.notna().any() else None
-            except Exception:
-                return None
-    
-        max_ts = None
-        for p in parts:
-            mt = _max_ts_from_file(p)
-            if mt is not None and (max_ts is None or mt > max_ts):
-                max_ts = mt
-    
-        if not max_ts:
-            return (None, None)
-    
-        overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-        start_dt = max_ts - pd.Timedelta(seconds=overlap)
-        
-        # >>> BUCKET ALIGNMENT for M/H frames <
-        iv = (interval or "").strip().lower()
-        if iv.endswith("m") or iv.endswith("h"):
-            m = int(iv[:-1]) * (60 if iv.endswith("h") else 1)
-            # ET naive -> aware ET -> UTC -> floor -> torna a ET
-            start_et_aware = start_dt.replace(tzinfo=ET)
-            floored_utc = self._floor_to_interval_et(start_et_aware.astimezone(self.UTC), m)
-            start_dt = floored_utc.astimezone(ET).replace(tzinfo=None)
-        
-        start_et_hms = start_dt.strftime("%H:%M:%S")
-        return (start_et_hms, None)
+    def _skip_existing_middle_day(
+        self, *,
+        asset: str, symbol: str, interval: str, sink: str, day_iso: str,
+        first_last_hint: Optional[tuple[Optional[str], Optional[str]]] = None,
+    ) -> bool:
+        """Determines whether to skip downloading data for a day because it's already complete and is a middle day.
 
+        This method implements intelligent resume logic by skipping re-downloads of complete middle days (days
+        that fall strictly between the earliest and latest existing files). It always processes edge days (first
+        and last) to ensure they are complete, and handles retrograde start dates properly. For options, it also
+        checks whether daily parts are complete before deciding to skip.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'option', 'stock', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h', 'tick').
+        sink : str
+            The output sink type. Only 'csv' and 'parquet' are supported; other sinks return False.
+        day_iso : str
+            The day being evaluated in 'YYYY-MM-DD' format.
+        first_last_hint : tuple of (str or None, str or None), optional
+            Default: None
+
+            A hint containing (first_existing_day, last_existing_day) to avoid re-scanning files.
+            If None, the method will scan files to determine the earliest and latest days.
+
+        Returns
+        -------
+        bool
+            True if the day should be skipped (complete middle day), False if it should be processed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() to decide whether to skip downloading for each day in the sync range
+        # - Download methods to optimize resume behavior and avoid redundant downloads
+        """
+
+        # ### >>> FAST RESUME — MIDDLE-DAY BYPASS (only strong 'skip') — BEGIN
+        # In strong 'skip' we bypass *checks*, ma NON dobbiamo saltare tutto alla cieca:
+        # Skippiamo soltanto i *middle day* veri (cioè day_iso strettamente tra first e last),
+        # lasciando elaborare edge day e futuro. Per confronto usiamo 'YYYY-MM-DD' lexicografico.
+        if getattr(self, "_fast_resume_skip_middle", False):
+            if first_last_hint and first_last_hint[0] and first_last_hint[1]:
+                first_day, last_day = first_last_hint
+                if first_day < day_iso < last_day:
+                    return True  # solo i middle-day
+            return False  # edge/futuro: NON skippare
+        # ### >>> FAST RESUME — MIDDLE-DAY BYPASS (only strong 'skip') — END
+
+            
+        if sink not in ("csv", "parquet"):
+            return False
+    
+   
+        base_dir = Path(self.cfg.root_dir) / "data" / asset / symbol / interval / sink
+        base_dir.mkdir(parents=True, exist_ok=True)
+    
+        out_name = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}.{sink}"
+        out_path = base_dir / out_name
+        day_has_any = bool(self._list_day_files(asset, symbol, interval, sink, day_iso))
+        print(f"[RESUME-DEBUG] day={day_iso} has_any={day_has_any}")
+
+        sink_lower = sink.lower()
+        if first_last_hint is not None:
+            first_existing, last_existing = first_last_hint
+        else:
+            first_existing, last_existing, _ = self._series_earliest_and_latest_day(
+                asset, symbol, interval, sink_lower
+            )
+        
+        if day_has_any:
+            # --- Edge-day policy (earliest vs latest) ---
+            if first_existing and day_iso == first_existing:
+                if asset == "option":
+                    st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
+                    parts = st.get("parts", [])
+                    # Se manca part01, ci sono buchi o mix -> procedi (ricostruzione completa del primo giorno)
+                    if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild") or (1 not in parts):
+                        print(f"[RESUME-DEBUG] proceed (edge-first needs rebuild): {day_iso}  edges={first_existing}..{last_existing}")
+                        return False
+                    # Altrimenti il primo giorno è completo con part01 -> SKIP giorno intero
+                    print(f"[RESUME-DEBUG] skip existing (edge-first complete with part01): {day_iso}  edges={first_existing}..{last_existing}")
+                    return True
+                # Non-option: preserva comportamento precedente (procedi sull'edge-first)
+                print(f"[RESUME-DEBUG] proceed (edge-first non-option): {day_iso}  edges={first_existing}..{last_existing}")
+                return False
+        
+            if last_existing and day_iso == last_existing:
+                # Ultimo giorno edge -> procedi (si mantiene il comportamento precedente)
+                print(f"[RESUME-DEBUG] proceed (edge-last): {day_iso}  edges={first_existing}..{last_existing}")
+                return False
+        
+            # --- Middle day ---
+            if asset == "option":
+                st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
+                # se giorno incompleto/misto -> NON skippare (lo ricostruiamo)
+                if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild"):
+                    print(f"[RESUME-DEBUG] proceed (day...ncomplete): {day_iso}  edges={first_existing}..{last_existing}")
+                    return False
+            # giorno medio completo -> skip
+            print(f"[RESUME-DEBUG] skip existing (middle day): {day_iso}  edges={first_existing}..{last_existing}")
+            return True
+
+
+        
+        print(f"[RESUME-DEBUG] proceed (missing or edge day): {day_iso}  edges={first_existing}..{last_existing}")
+        return False
+
+
+    # -------------------------- PUBLIC API ---------------------------
+
+    def _get_first_last_day_from_sink(
+            self, asset: str, symbol: str, interval: str, sink: str
+        ) -> tuple[str | None, str | None]:
+            """
+            Ritorna (first_day, last_day) dal sink appropriato (file-based o Influx).
+            Universale per tutti asset/sink/tf.
+            """
+            sink_lower = (sink or "").lower()
+            
+            if sink_lower == "influxdb":
+                prefix = (self.cfg.influx_measure_prefix or "")
+                if asset == "option":
+                    meas = f"{prefix}{symbol}-option-{interval}"
+                else:
+                    meas = f"{prefix}{symbol}-{asset}-{interval}"
+                
+                try:
+                    cli = self._ensure_influx_client()
+                    
+                    # MIN(time)
+                    q_min = f'SELECT MIN(time) AS t FROM "{meas}"'
+                    t = cli.query(q_min)
+                    df_min = t.to_pandas() if hasattr(t, "to_pandas") else t
+                    first_ts = None
+                    if df_min is not None and len(df_min) and "t" in df_min.columns:
+                        v = df_min.iloc[0]["t"]
+                        first_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
+                    
+                    # MAX(time)
+                    q_max = f'SELECT MAX(time) AS t FROM "{meas}"'
+                    t = cli.query(q_max)
+                    df_max = t.to_pandas() if hasattr(t, "to_pandas") else t
+                    last_ts = None
+                    if df_max is not None and len(df_max) and "t" in df_max.columns:
+                        v = df_max.iloc[0]["t"]
+                        last_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
+                    
+                    first_day = first_ts.tz_convert("America/New_York").date().isoformat() if first_ts else None
+                    last_day = last_ts.tz_convert("America/New_York").date().isoformat() if last_ts else None
+                    
+                    return first_day, last_day
+                except Exception as e:
+                    print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
+                    return None, None
+            
+            elif sink_lower in ("csv", "parquet"):
+                first, last, _ = self._series_earliest_and_latest_day(asset, symbol, interval, sink_lower)
+                return first, last
+            
+                return None, None
+
+                
     def _probe_existing_last_ts_with_source(self, task, symbol: str, interval: str, sink: str) -> tuple[datetime | None, str | None]:
         """
         Come _probe_existing_last_ts ma ritorna anche il *file path* dal quale abbiamo dedotto il last timestamp.
@@ -3927,107 +4326,6 @@ class ThetaSyncManager:
         return None, None
 
 
-    def _tail_csv_last_n_lines(self, path: str, n: int = 64) -> list[str]:
-        """
-        Read the last N non-empty lines from a CSV file without loading the entire file.
-
-        This method efficiently reads from the end of large CSV files using backward chunked
-        reading, which is much faster than loading and tailing the entire file. It's used for
-        extracting the most recent timestamps and performing boundary deduplication.
-
-        Parameters
-        ----------
-        path : str
-            Absolute path to the CSV file.
-        n : int, optional
-            Default: 64
-            Maximum number of lines to return.
-
-        Returns
-        -------
-        list[str]
-            List of up to N non-empty lines from the end of the file, ordered from newest
-            (most recent) to oldest. Returns empty list if file doesn't exist or is empty.
-
-        Example Usage
-        -------------
-        # Called by _last_csv_timestamp and boundary deduplication operations
-        last_lines = manager._tail_csv_last_n_lines(
-            path="data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
-            n=64
-        )
-        # Returns: ["2024-03-15T20:00:00Z,150.23,150.45,...", ...]
-
-        Notes
-        -----
-        - Uses 4KB block-based backward reading for efficiency on large files.
-        - Strips carriage returns and newlines from each line.
-        - Skips empty lines automatically.
-        - Does not parse CSV structure; returns raw text lines.
-        - Optimal for extracting timestamps without pandas overhead.
-        """
-        if not os.path.exists(path):
-            return []
-        out = []
-        block = 4096
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            pos = f.tell()
-            buf = b""
-            while pos > 0 and len(out) < n:
-                take = block if pos >= block else pos
-                f.seek(pos - take)
-                chunk = f.read(take)
-                pos -= take
-                buf = chunk + buf
-                while b"\n" in buf and len(out) < n:
-                    buf, line = buf.rsplit(b"\n", 1)
-                    s = line.decode("utf-8", errors="ignore").rstrip("\r\n")
-                    if s:
-                        out.append(s)
-            if buf and len(out) < n:
-                s = buf.decode("utf-8", errors="ignore").rstrip("\r\n")
-                if s:
-                    out.append(s)
-        return out  # newest-first
-    
-    def _parse_csv_first_col_as_dt(self, line: str):
-        """Parse the first column of a CSV line as an ISO datetime string and return a UTC-aware datetime.
-
-        This helper method extracts the first comma-separated value from a CSV line, interprets it as
-        an ISO 8601 formatted timestamp, and converts it to a timezone-aware datetime object in UTC.
-        Returns None if parsing fails, making it safe for handling malformed or non-timestamp data.
-
-        Parameters
-        ----------
-        line : str
-            A single line from a CSV file where the first column contains an ISO 8601 timestamp
-            (e.g., "2024-03-15T14:30:00Z,150.23,100,...").
-
-        Returns
-        -------
-        datetime or None
-            A timezone-aware datetime object in UTC timezone representing the parsed timestamp.
-            Returns None if the line is empty, malformed, or the first column cannot be parsed as a date.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _tail_csv_last_n_lines() to extract timestamps from CSV tail lines
-        # - _compute_intraday_window_et() to determine resume start times
-        # - Other methods that need to parse timestamps from CSV data quickly
-
-        line = "2024-03-15T14:30:00Z,150.23,100,..."
-        ts = manager._parse_csv_first_col_as_dt(line)
-        # Returns: datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc)
-        """
-        first = line.split(",", 1)[0].strip()
-        try:
-            return dt.fromisoformat(first.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except Exception:
-            return None
-    
-    
     def _csv_has_day(self, base_path: str, day_iso: str) -> bool:
         """Check if any data exists for a specific day across all CSV parts (base and _partNN files).
 
@@ -4096,87 +4394,6 @@ class ThetaSyncManager:
         return False
 
 
-    async def _maybe_await(self, x):
-        """Conditionally await a value if it's awaitable, otherwise return it directly.
-
-        This utility method provides safe handling of values that may or may not be coroutines or
-        async functions. If the value is awaitable (like an async function result), it awaits it.
-        Otherwise, it returns the value immediately. This enables writing code that can handle both
-        sync and async operations uniformly.
-
-        Parameters
-        ----------
-        x : Any
-            The value to potentially await. Can be any Python object, including coroutines, futures,
-            or regular values.
-
-        Returns
-        -------
-        Any
-            If x is awaitable (inspect.isawaitable returns True), returns the result of awaiting x.
-            Otherwise, returns x unchanged.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by methods that may receive either
-        # synchronous values or async coroutines as parameters
-
-        # With async value:
-        result = await manager._maybe_await(some_async_function())
-        # Awaits and returns the result
-
-        # With sync value:
-        result = await manager._maybe_await(42)
-        # Returns: 42 immediately
-        """
-        return await x if inspect.isawaitable(x) else x
-
-
-    def _debug_log_resume(self, task, symbol: str, interval: str, sink: str,
-                          latest_path: Optional[str],
-                          resume_anchor_dt: Optional[datetime],
-                          computed_start_dt: Optional[datetime]) -> None:
-        """
-        Print a compact, explicit resume snapshot:
-          1) requested start date from task,
-          2) latest file path used for resume,
-          3) last saved day/timestamp and the computed resume start.
-        """
-        # 1) "data di partenza indicata nel task"
-        requested_start = getattr(task, "first_date", None) or getattr(task, "start_date", None)
-        # Allow str/None; pretty print
-        requested_start_s = str(requested_start) if requested_start is not None else "None"
-    
-        # 2) "il nome file con i dati più recenti"
-        latest_path_s = latest_path or "None"
-    
-        # 3) "l'ultima data utile ... e da dove dovrebbe ripartire"
-        last_saved_s = resume_anchor_dt.isoformat() if resume_anchor_dt else "None"
-        will_start_s  = computed_start_dt.isoformat() if computed_start_dt else "None"
-    
-        # Expected "should start" (esplicito nel log, non altero la logica)
-        should_start_dt = None
-        try:
-            if resume_anchor_dt is not None:
-                if interval == "1d":
-                    # ripartenza dal giorno successivo alle 00:00:00Z
-                    next_day = (resume_anchor_dt.astimezone(timezone.utc).date() + timedelta(days=1))
-                    should_start_dt = datetime.combine(next_day, datetime.min.time(), tzinfo=timezone.utc)
-                else:
-                    # intraday: piccolo overlap configurato
-                    ov = max(0, getattr(self.cfg, "overlap_seconds", 60))
-                    should_start_dt = resume_anchor_dt - timedelta(seconds=ov)
-        except Exception:
-            pass
-        should_start_s = should_start_dt.isoformat() if should_start_dt else "None"
-    
-        # Stampa finale (3 righe, chiare)
-        print(f"[RESUME-DEBUG] asset={getattr(task,'asset',None)} symbol={symbol} interval={interval} sink={sink}")
-        print(f"[RESUME-DEBUG] requested_start={requested_start_s}  latest_file={latest_path_s}")
-        print(f"[RESUME-DEBUG] resume_anchor={last_saved_s}  should_start_from={should_start_s}  computed_start={will_start_s}")
-
-
-   
     def _missing_1d_days_csv(self, asset: str, symbol: str, interval: str, sink: str,
                              first_day: str, last_day: str) -> list[str]:
         """Identify missing business days in a daily (1d) time series by scanning all CSV parts.
@@ -4276,223 +4493,143 @@ class ThetaSyncManager:
         return [d.date().isoformat() for d in missing]
                 
 
-    def _last_csv_day(self, base_path: str) -> Optional[str]:
-        """Extract the last (most recent) day present in CSV data including rotated part files.
+    def _debug_log_resume(self, task, symbol: str, interval: str, sink: str,
+                          latest_path: Optional[str],
+                          resume_anchor_dt: Optional[datetime],
+                          computed_start_dt: Optional[datetime]) -> None:
+        """
+        Print a compact, explicit resume snapshot:
+          1) requested start date from task,
+          2) latest file path used for resume,
+          3) last saved day/timestamp and the computed resume start.
+        """
+        # 1) "data di partenza indicata nel task"
+        requested_start = getattr(task, "first_date", None) or getattr(task, "start_date", None)
+        # Allow str/None; pretty print
+        requested_start_s = str(requested_start) if requested_start is not None else "None"
+    
+        # 2) "il nome file con i dati più recenti"
+        latest_path_s = latest_path or "None"
+    
+        # 3) "l'ultima data utile ... e da dove dovrebbe ripartire"
+        last_saved_s = resume_anchor_dt.isoformat() if resume_anchor_dt else "None"
+        will_start_s  = computed_start_dt.isoformat() if computed_start_dt else "None"
+    
+        # Expected "should start" (esplicito nel log, non altero la logica)
+        should_start_dt = None
+        try:
+            if resume_anchor_dt is not None:
+                if interval == "1d":
+                    # ripartenza dal giorno successivo alle 00:00:00Z
+                    next_day = (resume_anchor_dt.astimezone(timezone.utc).date() + timedelta(days=1))
+                    should_start_dt = datetime.combine(next_day, datetime.min.time(), tzinfo=timezone.utc)
+                else:
+                    # intraday: piccolo overlap configurato
+                    ov = max(0, getattr(self.cfg, "overlap_seconds", 60))
+                    should_start_dt = resume_anchor_dt - timedelta(seconds=ov)
+        except Exception:
+            pass
+        should_start_s = should_start_dt.isoformat() if should_start_dt else "None"
+    
+        # Stampa finale (3 righe, chiare)
+        print(f"[RESUME-DEBUG] asset={getattr(task,'asset',None)} symbol={symbol} interval={interval} sink={sink}")
+        print(f"[RESUME-DEBUG] requested_start={requested_start_s}  latest_file={latest_path_s}")
+        print(f"[RESUME-DEBUG] resume_anchor={last_saved_s}  should_start_from={should_start_s}  computed_start={will_start_s}")
 
-        This method identifies the latest part file (_partNN) for the given base path, reads the last
-        line from that file, and extracts the date from the first column timestamp. This is used to
-        determine the most recent date in the saved data for resume operations and coverage tracking.
+
+   
+
+    # =========================================================================
+    # (END)
+    # RESUME LOGIC - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # SINK MANAGEMENT - Private Helpers
+    # =========================================================================
+    async def _write_df_to_sink(self, base_path: str, df, sink: str) -> None:
+        """Writes a DataFrame to the configured sink (CSV, Parquet, or InfluxDB).
+
+        This method handles the persistence of data to different storage backends, routing the DataFrame
+        to the appropriate writer based on the sink type. Each sink type handles deduplication, rotation,
+        and overlap safety differently.
 
         Parameters
         ----------
         base_path : str
-            The base file path (e.g., "data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv").
-
-        Returns
-        -------
-        str or None
-            The last day present in ISO format "YYYY-MM-DD" (e.g., "2024-03-15").
-            Returns None if no files exist or if the last line cannot be parsed.
-
-        Example Usage
-        -------------
-        # This is an internal helper method called by:
-        # - _get_first_last_day_from_sink() to determine date ranges
-        # - Resume logic to find the last saved date
-
-        last_day = manager._last_csv_day("data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv")
-        # Returns: "2024-03-15"
-        """
-        target = self._pick_latest_part(base_path, "csv")
-        if not target:
-            target = self._next_part_path(base_path, "csv")  # start from _part01
-        last = self._tail_one_line(target)
-        if not last:
-            return None
-        first = last.split(",", 1)[0].strip()
-        try:
-            dtu = self._as_utc(first)
-            return dtu.date().isoformat()
-        except Exception:
-            return None
-
-
-    def _sink_dir_name(self, sink: str) -> str:
-        """Normalize a sink type string to its corresponding directory name.
-
-        This method converts various sink type spellings and aliases to their canonical directory
-        names used in the file system structure. It handles common variations and ensures consistent
-        folder naming across the data storage hierarchy.
-
-        Parameters
-        ----------
+            The full file path (for CSV/Parquet) or measurement name (for InfluxDB) where data should be written.
+        df : pandas.DataFrame
+            The DataFrame containing market data to persist.
         sink : str
-            The sink type string which may be in various forms (e.g., "CSV", "csv", "svc", "Parquet",
-            "influx", "influxdb", "influxdb3", or any other sink identifier).
+            The sink type. Supported values: 'csv', 'parquet', 'influxdb'.
 
         Returns
         -------
-        str
-            The normalized directory name: "csv", "parquet", "influxdb", or the original sink string
-            if no normalization rule applies. Defaults to "csv" if sink is None or empty.
+        None
+            Data is written to the specified sink but no value is returned.
 
         Example Usage
         -------------
         # This is an internal helper method called by:
-        # - _make_file_basepath() to construct file paths
-        # - _list_series_files() to locate data directories
-        # - Other file system operations that need consistent directory naming
-
-        dir_name = manager._sink_dir_name("CSV")  # Returns: "csv"
-        dir_name = manager._sink_dir_name("influxdb3")  # Returns: "influxdb"
-        dir_name = manager._sink_dir_name(None)  # Returns: "csv" (default)
+        # - _download_and_store_options() after fetching and processing option data
+        # - _download_and_store_equity_or_index() after fetching stock/index data
         """
         s = (sink or "").strip().lower()
-        if s in ("svc", "csv"): return "csv"
-        if s == "parquet": return "parquet"
-        if s in ("influx", "influxdb", "influxdb3"): return "influxdb"
-        return s or "csv"
+        if s == "csv":
+            csv_text = df.to_csv(index=False)
+            await self._append_csv_text(base_path, csv_text)
+        elif s == "parquet":
+            self._append_parquet_df(base_path, df)
+        elif s == "influxdb":
+            await self._append_influx_df(base_path, df)
+        else:
+            raise ValueError(f"Unsupported sink: {sink}")
 
+        
+    
+    def _make_file_basepath(self, asset: str, symbol: str, interval: str, start_iso: str, ext: str) -> str:
+        """Constructs the full file path for storing market data based on asset, symbol, interval, and date.
 
-    def _iso_stamp(self, ts) -> str:
-        """Convert a timestamp to a filename-safe ISO format string in UTC.
-
-        This method takes various timestamp representations (datetime objects, pandas Timestamps, or
-        ISO strings) and converts them to a consistent 'YYYY-MM-DDTHH-MM-SSZ' format using hyphens
-        instead of colons, making the result safe for use in file and directory names on all operating
-        systems (Windows, Linux, macOS).
+        This method creates a standardized directory structure and filename format for organizing market data
+        files. The directory hierarchy is: root/data/{asset}/{symbol}/{interval}/{sink}/, and files are named
+        with an ISO timestamp prefix for chronological sorting.
 
         Parameters
         ----------
-        ts : datetime, pandas.Timestamp, str, or None
-            The timestamp to convert. Accepts timezone-aware or naive datetime objects, pandas
-            Timestamps, ISO format strings, or None. If None, uses the current UTC time.
+        asset : str
+            The asset type (e.g., 'option', 'stock', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h').
+        start_iso : str
+            The ISO datetime string for the data start time (e.g., '2024-01-15T00-00-00Z').
+        ext : str
+            The file extension/sink type (e.g., 'csv', 'parquet', 'influxdb').
 
         Returns
         -------
         str
-            A filename-safe ISO format timestamp string in the form "YYYY-MM-DDTHH-MM-SSZ"
-            (e.g., "2024-03-15T14-30-00Z"). Colons are replaced with hyphens to ensure
-            cross-platform filename compatibility.
+            The complete absolute file path including directory and filename.
 
         Example Usage
         -------------
         # This is an internal helper method called by:
-        # - _make_file_basepath() to generate timestamp-prefixed filenames
-        # - File naming operations throughout the manager
-
-        from datetime import datetime, timezone
-        stamp = manager._iso_stamp(datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc))
-        # Returns: "2024-03-15T14-30-00Z"
-
-        stamp = manager._iso_stamp(None)
-        # Returns: current UTC time like "2024-03-20T10-45-32Z"
+        # - _download_and_store_options() to determine where to save option data
+        # - _download_and_store_equity_or_index() to determine where to save stock/index data
+        # - Various methods that need to construct file paths for data persistence
         """
-        if ts is None:
-            return dt.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-        if hasattr(ts, "to_pydatetime"):
-            ts = ts.to_pydatetime()
-        try:
-            # Usa la tua utility per ottenere un datetime UTC aware
-            ts = self._as_utc(ts)
-        except Exception:
-            # Fallback filename-safe se era una stringa bizzarra
-            return str(ts).replace(":", "-").replace(" ", "T")
-        return ts.strftime("%Y-%m-%dT%H-%M-%SZ")
-    
-    def _min_ts_from_df(self, df) -> Optional[str]:
-        """Best-effort extraction of the minimum timestamp column from a DataFrame."""
-        for col in ("timestamp","TIMESTAMP","datetime","DATETIME","QUOTE_DATETIME"):
-            if col in df.columns:
-                try:
-                    s = df[col]
-                    # fast path: if already string ISO
-                    if s.dtype == object:
-                        # find first non-empty then min
-                        vals = [x for x in s.values if isinstance(x, str) and x]
-                        if vals:
-                            m = min(self._as_utc(v) for v in vals)
-                            return self._iso_stamp(m)
-                    # general path
-                    ts = s.min()
-                    return self._iso_stamp(ts)
-                except Exception:
-                    continue
-        return None
-
-
-
-    def _find_existing_series_base(self, asset, symbol, interval, sink):
-        sink_dir = self._sink_dir_name(sink)
-        folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_dir)
-        if not os.path.isdir(folder):
-            return None
-    
-        # accetta "...-SYMBOL-asset-interval(.|_partNN.)ext"
-        pat = re.compile(
-            rf"-{re.escape(symbol)}-{re.escape(asset)}-{re.escape(interval)}"
-            rf"(?:_part\d{{2}})?\.{re.escape(sink)}$"
-        )
-        for name in os.listdir(folder):
-            if pat.search(name):
-                name_clean = re.sub(r"_part\d{2}(?=\." + re.escape(sink) + r"$)", "", name)
-                return os.path.join(folder, name_clean)
-        return None
-
-
-
-
-    def _find_existing_daily_base_for_day(self, asset, symbol, interval, sink, day_iso):
-        sink_dir = self._sink_dir_name(sink)  # richiede il piccolo helper _sink_dir_name
+        sink_dir = self._sink_dir_name(ext)
         folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
-        if not os.path.isdir(folder):
-            return None
-        suffix = f"-{symbol}-{asset}-{interval}.{sink}"
-        # match: YYYY-MM-DDTHH-MM-SSZ-... oppure legacy YYYY-MM-DD-... (fallback)
-        pat = re.compile(
-            rf"^{re.escape(day_iso)}T?\d{{0,2}}-?\d{{0,2}}-?\d{{0,2}}Z?-"
-            rf"{re.escape(symbol)}-{re.escape(asset)}-{re.escape(interval)}\.{re.escape(sink)}$"
-        )
-        for name in os.listdir(folder):
-            if (name.endswith(suffix) and (name.startswith(day_iso) or pat.match(name))):
-                # rimuovi eventuale _partNN
-                name_clean = re.sub(r"_part\d{2}(?=\." + re.escape(sink) + r"$)", "", name)
-                return os.path.join(folder, name_clean)
-        return None
+        # ⬇️ non creare cartelle per Influx
+        if sink_dir != "influxdb":
+            os.makedirs(folder, exist_ok=True)
+        fname = f"{start_iso}-{symbol}-{asset}-{interval}.{ext}"
+        return os.path.join(folder, fname)
 
-        
-        
 
-    def _pick_latest_part(self, base_path: str, ext: str) -> Optional[str]:
-        """Find the latest existing part for a given daily base path."""
-        base_no_ext = base_path[:-len(ext)-1]  # remove ".ext"
-        candidates: List[str] = []
-        p0 = f"{base_no_ext}.{ext}"
-        if os.path.exists(p0):
-            candidates.append(p0)
-        for i in range(1, 1000):
-            pi = f"{base_no_ext}_part{i:02d}.{ext}"
-            if os.path.exists(pi):
-                candidates.append(pi)
-        return candidates[-1] if candidates else None
-        
-
-    def _ensure_under_cap(self, path: str, cap_mb: int) -> str:
-        """Rotate to a new _partNN file if `path` exceeds the configured cap (in MB)."""
-        if not os.path.exists(path):
-            return path
-        size_mb = os.path.getsize(path) / (1024 * 1024)
-        if size_mb < cap_mb:
-            return path
-        base, ext = os.path.splitext(path)
-        if "_part" in base and base[-2:].isdigit():
-            prefix = base[:-2]
-            n = int(base[-2:])
-            new_base = f"{prefix}{n+1:02d}"
-        else:
-            new_base = f"{base}_part01"
-        return f"{new_base}{ext}"
-
+            
     async def _append_csv_text(
         self, base_path: str, csv_text: str, *,
         force_first_part: int | None = None,
@@ -4637,6 +4774,243 @@ class ThetaSyncManager:
 
             
 
+    def _append_parquet_df(
+        self,
+        base_path: str,
+        df_new,
+        *,
+        force_first_part: int | None = None,
+        stop_before_part: int | None = None,
+    ) -> int:
+        """
+        Write DataFrame to Parquet format using atomic, size-capped, append-by-rotation part files.
+
+        This method provides intelligent data persistence with automatic deduplication, stable sorting,
+        and file size management. It never modifies existing Parquet files in-place; instead, it creates
+        new numbered part files (_partNN.parquet) with atomic write guarantees.
+
+        Parameters
+        ----------
+        base_path : str
+            Base file path. Any existing _partNN suffix is automatically removed before processing.
+            Example: "data/option/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-option-5m.parquet"
+        df_new : pandas.DataFrame
+            New data to append. Must contain valid data; empty DataFrames are skipped.
+        force_first_part : int, optional
+            Default: None
+            If specified, forces writing to start at this part number, bypassing latest part detection.
+            Used for head-refill operations.
+        stop_before_part : int, optional
+            Default: None
+            If specified, stops writing before reaching this part number. Prevents overwriting
+            existing parts during head-refill operations.
+
+        Returns
+        -------
+        int
+            Number of rows successfully written to disk.
+
+        Example Usage
+        -------------
+        # Called by _write_parquet_from_csv and option download methods
+        rows_written = manager._append_parquet_df(
+            base_path="data/stock/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-stock-5m.parquet",
+            df_new=dataframe_with_new_bars
+        )
+        # Returns: 1500 (number of rows written)
+
+        # Head-refill with constraints:
+        rows_written = manager._append_parquet_df(
+            base_path="...", df_new=df,
+            force_first_part=1, stop_before_part=8
+        )
+
+        Behavior
+        --------
+        1. Sorting: Orders by timestamp → expiration → strike → right (when columns present).
+        2. Deduplication: Removes duplicates within new batch and at boundary with last part.
+        3. Boundary handling: For options, uses complex key (timestamp, expiration, strike, right).
+           For stocks/indices, uses timestamp only with tail-based deduplication.
+        4. Size management: Binary searches to find maximum rows fitting within max_file_mb limit.
+        5. Rotation: Automatically creates next _partNN file when current exceeds size limit.
+        6. Atomic writes: Uses temporary file + os.replace to prevent corruption.
+
+        Notes
+        -----
+        - Never appends data inside existing Parquet files; always creates new part files.
+        - Assumes timestamps are ET-naive; no timezone conversion performed.
+        - Uses overlap_seconds config for boundary deduplication window.
+        - For options: deduplicates on (timestamp, expiration, strike, right).
+        - For stocks/indices: deduplicates on timestamp only.
+        - Implements binary search to efficiently pack maximum rows per part.
+        - Zero-byte files are automatically cleaned up.
+        - PyArrow engine used for optimal Parquet I/O performance.
+        """
+    
+        # normalizza: se arriva un path già con _partNN rimuovilo
+        base_path = re.sub(r"_part\d{2}(?=\.(?:csv|parquet)$)", "", base_path)
+    
+        if df_new is None or len(df_new) == 0:
+            return 0
+    
+        # --- keys & columns ---
+        ts_col = "timestamp"
+        key_candidates = [ts_col, "symbol", "expiration", "strike", "right", "sequence"]  # include 'sequence' for ticks
+        key_cols = [c for c in key_candidates if c in df_new.columns]
+        if not key_cols:
+            key_cols = [ts_col] if ts_col in df_new.columns else list(df_new.columns[:1])
+            
+        # --- FRONTIER DEDUPE vs latest part (tail-resume safe) ---
+        # HEAD-REFILL 
+        latest_part = None if force_first_part is not None else getattr(self, "_pick_latest_part", lambda *_: None)(base_path, "parquet")
+        if latest_part and os.path.exists(latest_part) and os.path.getsize(latest_part) > 0 and ts_col in df_new.columns:
+            cols_to_read = [c for c in key_cols if c in df_new.columns]
+            try:
+                last_df = pd.read_parquet(latest_part, columns=cols_to_read)
+            except Exception:
+                last_df = None
+
+            if last_df is not None and not last_df.empty and ts_col in last_df.columns:
+                last_max_ts = last_df[ts_col].max()
+                if pd.notna(last_max_ts):
+                    overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
+                    cutoff = last_max_ts - pd.Timedelta(seconds=overlap)
+
+                    # 1) drop <= cutoff (solo tail-resume; per head-refill questa sezione è saltata)
+                    df_new = df_new[df_new[ts_col] > cutoff].copy()
+
+                    # 2) boundary dedupe: distingui opzioni (chiave complessa) vs stock/index (solo timestamp)
+                    if not df_new.empty:
+                        if len(cols_to_read) > 1:
+                            # OPZIONI: chiave complessa (timestamp + expiration + strike + right)
+                            same_ts_mask = df_new[ts_col].eq(last_max_ts)
+                            if same_ts_mask.any():
+                                existing_keys = set(map(tuple, last_df.loc[last_df[ts_col].eq(last_max_ts), cols_to_read].to_numpy()))
+                                if existing_keys:
+                                    eq_df = df_new.loc[same_ts_mask, cols_to_read]
+                                    keep_mask = ~eq_df.apply(tuple, axis=1).isin(existing_keys)
+                                    df_new = pd.concat(
+                                        [df_new.loc[~same_ts_mask], df_new.loc[same_ts_mask][keep_mask]],
+                                        ignore_index=True
+                                    )
+                        else:
+                            # STOCK/INDEX: solo timestamp
+                            try:
+                                tail_df = pd.read_parquet(latest_part).tail(500)
+                                if ts_col in tail_df.columns:
+                                    tail_ts = pd.to_datetime(tail_df[ts_col], errors="coerce")
+                                    if getattr(tail_ts.dtype, "tz", None) is not None:
+                                        tail_ts = tail_ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                                    existing_ts = set(tail_ts.dropna())
+                                    if existing_ts:
+                                        use_seq = (interval == "tick" and "sequence" in df_new.columns and "sequence" in tail_df.columns)
+                                        
+                                        before = len(df_new)
+                                        
+                                        if use_seq:
+                                            # Dedup su coppia (timestamp, sequence) per evitare di collassare tick distinti
+                                            existing_keys = set(zip(tail_df[ts_col], tail_df["sequence"]))
+                                            new_keys = list(zip(df_new[ts_col], df_new["sequence"]))
+                                            df_new = df_new[[key not in existing_keys for key in new_keys]]
+                                        else:
+                                            new_ts = pd.to_datetime(df_new[ts_col], errors="coerce")
+                                            df_new = df_new[~new_ts.isin(existing_ts)]
+                                        
+                                        removed = before - len(df_new)
+                                        if removed > 0:
+                                            print(f"[PARQUET][BOUNDARY-DEDUP] removed {removed} {'tick (ts+seq)' if use_seq else 'stock/index (ts)'} duplicates")
+
+                            except Exception as e:
+                                print(f"[PARQUET][WARN] stock/index boundary dedup failed: {e}")
+
+    
+        if df_new is None or df_new.empty:
+            return 0
+    
+        # --- ORDER & INTRA-BATCH DEDUPE ---
+        order_cols = [c for c in [ts_col, "expiration", "strike", "right"] if c in df_new.columns]
+        if order_cols:
+            df_new = df_new.sort_values(order_cols, kind="mergesort")  # stable
+        df_new = df_new.drop_duplicates(subset=key_cols, keep="last")
+    
+        # --- SIZE-CAP chunking (Parquet usa fattore 6.4 rispetto al baseline CSV) ---
+        max_mb = float(getattr(self.cfg, "max_file_mb", 64) or 64.0)
+        max_bytes = int(max_mb * 1024 * 1024)
+    
+        rows = len(df_new)
+        if rows == 0:
+            return 0
+    
+        est_bytes = int(df_new.memory_usage(index=False, deep=True).sum())
+        bytes_per_row = max(1, est_bytes // max(rows, 1))
+        base_rows = max(1000, max_bytes // bytes_per_row)
+        rows_per_part = max(1000, int(base_rows * 6.4))
+    
+        # --- head-refill controls & naming helpers ---
+        def _part_num_from_path(p: str) -> int:
+            m = _re.search(r"_part(\d{2})\.parquet$", p or "")
+            return int(m.group(1)) if m else 0
+    
+        base_no_ext = os.path.splitext(base_path)[0]
+    
+        if force_first_part is not None:
+            next_part = int(force_first_part)
+        else:
+            latest = getattr(self, "_pick_latest_part")(base_path, "parquet")
+            next_part = _part_num_from_path(latest) + 1 if latest else 1
+    
+        def _make_target(n: int) -> str:
+            return f"{base_no_ext}_part{n:02d}.parquet"
+    
+        def _should_stop(n: int) -> bool:
+            return (stop_before_part is not None) and (n >= int(stop_before_part))
+    
+        # --- ATOMIC WRITE LOOP (one chunk -> one new part) ---
+        write_count = 0
+    
+        def _write_one_chunk(chunk: pd.DataFrame) -> bool:
+            nonlocal next_part, write_count
+    
+            # rispetto dello stop: non creare/oltrepassare part esistente successivo
+            if _should_stop(next_part):
+                return False
+    
+            target = _make_target(next_part)
+    
+            # non sovrascrivere: se esiste già e ha contenuto, avanza
+            while os.path.exists(target) and os.path.getsize(target) > 0:
+                next_part += 1
+                if _should_stop(next_part):
+                    return False
+                target = _make_target(next_part)
+    
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tbl = pa.Table.from_pandas(chunk, preserve_index=False)
+            tmp = f"{target}.{uuid.uuid4().hex}.tmp"
+            pq.write_table(tbl, tmp)
+            try:
+                os.replace(tmp, target)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+            write_count += len(chunk)
+            next_part += 1
+            return True
+    
+        if rows_per_part >= rows:
+            _write_one_chunk(df_new)
+        else:
+            for start in range(0, rows, rows_per_part):
+                if not _write_one_chunk(df_new.iloc[start:start + rows_per_part]):
+                    break
+    
+        return int(write_count)
+
+
+
     def _write_parquet_from_csv(self, base_path: str, csv_text: str) -> None:
         """
         Convert CSV text to DataFrame and persist into capped Parquet parts
@@ -4673,6 +5047,725 @@ class ThetaSyncManager:
 
         
     # -------------------- INFLUXDB WRITER (append with overlap) --------------------
+    def _list_series_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> list:
+        """
+        Return only canonical daily-part files for (asset, symbol, interval, sink), sorted by name.
+        Canonical pattern (strict):
+            YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.(csv|parquet)
+    
+        Any non-matching file (e.g., "no dup 2025-11-07T...csv") is ignored.
+    
+        Parameters
+        ----------
+        asset : str
+            "option", "stock", or "index".
+        symbol : str
+            Underlying symbol (case-insensitive on matching).
+        interval : str
+            Timeframe (e.g., "5m", "1m", "1d").
+        sink_lower : str
+            "csv" or "parquet".
+    
+        Returns
+        -------
+        list
+            Sorted list of absolute file paths (canonical only).
+        """
+    
+        ext = ".csv" if sink_lower == "csv" else ".parquet"
+        series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
+        if not os.path.isdir(series_dir):
+            return []
+    
+        sym_u = symbol.upper()
+        asset_l = asset.lower()
+        interval_l = interval.lower()
+    
+        # Strict canonical filename:
+        #  YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext
+        pat = re.compile(
+            rf'^\d{{4}}-\d{{2}}-\d{{2}}T00-00-00Z-{re.escape(sym_u)}-{asset_l}-{interval_l}_part\d+{re.escape(ext)}$',
+            re.IGNORECASE
+        )
+    
+        files = []
+        for f in os.listdir(series_dir):
+            # Quick extension check
+            if not f.lower().endswith(ext):
+                continue
+            # Strict canonical check
+            if not pat.match(f):
+                continue
+            files.append(os.path.join(series_dir, f))
+    
+        files.sort()
+        return files
+
+        
+    
+    def _series_earliest_and_latest_day(self, asset: str, symbol: str, interval: str, sink_lower: str):
+        """
+        Determine the earliest and latest calendar days covered by a time series.
+
+        This method scans all canonical part files for a given series and extracts the date range
+        by inspecting filenames (which encode the starting day). It's used for coverage tracking
+        and determining what data already exists before downloading.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "option", "stock", or "index".
+        symbol : str
+            Ticker symbol (case-insensitive matching).
+        interval : str
+            Timeframe (e.g., "5m", "1m", "1d").
+        sink_lower : str
+            Sink format: "csv" or "parquet".
+
+        Returns
+        -------
+        tuple[str or None, str or None, list]
+            Three-element tuple: (earliest_day, latest_day, files)
+            - earliest_day: ISO date "YYYY-MM-DD" from earliest filename prefix, or None.
+            - latest_day: ISO date "YYYY-MM-DD" from latest filename prefix, or None.
+            - files: List of absolute file paths for all canonical part files, sorted by name.
+            Returns (None, None, []) if no files exist.
+
+        Example Usage
+        -------------
+        # Called by _get_first_last_day_from_sink and coverage tracking methods
+        earliest, latest, files = manager._series_earliest_and_latest_day(
+            asset="stock", symbol="AAPL", interval="5m", sink_lower="parquet"
+        )
+        # Returns: ("2020-01-02", "2024-03-15", [list of file paths])
+
+        Notes
+        -----
+        - Uses _list_series_files to get canonical part files only (excludes legacy base files).
+        - Extracts dates from filename format: "YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext"
+        - Both earliest and latest are derived from filename prefixes (not file contents).
+        - For daily-part files, each file represents exactly one calendar day.
+        """
+    
+        files = self._list_series_files(asset, symbol, interval, sink_lower)
+        if not files:
+            return None, None, []
+    
+        def _start_from_filename(path: str) -> str | None:
+            base = os.path.basename(path)
+            # expected: 'YYYY-MM-DDT...-SYMBOL-asset-interval.csv'
+            return base.split("T", 1)[0] if "T" in base else None
+    
+        earliest = None
+        latest = None
+    
+        for path in files:
+            # compute earliest from filename
+            s = _start_from_filename(path)
+            if s and (earliest is None or s < earliest):
+                earliest = s
+    
+            # compute latest directly from filename prefix (daily files are one-day each)
+            if s and (latest is None or s > latest):
+                latest = s
+
+                
+        return earliest, latest, files
+
+
+    def _list_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> list[str]:
+        """
+        Return all files associated with a specific trading day, including all part files.
+
+        This method finds both legacy base files and all numbered part files (_part01, _part02, etc.)
+        that belong to a single trading day. It's used for operations that need to process or analyze
+        all data fragments for a given day.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "option", "stock", or "index".
+        symbol : str
+            Ticker symbol.
+        interval : str
+            Timeframe (e.g., "5m", "1d").
+        sink : str
+            File format: "csv" or "parquet".
+        day_iso : str
+            Trading day in ISO format "YYYY-MM-DD".
+
+        Returns
+        -------
+        list[str]
+            Sorted list of absolute file paths matching the day prefix. Includes both base file
+            (if exists) and all _partNN files. Returns empty list if no files found or directory
+            doesn't exist.
+
+        Example Usage
+        -------------
+        # Called by _day_parts_status, _csv_has_day, and cleanup operations
+        day_files = manager._list_day_files(
+            asset="stock", symbol="AAPL", interval="5m",
+            sink="csv", day_iso="2024-03-15"
+        )
+        # Returns: [
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m.csv",
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part02.csv"
+        # ]
+
+        Notes
+        -----
+        - Matches filename prefix: "{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
+        - Includes files with and without _partNN suffix.
+        - Returns sorted list for stable ordering in processing operations.
+        """
+        sink_dir = self._sink_dir_name(sink)
+        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
+        if not os.path.isdir(folder):
+            return []
+    
+        # Prefisso esatto del giorno (compatibile sia con base che con _partNN)
+        prefix = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
+        ext = f".{sink.lower()}"
+    
+        out = []
+        try:
+            for name in os.listdir(folder):
+                # BASTA prefisso + estensione: prende sia "... .csv" sia "..._partNN.csv"
+                if name.startswith(prefix) and name.endswith(ext):
+                    out.append(os.path.join(folder, name))
+        except FileNotFoundError:
+            return []
+    
+        # Ordinamento stabile
+        return sorted(out)
+
+
+    
+    def _list_day_part_files(self, asset: str, symbol: str, interval: str, sink_lower: str, day_iso: str):
+        """Return sorted list of (part_num, filepath) for the given day."""
+        folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, self._sink_dir_name(sink_lower))
+        if not os.path.isdir(folder):
+            return []
+        base = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
+        pat = re.compile(rf"^{re.escape(base)}_part(\d{{2}})\.{re.escape(sink_lower)}$")
+        out = []
+        for name in os.listdir(folder):
+            m = pat.match(name)
+            if m:
+                out.append((int(m.group(1)), os.path.join(folder, name)))
+        out.sort(key=lambda x: x[0])
+        return out
+    
+    def _day_parts_status(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> dict:
+        """
+        Inspect that day's files. Support days with ONLY _partNN files (no legacy base).
+        Returns:
+          - base_path: canonical base path (may not exist on disk)
+          - has_base : True if legacy non-part file exists
+          - parts    : list of present part indices (e.g., [1,2,5])
+          - missing  : gaps inside [1..max(parts)]
+          - has_mixed: legacy base + parts together
+          - needs_rebuild: True if head missing or gaps -> purge & rewrite from _part01
+        """
+    
+        ext = sink
+        # Canonical base path (anche se non esiste su disco)
+        base_path = self._make_file_basepath(asset, symbol, interval, f"{day_iso}T00-00-00Z", sink)
+    
+        # Elenca tutti i file del giorno
+        day_files = self._list_day_files(asset, symbol, interval, sink, day_iso)
+    
+        # Rileva presenza del legacy "base" (senza _partNN)
+        has_base = os.path.exists(base_path)
+    
+        # Estrai gli indici dei parts presenti
+        parts = []
+        if day_files:
+            pat = re.compile(rf"_part(\d{{2}})\.{re.escape(ext)}$")
+            for p in day_files:
+                m = pat.search(p)
+                if m:
+                    parts.append(int(m.group(1)))
+        parts = sorted(set(parts))
+    
+        # Calcola i buchi
+        missing = []
+        if parts:
+            mx = max(parts)
+            missing = [i for i in range(1, mx + 1) if i not in parts]
+    
+        has_mixed = has_base and bool(parts)
+        needs_rebuild = (1 not in parts and bool(parts)) or bool(missing) or has_mixed
+    
+        return {
+            "base_path": base_path,
+            "has_base": has_base,
+            "parts": parts,
+            "missing": missing,
+            "has_mixed": has_mixed,
+            "needs_rebuild": needs_rebuild,
+        }
+        
+
+
+    def _find_existing_series_base(self, asset, symbol, interval, sink):
+        sink_dir = self._sink_dir_name(sink)
+        folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_dir)
+        if not os.path.isdir(folder):
+            return None
+    
+        # accetta "...-SYMBOL-asset-interval(.|_partNN.)ext"
+        pat = re.compile(
+            rf"-{re.escape(symbol)}-{re.escape(asset)}-{re.escape(interval)}"
+            rf"(?:_part\d{{2}})?\.{re.escape(sink)}$"
+        )
+        for name in os.listdir(folder):
+            if pat.search(name):
+                name_clean = re.sub(r"_part\d{2}(?=\." + re.escape(sink) + r"$)", "", name)
+                return os.path.join(folder, name_clean)
+        return None
+
+
+
+
+    def _find_existing_daily_base_for_day(self, asset, symbol, interval, sink, day_iso):
+        sink_dir = self._sink_dir_name(sink)  # richiede il piccolo helper _sink_dir_name
+        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
+        if not os.path.isdir(folder):
+            return None
+        suffix = f"-{symbol}-{asset}-{interval}.{sink}"
+        # match: YYYY-MM-DDTHH-MM-SSZ-... oppure legacy YYYY-MM-DD-... (fallback)
+        pat = re.compile(
+            rf"^{re.escape(day_iso)}T?\d{{0,2}}-?\d{{0,2}}-?\d{{0,2}}Z?-"
+            rf"{re.escape(symbol)}-{re.escape(asset)}-{re.escape(interval)}\.{re.escape(sink)}$"
+        )
+        for name in os.listdir(folder):
+            if (name.endswith(suffix) and (name.startswith(day_iso) or pat.match(name))):
+                # rimuovi eventuale _partNN
+                name_clean = re.sub(r"_part\d{2}(?=\." + re.escape(sink) + r"$)", "", name)
+                return os.path.join(folder, name_clean)
+        return None
+
+        
+        
+
+    def _pick_latest_part(self, base_path: str, ext: str) -> Optional[str]:
+        """Find the latest existing part for a given daily base path."""
+        base_no_ext = base_path[:-len(ext)-1]  # remove ".ext"
+        candidates: List[str] = []
+        p0 = f"{base_no_ext}.{ext}"
+        if os.path.exists(p0):
+            candidates.append(p0)
+        for i in range(1, 1000):
+            pi = f"{base_no_ext}_part{i:02d}.{ext}"
+            if os.path.exists(pi):
+                candidates.append(pi)
+        return candidates[-1] if candidates else None
+        
+
+    def _next_part_path(self, path: str, ext: str) -> str:
+        base, _ = os.path.splitext(path)
+        if "_part" in base and base[-2:].isdigit():
+            prefix, n = base[:-2], int(base[-2:])
+            return f"{prefix}{n+1:02d}.{ext}"
+        return f"{base}_part01.{ext}"
+
+    
+
+    
+    def _ensure_under_cap(self, path: str, cap_mb: int) -> str:
+        """Rotate to a new _partNN file if `path` exceeds the configured cap (in MB)."""
+        if not os.path.exists(path):
+            return path
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        if size_mb < cap_mb:
+            return path
+        base, ext = os.path.splitext(path)
+        if "_part" in base and base[-2:].isdigit():
+            prefix = base[:-2]
+            n = int(base[-2:])
+            new_base = f"{prefix}{n+1:02d}"
+        else:
+            new_base = f"{base}_part01"
+        return f"{new_base}{ext}"
+
+    def _purge_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> None:
+        """Delete ALL files for that day (base + _partNN)."""
+        for p in self._list_day_files(asset, symbol, interval, sink, day_iso):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
+
+    # ---------------------------- CACHE ------------------------------
+
+    def _sink_dir_name(self, sink: str) -> str:
+        """Normalize a sink type string to its corresponding directory name.
+
+        This method converts various sink type spellings and aliases to their canonical directory
+        names used in the file system structure. It handles common variations and ensures consistent
+        folder naming across the data storage hierarchy.
+
+        Parameters
+        ----------
+        sink : str
+            The sink type string which may be in various forms (e.g., "CSV", "csv", "svc", "Parquet",
+            "influx", "influxdb", "influxdb3", or any other sink identifier).
+
+        Returns
+        -------
+        str
+            The normalized directory name: "csv", "parquet", "influxdb", or the original sink string
+            if no normalization rule applies. Defaults to "csv" if sink is None or empty.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _make_file_basepath() to construct file paths
+        # - _list_series_files() to locate data directories
+        # - Other file system operations that need consistent directory naming
+
+        dir_name = manager._sink_dir_name("CSV")  # Returns: "csv"
+        dir_name = manager._sink_dir_name("influxdb3")  # Returns: "influxdb"
+        dir_name = manager._sink_dir_name(None)  # Returns: "csv" (default)
+        """
+        s = (sink or "").strip().lower()
+        if s in ("svc", "csv"): return "csv"
+        if s == "parquet": return "parquet"
+        if s in ("influx", "influxdb", "influxdb3"): return "influxdb"
+        return s or "csv"
+
+
+    def _last_csv_day(self, base_path: str) -> Optional[str]:
+        """Extract the last (most recent) day present in CSV data including rotated part files.
+
+        This method identifies the latest part file (_partNN) for the given base path, reads the last
+        line from that file, and extracts the date from the first column timestamp. This is used to
+        determine the most recent date in the saved data for resume operations and coverage tracking.
+
+        Parameters
+        ----------
+        base_path : str
+            The base file path (e.g., "data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv").
+
+        Returns
+        -------
+        str or None
+            The last day present in ISO format "YYYY-MM-DD" (e.g., "2024-03-15").
+            Returns None if no files exist or if the last line cannot be parsed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _get_first_last_day_from_sink() to determine date ranges
+        # - Resume logic to find the last saved date
+
+        last_day = manager._last_csv_day("data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv")
+        # Returns: "2024-03-15"
+        """
+        target = self._pick_latest_part(base_path, "csv")
+        if not target:
+            target = self._next_part_path(base_path, "csv")  # start from _part01
+        last = self._tail_one_line(target)
+        if not last:
+            return None
+        first = last.split(",", 1)[0].strip()
+        try:
+            dtu = self._as_utc(first)
+            return dtu.date().isoformat()
+        except Exception:
+            return None
+
+
+    def _last_csv_timestamp(self, path: str) -> Optional[str]:
+        """
+        Return the last timestamp of the CSV **as naive ET string** ("YYYY-MM-DD HH:MM:SS").
+        ThetaData intraday history CSVs carry ET times without timezone info.
+        """
+
+        if not os.path.exists(path):
+            return None
+        try:
+            head = pd.read_csv(path, nrows=0)
+        except Exception:
+            return None
+    
+        cols = list(head.columns)
+        time_candidates = ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"]
+        tcol = next((c for c in time_candidates if c in cols), None)
+        if not tcol:
+            return None
+    
+        try:
+            s = pd.read_csv(path, usecols=[tcol])[tcol]
+            # Parse **without** assuming UTC; treat values as naive ET.
+            ts = pd.to_datetime(s, errors="coerce")
+    
+            # If any timezone-aware values slip in, convert to ET and drop tz.
+            if getattr(ts.dtype, "tz", None) is not None:
+                try:
+                    ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                except Exception:
+                    ts = ts.dt.tz_localize(None)
+    
+            ts = ts.dropna()
+            if ts.empty:
+                return None
+            # Return as naive ET string (no 'Z')
+            return ts.iloc[-1].strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+
+    
+    
+    ### >>> REALTIME INTRADAY WINDOW (inclusive ET) — HELPERS [BEGIN]
+    @staticmethod
+    def _tail_csv_last_n_lines(self, path: str, n: int = 64) -> list[str]:
+        """
+        Read the last N non-empty lines from a CSV file without loading the entire file.
+
+        This method efficiently reads from the end of large CSV files using backward chunked
+        reading, which is much faster than loading and tailing the entire file. It's used for
+        extracting the most recent timestamps and performing boundary deduplication.
+
+        Parameters
+        ----------
+        path : str
+            Absolute path to the CSV file.
+        n : int, optional
+            Default: 64
+            Maximum number of lines to return.
+
+        Returns
+        -------
+        list[str]
+            List of up to N non-empty lines from the end of the file, ordered from newest
+            (most recent) to oldest. Returns empty list if file doesn't exist or is empty.
+
+        Example Usage
+        -------------
+        # Called by _last_csv_timestamp and boundary deduplication operations
+        last_lines = manager._tail_csv_last_n_lines(
+            path="data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
+            n=64
+        )
+        # Returns: ["2024-03-15T20:00:00Z,150.23,150.45,...", ...]
+
+        Notes
+        -----
+        - Uses 4KB block-based backward reading for efficiency on large files.
+        - Strips carriage returns and newlines from each line.
+        - Skips empty lines automatically.
+        - Does not parse CSV structure; returns raw text lines.
+        - Optimal for extracting timestamps without pandas overhead.
+        """
+        if not os.path.exists(path):
+            return []
+        out = []
+        block = 4096
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            buf = b""
+            while pos > 0 and len(out) < n:
+                take = block if pos >= block else pos
+                f.seek(pos - take)
+                chunk = f.read(take)
+                pos -= take
+                buf = chunk + buf
+                while b"\n" in buf and len(out) < n:
+                    buf, line = buf.rsplit(b"\n", 1)
+                    s = line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                    if s:
+                        out.append(s)
+            if buf and len(out) < n:
+                s = buf.decode("utf-8", errors="ignore").rstrip("\r\n")
+                if s:
+                    out.append(s)
+        return out  # newest-first
+    
+    def _tail_one_line(self, path: str) -> Optional[str]:
+        """Efficiently read the last line of a text file (used for CSV).
+
+        Works even if the file does not end with a newline or is a single-line file.
+        Uses only b"\\n" as the line separator (CRLF is handled by stripping).
+        """
+        with open(path, "rb") as f:
+            try:
+                f.seek(-2, os.SEEK_END)
+                while True:
+                    b = f.read(1)
+                    if b == b"\n":
+                        break
+                    f.seek(-2, os.SEEK_CUR)
+            except OSError:
+                f.seek(0)
+            last = f.readline().decode("utf-8", errors="ignore").rstrip("\r\n")
+            return last or None
+
+    def _parse_csv_first_col_as_dt(self, line: str):
+        """Parse the first column of a CSV line as an ISO datetime string and return a UTC-aware datetime.
+
+        This helper method extracts the first comma-separated value from a CSV line, interprets it as
+        an ISO 8601 formatted timestamp, and converts it to a timezone-aware datetime object in UTC.
+        Returns None if parsing fails, making it safe for handling malformed or non-timestamp data.
+
+        Parameters
+        ----------
+        line : str
+            A single line from a CSV file where the first column contains an ISO 8601 timestamp
+            (e.g., "2024-03-15T14:30:00Z,150.23,100,...").
+
+        Returns
+        -------
+        datetime or None
+            A timezone-aware datetime object in UTC timezone representing the parsed timestamp.
+            Returns None if the line is empty, malformed, or the first column cannot be parsed as a date.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _tail_csv_last_n_lines() to extract timestamps from CSV tail lines
+        # - _compute_intraday_window_et() to determine resume start times
+        # - Other methods that need to parse timestamps from CSV data quickly
+
+        line = "2024-03-15T14:30:00Z,150.23,100,..."
+        ts = manager._parse_csv_first_col_as_dt(line)
+        # Returns: datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc)
+        """
+        first = line.split(",", 1)[0].strip()
+        try:
+            return dt.fromisoformat(first.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            return None
+    
+    
+    def _extract_days_from_df(self, df, fallback_day_iso: str) -> tuple[str, str]:
+        """Return (first_day, last_day) as 'YYYY-MM-DD'. Fallback to provided day if needed."""
+
+        tcol = None
+        for c in ("created", "timestamp", "date"):
+            if c in df.columns:
+                tcol = c
+                break
+        if tcol in ("created", "timestamp"):
+            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True)
+            days = ts.dt.date.astype(str).dropna()
+        elif tcol == "date":
+            days = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str).dropna()
+        else:
+            days = pd.Series([fallback_day_iso], dtype=str)
+        return days.min(), days.max()
+
+    def _detect_time_col(self, cols):
+        """Best-effort time column detection for intraday options bars."""
+        for c in ("datetime","timestamp","ts","QUOTE_DATETIME","TRADE_DATETIME","QUOTE_UNIXTIME","TRADE_UNIXTIME"):
+            if c in cols: return c
+        return None
+    
+    def _first_timestamp_in_csv(self, path: str):
+        """Read a small chunk and return the earliest timestamp as pandas.Timestamp(UTC) or None."""
+
+        try:
+            df = pd.read_csv(path, nrows=500)
+            if df is None or df.empty:
+                return None
+            col = self._detect_time_col(df.columns)
+            if not col:
+                return None
+            s = df[col]
+            # try unix seconds first, fallback to parse as datetime string
+            v = pd.to_datetime(s, unit="s", utc=True, errors="coerce")
+            if v.isna().all():
+                v = pd.to_datetime(s, utc=True, errors="coerce")
+            if v.isna().all():
+                return None
+            return v.min()
+        except Exception:
+            return None
+
+
+    def _first_timestamp_in_parquet(self, path: str, ts_candidates=("timestamp","ts","time","datetime")):
+        # legge il primo timestamp dal primo row group del parquet
+        pf = pq.ParquetFile(path)
+        names = set(pf.schema_arrow.names)
+        col = next((c for c in ts_candidates if c in names), None)
+        if not col:
+            return None
+        try:
+            arr = pf.read_row_group(0, columns=[col]).column(0)
+            # torna oggetto python (pandas gestisce conversione a Timestamp)
+            return arr[0].as_py() if len(arr) else None
+        except Exception:
+            return None
+
+
+
+
+        
+    
+    def _max_file_timestamp(self, path: str, tcol: str, sink_lower: str):
+        """
+        Ritorna il MAX timestamp (naive UTC) dalla colonna tcol in CSV o Parquet.
+        Se non esiste/errore → None.
+        """
+
+        try:
+            df = self._read_minimal_frame(path, [tcol], sink_lower)
+            if tcol not in df.columns:
+                return None
+            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True).dt.tz_localize(None)
+            if ts.notna().any():
+                return ts.max()
+        except Exception:
+            pass
+        return None
+
+
+        
+
+    def _read_minimal_frame(self, path: str, usecols: list, sink_lower: str):
+        """
+        Legge SOLO le colonne richieste da un file CSV o Parquet.
+        - Normalizza 'timestamp' in naive UTC (senza tz) se presente.
+        - Non fa nessuna altra trasformazione.
+        """
+
+        sink_lower = (sink_lower or "csv").lower()
+        if sink_lower == "csv":
+            # CSV: limitiamo le colonne in read
+            head = pd.read_csv(path, nrows=0)
+            cols = [c for c in usecols if c in head.columns]
+            df = pd.read_csv(path, usecols=cols) if cols else pd.read_csv(path)
+        else:
+            # PARQUET: proviamo a leggere solo le colonne richieste
+            try:
+                df = pd.read_parquet(path, columns=usecols)
+            except Exception:
+                df = pd.read_parquet(path)  # fallback, poi sottoselezioniamo
+                keep = [c for c in usecols if c in df.columns]
+                if keep:
+                    df = df[keep]
+    
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
+        return df
+    
+
+    # =========================================================================
+    # (END)
+    # SINK MANAGEMENT - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # INFLUXDB - Private Helpers
+    # =========================================================================
     def _ensure_influx_client(self):
         """
         InfluxDB 3 client (FlightSQL).
@@ -4770,6 +5863,36 @@ class ThetaSyncManager:
 
 
     
+    def _influx_last_ts_between(self, measurement: str, start_utc: pd.Timestamp, end_utc: pd.Timestamp):
+        """
+        Ritorna l'ultimo timestamp (tz-aware UTC) presente in [start_utc, end_utc) per il measurement,
+        oppure None se vuoto. Usa SQL Influx v3.
+        """
+        # costruisci client/query function come negli altri helper
+        client = getattr(self, "_influx", None)
+        if client is None and hasattr(self, "client_influx"):
+            client = self.client_influx
+        if client is None:
+            client = InfluxDBClient3(host=self.cfg.influx_url, token=self.cfg.influx_token,
+                                     database=self.cfg.influx_bucket, org=None)
+    
+        s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        e = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        q = (
+            f'SELECT MAX(time) AS t FROM "{measurement}" '
+            f"WHERE time >= TIMESTAMP '{s}' AND time < TIMESTAMP '{e}'"
+        )
+        try:
+            t = client.query(q)
+            df = t.to_pandas() if hasattr(t, "to_pandas") else None
+            if df is None or df.empty or "t" not in df.columns:
+                return None
+            ts = pd.to_datetime(df["t"].iloc[0], utc=True, errors="coerce")
+            return ts if pd.notna(ts) else None
+        except Exception as ex:
+            print(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
+            return None
+
     async def _append_influx_df(self, base_path: str, df_new) -> int:
         """
         Append in InfluxDB 3 (FlightSQL) SENZA global cutoff.
@@ -4933,1168 +6056,6 @@ class ThetaSyncManager:
         return written
     
 
-    def _tail_one_line(self, path: str) -> Optional[str]:
-        """Efficiently read the last line of a text file (used for CSV).
-
-        Works even if the file does not end with a newline or is a single-line file.
-        Uses only b"\\n" as the line separator (CRLF is handled by stripping).
-        """
-        with open(path, "rb") as f:
-            try:
-                f.seek(-2, os.SEEK_END)
-                while True:
-                    b = f.read(1)
-                    if b == b"\n":
-                        break
-                    f.seek(-2, os.SEEK_CUR)
-            except OSError:
-                f.seek(0)
-            last = f.readline().decode("utf-8", errors="ignore").rstrip("\r\n")
-            return last or None
-
-    def _last_csv_timestamp(self, path: str) -> Optional[str]:
-        """
-        Return the last timestamp of the CSV **as naive ET string** ("YYYY-MM-DD HH:MM:SS").
-        ThetaData intraday history CSVs carry ET times without timezone info.
-        """
-
-        if not os.path.exists(path):
-            return None
-        try:
-            head = pd.read_csv(path, nrows=0)
-        except Exception:
-            return None
-    
-        cols = list(head.columns)
-        time_candidates = ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"]
-        tcol = next((c for c in time_candidates if c in cols), None)
-        if not tcol:
-            return None
-    
-        try:
-            s = pd.read_csv(path, usecols=[tcol])[tcol]
-            # Parse **without** assuming UTC; treat values as naive ET.
-            ts = pd.to_datetime(s, errors="coerce")
-    
-            # If any timezone-aware values slip in, convert to ET and drop tz.
-            if getattr(ts.dtype, "tz", None) is not None:
-                try:
-                    ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-                except Exception:
-                    ts = ts.dt.tz_localize(None)
-    
-            ts = ts.dropna()
-            if ts.empty:
-                return None
-            # Return as naive ET string (no 'Z')
-            return ts.iloc[-1].strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return None
-
-
-    
-    
-    ### >>> REALTIME INTRADAY WINDOW (inclusive ET) — HELPERS [BEGIN]
-    @staticmethod
-    def _et_hms_from_iso_utc(iso: str, minus_seconds: int = 0) -> str:
-        """
-        Build ET 'HH:MM:SS' from either:
-        - UTC ISO (ending with 'Z' or explicit offset)  -> convert to ET, minus overlap
-        - naive ET string ("YYYY-MM-DD HH:MM:SS")      -> treat as ET, minus overlap
-        """
-        try:
-            txt = str(iso).strip()
-            if ("Z" in txt) or (len(txt) >= 6 and txt[-6] in "+-"):
-                # UTC input -> convert to ET
-                dt = dt.fromisoformat(txt.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
-            else:
-                # Naive ET input -> attach ET tz without shifting the clock
-                dt = dt.fromisoformat(txt).replace(tzinfo=ZoneInfo("America/New_York"))
-    
-            if minus_seconds and int(minus_seconds) > 0:
-                dt = dt - timedelta(seconds=int(minus_seconds))
-            return dt.strftime("%H:%M:%S")
-        except Exception:
-            return "00:00:00"
-
-    
-    def _compute_intraday_window_et(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Ritorna (start_et_hms, end_et_hms) per una singola day_iso.
-        start_et_hms è calcolato come (max timestamp del giorno già salvato) - overlap_seconds,
-        >>> POI ALLINEATO AL BUCKET per M/H frames <
-        """
-        ET = ZoneInfo("America/New_York")
-    
-        # >>> INFLUX-FIRST PATH (skip file scan) <
-        sink_lower = (sink or "").lower()
-        if sink_lower == "influxdb":
-            prefix = (self.cfg.influx_measure_prefix or "")
-            if asset == "option":
-                meas = f"{prefix}{symbol}-option-{interval}"
-            else:
-                meas = f"{prefix}{symbol}-{asset}-{interval}"
-            
-            day_start_utc = pd.Timestamp(f"{day_iso}T00:00:00", tz=ET).tz_convert("UTC")
-            day_end_utc = (pd.Timestamp(f"{day_iso}T00:00:00", tz=ET) + pd.Timedelta(days=1)).tz_convert("UTC")
-            
-            try:
-                last_in_day = self._influx_last_ts_between(meas, day_start_utc, day_end_utc)
-                if last_in_day is not None:
-                    max_ts = last_in_day.tz_convert(ET).tz_localize(None)  # ET-naive
-                else:
-                    return (None, None)
-            except Exception as e:
-                print(f"[WINDOW][INFLUX][WARN] query failed: {e}")
-                return (None, None)
-        else:
-            # File-based path (original logic)
-            parts = self._list_day_files(asset, symbol, interval, sink, day_iso)
-            if not parts:
-                return (None, None)
-    
-            # HEAD-REFILL guards
-            try:
-                part_list = self._list_day_part_files(asset, symbol, interval, sink, day_iso)
-                if part_list and part_list[0][0] > 1:
-                    return (None, None)
-            except Exception:
-                pass
-            try:
-                st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
-                if st.get("missing") or st.get("has_mixed"):
-                    return (None, None)
-            except Exception:
-                pass
-    
-            def _max_ts_from_file(path: str) -> Optional[pd.Timestamp]:
-                try:
-                    if path.endswith(".csv"):
-                        head = pd.read_csv(path, nrows=0)
-                        cols = list(head.columns)
-                        tcol = next((c for c in ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"] if c in cols), None)
-                        if not tcol:
-                            return None
-                        s = pd.read_csv(path, usecols=[tcol])[tcol]
-                        ts = pd.to_datetime(s, errors="coerce")
-                    else:
-                        df = pd.read_parquet(path, columns=["timestamp"])
-                        ts = pd.to_datetime(df["timestamp"], errors="coerce")
-                    if getattr(ts.dtype, "tz", None) is not None:
-                        ts = ts.dt.tz_convert(ET).dt.tz_localize(None)
-                    return ts.max() if ts.notna().any() else None
-                except Exception:
-                    return None
-    
-            max_ts = None
-            for p in parts:
-                mt = _max_ts_from_file(p)
-                if mt is not None and (max_ts is None or mt > max_ts):
-                    max_ts = mt
-    
-            if not max_ts:
-                return (None, None)
-    
-        # >>> COMMON: Overlap + Bucket Alignment <
-        overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-        start_dt = max_ts - pd.Timedelta(seconds=overlap)
-        
-        iv = (interval or "").strip().lower()
-        if iv.endswith("m") or iv.endswith("h"):
-            m = int(iv[:-1]) * (60 if iv.endswith("h") else 1)
-            # Floor to bucket (ET-naive input, no tz conversion needed)
-            start_et_aware = start_dt.replace(tzinfo=ET)
-            floored_utc = self._floor_to_interval_et(start_et_aware.astimezone(self.UTC), m)
-            start_dt = floored_utc.astimezone(ET).replace(tzinfo=None)
-        
-        start_et_hms = start_dt.strftime("%H:%M:%S")
-        return (start_et_hms, None)
-
-
-    def _list_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> list[str]:
-        """
-        Return all files associated with a specific trading day, including all part files.
-
-        This method finds both legacy base files and all numbered part files (_part01, _part02, etc.)
-        that belong to a single trading day. It's used for operations that need to process or analyze
-        all data fragments for a given day.
-
-        Parameters
-        ----------
-        asset : str
-            Asset type: "option", "stock", or "index".
-        symbol : str
-            Ticker symbol.
-        interval : str
-            Timeframe (e.g., "5m", "1d").
-        sink : str
-            File format: "csv" or "parquet".
-        day_iso : str
-            Trading day in ISO format "YYYY-MM-DD".
-
-        Returns
-        -------
-        list[str]
-            Sorted list of absolute file paths matching the day prefix. Includes both base file
-            (if exists) and all _partNN files. Returns empty list if no files found or directory
-            doesn't exist.
-
-        Example Usage
-        -------------
-        # Called by _day_parts_status, _csv_has_day, and cleanup operations
-        day_files = manager._list_day_files(
-            asset="stock", symbol="AAPL", interval="5m",
-            sink="csv", day_iso="2024-03-15"
-        )
-        # Returns: [
-        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m.csv",
-        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
-        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part02.csv"
-        # ]
-
-        Notes
-        -----
-        - Matches filename prefix: "{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
-        - Includes files with and without _partNN suffix.
-        - Returns sorted list for stable ordering in processing operations.
-        """
-        sink_dir = self._sink_dir_name(sink)
-        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
-        if not os.path.isdir(folder):
-            return []
-    
-        # Prefisso esatto del giorno (compatibile sia con base che con _partNN)
-        prefix = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
-        ext = f".{sink.lower()}"
-    
-        out = []
-        try:
-            for name in os.listdir(folder):
-                # BASTA prefisso + estensione: prende sia "... .csv" sia "..._partNN.csv"
-                if name.startswith(prefix) and name.endswith(ext):
-                    out.append(os.path.join(folder, name))
-        except FileNotFoundError:
-            return []
-    
-        # Ordinamento stabile
-        return sorted(out)
-
-
-    
-    def _day_parts_status(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> dict:
-        """
-        Inspect that day's files. Support days with ONLY _partNN files (no legacy base).
-        Returns:
-          - base_path: canonical base path (may not exist on disk)
-          - has_base : True if legacy non-part file exists
-          - parts    : list of present part indices (e.g., [1,2,5])
-          - missing  : gaps inside [1..max(parts)]
-          - has_mixed: legacy base + parts together
-          - needs_rebuild: True if head missing or gaps -> purge & rewrite from _part01
-        """
-    
-        ext = sink
-        # Canonical base path (anche se non esiste su disco)
-        base_path = self._make_file_basepath(asset, symbol, interval, f"{day_iso}T00-00-00Z", sink)
-    
-        # Elenca tutti i file del giorno
-        day_files = self._list_day_files(asset, symbol, interval, sink, day_iso)
-    
-        # Rileva presenza del legacy "base" (senza _partNN)
-        has_base = os.path.exists(base_path)
-    
-        # Estrai gli indici dei parts presenti
-        parts = []
-        if day_files:
-            pat = re.compile(rf"_part(\d{{2}})\.{re.escape(ext)}$")
-            for p in day_files:
-                m = pat.search(p)
-                if m:
-                    parts.append(int(m.group(1)))
-        parts = sorted(set(parts))
-    
-        # Calcola i buchi
-        missing = []
-        if parts:
-            mx = max(parts)
-            missing = [i for i in range(1, mx + 1) if i not in parts]
-    
-        has_mixed = has_base and bool(parts)
-        needs_rebuild = (1 not in parts and bool(parts)) or bool(missing) or has_mixed
-    
-        return {
-            "base_path": base_path,
-            "has_base": has_base,
-            "parts": parts,
-            "missing": missing,
-            "has_mixed": has_mixed,
-            "needs_rebuild": needs_rebuild,
-        }
-        
-
-
-    def _list_day_part_files(self, asset: str, symbol: str, interval: str, sink_lower: str, day_iso: str):
-        """Return sorted list of (part_num, filepath) for the given day."""
-        folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, self._sink_dir_name(sink_lower))
-        if not os.path.isdir(folder):
-            return []
-        base = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
-        pat = re.compile(rf"^{re.escape(base)}_part(\d{{2}})\.{re.escape(sink_lower)}$")
-        out = []
-        for name in os.listdir(folder):
-            m = pat.match(name)
-            if m:
-                out.append((int(m.group(1)), os.path.join(folder, name)))
-        out.sort(key=lambda x: x[0])
-        return out
-    
-    def _detect_time_col(self, cols):
-        """Best-effort time column detection for intraday options bars."""
-        for c in ("datetime","timestamp","ts","QUOTE_DATETIME","TRADE_DATETIME","QUOTE_UNIXTIME","TRADE_UNIXTIME"):
-            if c in cols: return c
-        return None
-    
-    def _first_timestamp_in_csv(self, path: str):
-        """Read a small chunk and return the earliest timestamp as pandas.Timestamp(UTC) or None."""
-
-        try:
-            df = pd.read_csv(path, nrows=500)
-            if df is None or df.empty:
-                return None
-            col = self._detect_time_col(df.columns)
-            if not col:
-                return None
-            s = df[col]
-            # try unix seconds first, fallback to parse as datetime string
-            v = pd.to_datetime(s, unit="s", utc=True, errors="coerce")
-            if v.isna().all():
-                v = pd.to_datetime(s, utc=True, errors="coerce")
-            if v.isna().all():
-                return None
-            return v.min()
-        except Exception:
-            return None
-
-
-    def _first_timestamp_in_parquet(self, path: str, ts_candidates=("timestamp","ts","time","datetime")):
-        # legge il primo timestamp dal primo row group del parquet
-        pf = pq.ParquetFile(path)
-        names = set(pf.schema_arrow.names)
-        col = next((c for c in ts_candidates if c in names), None)
-        if not col:
-            return None
-        try:
-            arr = pf.read_row_group(0, columns=[col]).column(0)
-            # torna oggetto python (pandas gestisce conversione a Timestamp)
-            return arr[0].as_py() if len(arr) else None
-        except Exception:
-            return None
-
-
-
-
-        
-    
-    def _purge_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> None:
-        """Delete ALL files for that day (base + _partNN)."""
-        for p in self._list_day_files(asset, symbol, interval, sink, day_iso):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-
-
-
-    # ---------------------------- CACHE ------------------------------
-
-    def _get_cached_first_date(self, asset: str, symbol: str, req_type: str) -> Optional[str]:
-        key = self._cache_key(asset, symbol, req_type)
-        val = self._coverage_cache.get(key, {}).get("first_date")
-        if val is None:
-            return None
-        if isinstance(val, (list, tuple)):
-            return self._extract_first_date_from_any(list(val))
-        if isinstance(val, dict):
-            return self._extract_first_date_from_any([val])
-        if isinstance(val, str):
-            return self._normalize_date_str(val)
-        return None
-
-    def _set_cached_first_date(self, asset: str, symbol: str, req_type: str, first_date: str) -> None:
-        fd = self._normalize_date_str(first_date) if isinstance(first_date, str) else None
-        if not fd and isinstance(first_date, (list, tuple)):
-            fd = self._extract_first_date_from_any(list(first_date))
-        elif not fd and isinstance(first_date, dict):
-            fd = self._extract_first_date_from_any([first_date])
-        if not fd:
-            return
-        self._coverage_cache[self._cache_key(asset, symbol, req_type)] = {"first_date": fd}
-
-    # ----------------------- JSON & DATE UTILS -----------------------
-
-    def _ensure_list(self, data: Any, keys=("data", "results", "items", "expirations", "dates", "contracts")) -> List[Any]:
-        if data is None:
-            return []
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for k in keys:
-                v = data.get(k)
-                if isinstance(v, list):
-                    return v
-            return [data]
-        return [data]
-
-    def _normalize_date_str(self, s: str) -> Optional[str]:
-        if not s:
-            return None
-        s = str(s)
-        if len(s) == 8 and s.isdigit():
-            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
-        return s
-
-    def _extract_first_date_from_any(self, seq: List[Any]) -> Optional[str]:
-        dates: List[str] = []
-        for x in seq:
-            if isinstance(x, str):
-                ds = self._normalize_date_str(x)
-                if ds:
-                    dates.append(ds)
-            elif isinstance(x, dict):
-                for k in ("date", "Date", "trade_date", "tradingDay"):
-                    if k in x and x[k]:
-                        ds = self._normalize_date_str(str(x[k]))
-                        if ds:
-                            dates.append(ds)
-                        break
-        return min(dates) if dates else None
-
-    def _extract_expirations_as_dates(self, seq: List[Any]) -> List[str]:
-        out: List[str] = []
-        for x in seq:
-            if isinstance(x, str):
-                ds = self._normalize_date_str(x)
-                if ds:
-                    out.append(ds)
-            elif isinstance(x, dict):
-                val = x.get("expiration") or x.get("date") or x.get("expirationDate")
-                if val:
-                    ds = self._normalize_date_str(str(val))
-                    if ds:
-                        out.append(ds)
-        out.sort()
-        return out
-
-
-    # ------------- SCREENING FUNCTIONS -------------------------------
-
-
-    async def screen_option_oi_concentration(
-        self,
-        symbols: list[str],
-        day_iso: str,
-        threshold_pct: float = 0.30,
-        scope: Literal["strike", "strike_and_right"] = "strike",
-        right: Literal["call", "put", "both"] = "both",
-        min_chain_oi: int = 5_000,
-        min_contract_oi: int = 500,
-        min_chain_contracts: Optional[int] = None,
-    ) -> pd.DataFrame:
-        """
-        Screen for abnormal OI concentration by (symbol, expiration).
-    
-        Rules
-        -----
-        - Pull prior-day OI for the requested trading date via /option/history/open_interest (expiration="*").
-        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
-        - For each expiration, flag rows where share >= threshold_pct AND
-          contract_oi >= min_contract_oi AND chain_oi >= min_chain_oi AND distinct contracts >= min_chain_contracts.
-    
-        Returns
-        -------
-        pd.DataFrame with columns:
-            ['symbol','expiration','strike','right','contract_oi','chain_oi','share_pct',
-             'contracts_in_chain','rank_in_expiration','source_url']
-        """
-        async def _fetch_oi(sym: str):
-            csv_txt, url = await self.client.option_history_open_interest(
-                symbol=sym, expiration="*", date=day_iso, strike="*", right=right, format_type="csv"
-            )
-            return sym, csv_txt, url
-
-        eff_min_chain_contracts = (
-            min_chain_contracts
-            if min_chain_contracts is not None
-            else (5 if scope == "strike" else 10)
-        )
-    
-        tasks = [asyncio.create_task(_fetch_oi(s)) for s in symbols]
-        results = []
-    
-        for fut in asyncio.as_completed(tasks):
-            try:
-                sym, csv_txt, url = await fut
-            except Exception:
-                continue
-            if not csv_txt:
-                continue
-    
-            df = pd.read_csv(io.StringIO(csv_txt))
-            if df is None or df.empty:
-                continue
-    
-            # Robust column normalization
-            # expiration
-            if "expiration" not in df.columns:
-                # try fallback names (rare)
-                for alt in ("exp", "expiry"):
-                    if alt in df.columns:
-                        df = df.rename(columns={alt: "expiration"})
-                        break
-    
-            # strike
-            if "strike" not in df.columns:
-                for alt in ("option_strike", "OPTION_STRIKE"):
-                    if alt in df.columns:
-                        df = df.rename(columns={alt: "strike"})
-                        break
-    
-            # right
-            if "right" not in df.columns and "option_right" in df.columns:
-                df = df.rename(columns={"option_right": "right"})
-    
-            # open_interest
-            oi_col = next((c for c in ("open_interest", "oi", "OI", "openInterest") if c in df.columns), None)
-            if oi_col is None:
-                continue
-            df = df.rename(columns={oi_col: "oi"})
-    
-            # Normalize right values if present
-            if "right" in df.columns:
-                df["right"] = df["right"].map(
-                    {"C": "call", "P": "put", "CALL": "call", "PUT": "put", "call": "call", "put": "put"}
-                ).fillna(df.get("right"))
-    
-            # Aggregate by requested scope
-            if scope == "strike":
-                # Sum C+P at the same strike
-                grp_cols = ["expiration", "strike"]
-            else:
-                grp_cols = ["expiration", "strike", "right"]
-    
-            dfa = df.groupby(grp_cols, as_index=False, dropna=False)["oi"].sum().rename(columns={"oi": "contract_oi"})
-            # Count distinct contracts in the chain (per expiration)
-            chain_counts = dfa.groupby("expiration")["contract_oi"].transform("size")
-            # Chain total OI
-            chain_tot = dfa.groupby("expiration")["contract_oi"].transform("sum")
-            dfa["chain_oi"] = chain_tot
-            dfa["contracts_in_chain"] = chain_counts
-            dfa["share_pct"] = (dfa["contract_oi"] / dfa["chain_oi"]).astype(float)
-    
-            # Guards + threshold
-            mask = (
-                (dfa["share_pct"] >= threshold_pct)
-                & (dfa["contract_oi"] >= min_contract_oi)
-                & (dfa["chain_oi"] >= min_chain_oi)
-                & (dfa["contracts_in_chain"] >= eff_min_chain_contracts)
-            )
-            hits = dfa.loc[mask].copy()
-            if hits.empty:
-                continue
-    
-            # Ranking within expiration by share
-            hits["rank_in_expiration"] = hits.groupby("expiration")["share_pct"].rank(method="dense", ascending=False).astype(int)
-    
-            # Add symbol, right column if missing (scope=strike => synthetic "both")
-            hits.insert(0, "symbol", sym)
-            if "right" not in hits.columns:
-                hits["right"] = "both"
-    
-            # Useful for traceability
-            hits["source_url"] = url
-            results.append(hits)
-    
-        if not results:
-            return pd.DataFrame(columns=[
-                "symbol","expiration","strike","right","contract_oi","chain_oi","share_pct",
-                "contracts_in_chain","rank_in_expiration","source_url"
-            ])
-    
-        out = pd.concat(results, ignore_index=True)
-        # Order by severity
-        out = out.sort_values(["share_pct","chain_oi","contract_oi"], ascending=[False, False, False]).reset_index(drop=True)
-        return out
-    
-    
-    async def screen_option_volume_concentration(
-        self,
-        symbols: list[str],
-        day_iso: str,
-        threshold_pct: float = 0.25,
-        scope: Literal["strike", "contract"] = "strike",
-        right: Literal["call", "put", "both"] = "both",
-        min_chain_volume: int = 5_000,
-        min_contract_volume: int = 500,
-        min_chain_contracts: Optional[int] = None,
-    ) -> pd.DataFrame:
-        """
-        Screen for abnormal daily VOLUME concentration by (symbol, expiration).
-    
-        Rules
-        -----
-        - Pull EOD daily rows for all expirations via /option/history/eod (expiration="*").
-        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
-        - For each expiration, flag rows where share >= threshold_pct AND
-          contract_volume >= min_contract_volume AND chain_volume >= min_chain_volume
-          AND distinct contracts >= min_chain_contracts.
-    
-        Returns
-        -------
-        pd.DataFrame with columns:
-            ['symbol','expiration','strike','right','contract_volume','chain_volume','share_pct',
-             'contracts_in_chain','rank_in_expiration','source_url']
-        """
-        async def _fetch_eod(sym: str):
-            csv_txt, url = await self.client.option_history_eod(
-                symbol=sym, expiration="*", start_date=day_iso, end_date=day_iso, strike="*", right=right, format_type="csv"
-            )
-            return sym, csv_txt, url
-
-        eff_min_chain_contracts = (
-            min_chain_contracts
-            if min_chain_contracts is not None
-            else (5 if scope == "strike" else 10)
-        )
-    
-        tasks = [asyncio.create_task(_fetch_eod(s)) for s in symbols]
-        results = []
-    
-        for fut in asyncio.as_completed(tasks):
-            try:
-                sym, csv_txt, url = await fut
-            except Exception:
-                continue
-            if not csv_txt:
-                continue
-    
-            df = pd.read_csv(io.StringIO(csv_txt))
-            if df is None or df.empty:
-                continue
-    
-            # Columns
-            if "expiration" not in df.columns:
-                for alt in ("exp", "expiry"):
-                    if alt in df.columns:
-                        df = df.rename(columns={alt: "expiration"})
-                        break
-            if "strike" not in df.columns:
-                for alt in ("option_strike", "OPTION_STRIKE"):
-                    if alt in df.columns:
-                        df = df.rename(columns={alt: "strike"})
-                        break
-            if "right" not in df.columns and "option_right" in df.columns:
-                df = df.rename(columns={"option_right": "right"})
-    
-            vol_col = next((c for c in ("volume", "vol", "Volume") if c in df.columns), None)
-            if vol_col is None:
-                continue
-            df = df.rename(columns={vol_col: "volume"})
-    
-            if "right" in df.columns:
-                df["right"] = df["right"].map(
-                    {"C": "call", "P": "put", "CALL": "call", "PUT": "put", "call": "call", "put": "put"}
-                ).fillna(df.get("right"))
-    
-            if scope == "strike":
-                grp_cols = ["expiration", "strike"]
-            else:
-                grp_cols = ["expiration", "strike", "right"]
-    
-            dfa = df.groupby(grp_cols, as_index=False, dropna=False)["volume"].sum().rename(columns={"volume": "contract_volume"})
-            chain_counts = dfa.groupby("expiration")["contract_volume"].transform("size")
-            chain_tot = dfa.groupby("expiration")["contract_volume"].transform("sum")
-            dfa["chain_volume"] = chain_tot
-            dfa["contracts_in_chain"] = chain_counts
-            dfa["share_pct"] = (dfa["contract_volume"] / dfa["chain_volume"]).astype(float)
-    
-            mask = (
-                (dfa["share_pct"] >= threshold_pct)
-                & (dfa["contract_volume"] >= min_contract_volume)
-                & (dfa["chain_volume"] >= min_chain_volume)
-                & (dfa["contracts_in_chain"] >= eff_min_chain_contracts)
-            )
-            hits = dfa.loc[mask].copy()
-            if hits.empty:
-                continue
-    
-            hits["rank_in_expiration"] = hits.groupby("expiration")["share_pct"].rank(method="dense", ascending=False).astype(int)
-            hits.insert(0, "symbol", sym)
-            if "right" not in hits.columns:
-                hits["right"] = "both"
-            hits["source_url"] = url
-            results.append(hits)
-    
-        if not results:
-            return pd.DataFrame(columns=[
-                "symbol","expiration","strike","right","contract_volume","chain_volume","share_pct",
-                "contracts_in_chain","rank_in_expiration","source_url"
-            ])
-    
-        out = pd.concat(results, ignore_index=True)
-        out = out.sort_values(["share_pct","chain_volume","contract_volume"], ascending=[False, False, False]).reset_index(drop=True)
-        return out
-
-    def _read_minimal_frame(self, path: str, usecols: list, sink_lower: str):
-        """
-        Legge SOLO le colonne richieste da un file CSV o Parquet.
-        - Normalizza 'timestamp' in naive UTC (senza tz) se presente.
-        - Non fa nessuna altra trasformazione.
-        """
-
-        sink_lower = (sink_lower or "csv").lower()
-        if sink_lower == "csv":
-            # CSV: limitiamo le colonne in read
-            head = pd.read_csv(path, nrows=0)
-            cols = [c for c in usecols if c in head.columns]
-            df = pd.read_csv(path, usecols=cols) if cols else pd.read_csv(path)
-        else:
-            # PARQUET: proviamo a leggere solo le colonne richieste
-            try:
-                df = pd.read_parquet(path, columns=usecols)
-            except Exception:
-                df = pd.read_parquet(path)  # fallback, poi sottoselezioniamo
-                keep = [c for c in usecols if c in df.columns]
-                if keep:
-                    df = df[keep]
-    
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
-        return df
-    
-    def _max_file_timestamp(self, path: str, tcol: str, sink_lower: str):
-        """
-        Ritorna il MAX timestamp (naive UTC) dalla colonna tcol in CSV o Parquet.
-        Se non esiste/errore → None.
-        """
-
-        try:
-            df = self._read_minimal_frame(path, [tcol], sink_lower)
-            if tcol not in df.columns:
-                return None
-            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True).dt.tz_localize(None)
-            if ts.notna().any():
-                return ts.max()
-        except Exception:
-            pass
-        return None
-
-
-        
-
-    def duplication_and_strike_checks(
-        self,
-        asset: str,
-        symbol: str,
-        interval: str,
-        sink: str = "csv",
-        start_date: str = None,
-        end_date: str = None,
-        show: bool = False,
-    ):
-        """
-        Audit per giorno: duplicazioni su chiave e contabilità strike×expiration.
-        - Key = timestamp + symbol + expiration + strike (+ right se presente).
-        - Conta le coppie uniche (strike, expiration) per giorno.
-        - Costruisce la matrice di overlap tra TUTTI i part del giorno:
-            * Diagonale  = duplicati INTRA-file (stesso part) sulla chiave
-            * Off-diagonale = intersezione tra chiavi di file diversi (inter-file)
-        Ritorna: (results_by_day: dict, summary_df: pd.DataFrame)
-    
-        Notes
-        -----
-        * Timestamps are normalized to naive UTC to avoid aware/naive mismatches.
-        * Intra-file duplicate count ignores rows with NaN in any key column.
-        """
-
-    
-        sink_lower = (sink or "csv").lower()
-        assert sink_lower in ("csv", "parquet")
-    
-        # Preferred columns (we enforce 'timestamp' for options)
-        tcol = "timestamp"
-        key_base = ["symbol", "expiration", "strike"]
-    
-        def _key_cols(df: pd.DataFrame):
-            """Return the effective key columns present in df."""
-            cols = [tcol] + key_base + (["right"] if "right" in df.columns else [])
-            return [c for c in cols if c in df.columns]
-    
-        def _read_minimal(path: str, usecols: list) -> pd.DataFrame:
-            """
-            Minimal, robust reader.
-            - If self._read_minimal_frame exists, use it.
-            - Otherwise, read only needed columns when possible.
-            - Normalize timestamp to naive UTC (no tz info).
-            """
-            if hasattr(self, "_read_minimal_frame"):
-                df = self._read_minimal_frame(path, usecols, sink_lower)
-            else:
-                if sink_lower == "csv":
-                    head = pd.read_csv(path, nrows=0)
-                    keep = [c for c in usecols if c in head.columns]
-                    df = pd.read_csv(path, usecols=keep) if keep else pd.read_csv(path)
-                else:
-                    try:
-                        df = pd.read_parquet(path, columns=usecols)
-                    except Exception:
-                        df = pd.read_parquet(path)
-                        keep = [c for c in usecols if c in df.columns]
-                        if keep:
-                            df = df[keep]
-    
-            if tcol in df.columns:
-                # normalize to naive UTC to avoid aware/naive comparison issues
-                df[tcol] = pd.to_datetime(df[tcol], errors="coerce", utc=True).dt.tz_localize(None)
-    
-            return df
-    
-        # Optional display
-        _display = ipy_display if show and ipy_display is not None else None
-    
-        results_by_day = {}
-        summary_rows = []
-    
-        # Iterate over days using manager helpers
-        for day in self._iter_days(start_date, end_date):
-
-            # ### >>> STRONG SKIP — MIDDLE-DAY SHORT-CIRCUIT (INFLUX & FILE) — BEGIN
-            # Se è attivo lo 'skip' forte, non fare NESSUN CHECK sui giorni *strictly in mezzo*.
-            if getattr(self, "_fast_resume_skip_middle", False):
-                # Recupera (una volta) il first/last day dal sink, se non li hai già.
-                # Usa variabili locali esistenti se le hai (es. first_day_et, last_day_et).
-                try:
-                    fl = (first_day_et, last_day_et)  # se già calcolate prima del loop
-                except NameError:
-                    fl = self._get_first_last_days_from_sink(task.asset, symbol, interval, task.sink)
-                if fl and fl[0] and fl[1]:
-                    _first, _last = fl
-                    if _first < day < _last:
-                        self._dbg(f"[FAST-SKIP] middle-day short-circuit day={day} first={_first} last={_last}")
-                        continue  # salta il giorno *senza* chiamare alcun check
-            # ### >>> STRONG SKIP — MIDDLE-DAY SHORT-CIRCUIT (INFLUX & FILE) — END
-
-
-            # --- ANTI-DUP DAY SCOPE (seen-by-key) ---
-            seen_keys_day: set[tuple] = set()
-            day_key_cols = ["timestamp","symbol","expiration","strike"]
-
-
-            # Get file list for the day using internal API if available
-            try:
-                parts = self._list_day_files(asset, symbol, interval, sink_lower, day)
-            except Exception:
-                ext = "csv" if sink_lower == "csv" else "parquet"
-                pattern = os.path.join(
-                    self.cfg.root_dir, "data", asset, symbol, interval, self._sink_dir_name(sink_lower),
-                    f"{day}T00-00-00Z-{symbol}-{asset}-{interval}_part*.{ext}"
-                )
-                parts = sorted(glob.glob(pattern))
-    
-            parts = [p for p in parts if os.path.exists(p)]
-            if not parts:
-                # No files for this day
-                results_by_day[day] = {
-                    "files": [],
-                    "total_rows": 0,
-                    "unique_key": 0,
-                    "duplicates_key": 0,
-                    "unique_strike_exp": 0,
-                    "overlap_matrix_key": pd.DataFrame(),
-                    "per_file_counts": {},
-                    "top_overlap_timestamps": pd.Series(dtype="int64"),
-                }
-                summary_rows.append({"date": day, "files": 0, "rows": 0, "unique_key": 0, "dup_key": 0, "uniq_strike_exp": 0})
-                continue
-    
-            # Read all parts for the day (only minimal columns)
-            usecols = [tcol, "symbol", "expiration", "strike", "right"]
-            per_file_df = []
-            per_file_key_sets = {}
-            per_file_counts = {}
-            per_file_intra_dup = {}
-    
-            for p in parts:
-                dfp = _read_minimal(p, usecols)
-    
-                # Normalize essential types
-                if "expiration" in dfp.columns:
-                    dfp["expiration"] = pd.to_datetime(dfp["expiration"], errors="coerce").dt.date
-                if "strike" in dfp.columns:
-                    dfp["strike"] = pd.to_numeric(dfp["strike"], errors="coerce")
-    
-                # Effective key columns for this file
-                kcols = _key_cols(dfp)
-                fname = os.path.basename(p)
-    
-                if tcol not in dfp.columns or not kcols:
-                    # Incompatible file: track as empty
-                    per_file_df.append(dfp.iloc[0:0])
-                    per_file_key_sets[fname] = set()
-                    per_file_counts[fname] = 0
-                    per_file_intra_dup[fname] = 0
-                    continue
-    
-                # Build key set for inter-file overlaps
-                key_tuples = set(map(tuple, dfp[kcols].dropna().itertuples(index=False, name=None)))
-                per_file_key_sets[fname] = key_tuples
-                per_file_counts[fname] = len(key_tuples)
-    
-                # Intra-file duplicates on the key (diagonal)
-                valid_mask = dfp[kcols].notna().all(axis=1)
-                valid_rows = int(valid_mask.sum())
-                unique_rows = int(dfp.loc[valid_mask, kcols].drop_duplicates().shape[0])
-                per_file_intra_dup[fname] = max(valid_rows - unique_rows, 0)
-    
-                per_file_df.append(dfp)
-    
-            # Concat all files for the day
-            day_df = pd.concat(per_file_df, ignore_index=True) if per_file_df else pd.DataFrame(columns=usecols)
-    
-            # Keep only rows with non-null timestamp
-            if tcol in day_df.columns:
-                day_df = day_df[day_df[tcol].notna()]
-    
-            # Day-level counts
-            kcols_all = _key_cols(day_df)
-            total_rows = int(len(day_df))
-            unique_key = int(day_df[kcols_all].dropna().drop_duplicates().shape[0]) if kcols_all else 0
-            duplicates_key = max(total_rows - unique_key, 0)
-    
-            # Unique (strike, expiration) pairs
-            if "strike" in day_df.columns and "expiration" in day_df.columns:
-                unique_strike_exp = int(day_df[["strike", "expiration"]].dropna().drop_duplicates().shape[0])
-            else:
-                unique_strike_exp = 0
-    
-            # Top timestamps where duplicates occurred (sum of excess per ts)
-            top_overlap_ts = pd.Series(dtype="int64")
-            if kcols_all:
-                grp = day_df[kcols_all].dropna().groupby(tcol).size()
-                uniq_per_ts = day_df[kcols_all].dropna().drop_duplicates().groupby(tcol).size()
-                over_ts = (grp - uniq_per_ts).astype("int64")
-                top_overlap_ts = over_ts[over_ts > 0].sort_values(ascending=False).head(10)
-    
-            # Build overlap matrix (diagonal = intra-file dup; off-diagonal = intersections)
-            file_names = [os.path.basename(p) for p in parts]
-            overlap_mat = pd.DataFrame(0, index=file_names, columns=file_names, dtype="int64")
-    
-            for i, f1 in enumerate(file_names):
-                s1 = per_file_key_sets.get(f1, set())
-                for j, f2 in enumerate(file_names):
-                    if j < i:
-                        overlap_mat.iat[i, j] = overlap_mat.iat[j, i]
-                        continue
-                    if i == j:
-                        overlap_mat.iat[i, j] = int(per_file_intra_dup.get(f1, 0))
-                        continue
-                    s2 = per_file_key_sets.get(f2, set())
-                    cnt = len(s1 & s2) if (s1 and s2) else 0
-
-                    # DEBUG: se troviamo una singola intersezione, stampa la chiave e verifica il ts
-                    if cnt and cnt <= 3:
-                        inter = list(s1 & s2)
-                        try:
-                            print(f"[DEBUG-OVERLAP] {f1} ∩ {f2} = {cnt}  sample={inter[:1]}")
-                        except Exception:
-                            pass
-
-                    
-                    overlap_mat.iat[i, j] = cnt
-    
-            # Store results for this day
-            results_by_day[day] = {
-                "files": parts,
-                "total_rows": total_rows,
-                "unique_key": unique_key,
-                "duplicates_key": duplicates_key,
-                "unique_strike_exp": unique_strike_exp,
-                "overlap_matrix_key": overlap_mat,
-                "per_file_counts": per_file_counts,
-                "top_overlap_timestamps": top_overlap_ts,
-            }
-    
-            summary_rows.append({
-                "date": day,
-                "files": len(parts),
-                "rows": total_rows,
-                "unique_key": unique_key,
-                "dup_key": duplicates_key,
-                "uniq_strike_exp": unique_strike_exp,
-            })
-    
-            # Optional display
-            if show:
-                print(f"\n[{day}] righe totali: {total_rows:,}  uniche(key): {unique_key:,}  overlap(dup): {duplicates_key:,}")
-                print(f"strike×expiration uniche: {unique_strike_exp:,}")
-                if not top_overlap_ts.empty:
-                    print("Top timestamp con overlap:")
-                    print(top_overlap_ts)
-                if _display is not None:
-                    try:
-                        print("Overlap/Dup matrix (diag = intra-file dup; off-diag = inter-file overlap):")
-                        _display(overlap_mat)
-                    except Exception:
-                        print(overlap_mat)
-    
-        summary_df = pd.DataFrame(summary_rows).sort_values("date").reset_index(drop=True)
-    
-        if show:
-            print("\n=== RIEPILOGO ===")
-            try:
-                if _display is not None:
-                    _display(summary_df)
-                else:
-                    print(summary_df)
-            except Exception:
-                print(summary_df)
-    
-        return results_by_day, summary_df
-
-
-
-    def _parse_date(self, d):
-        """Ritorna date da str 'YYYY-MM-DD' o 'YYYYMMDD', da datetime/date."""
-
-        if isinstance(d, date) and not isinstance(d, datetime):
-            return d
-        if isinstance(d, datetime):
-            return d.date()
-        if isinstance(d, str):
-            s = d.strip()
-            if "-" in s:
-                return datetime.strptime(s, "%Y-%m-%d").date()
-            return datetime.strptime(s, "%Y%m%d").date()
-        raise ValueError(f"Formato data non supportato: {type(d)}={d!r}")
-    
-    def _iter_days(self, start, end):
-        """Genera stringhe 'YYYY-MM-DD' da start a end (inclusivi)."""
-
-        sd = self._parse_date(start)
-        ed = self._parse_date(end)
-        if sd > ed:
-            sd, ed = ed, sd
-        cur = sd
-        while cur <= ed:
-            yield cur.isoformat()
-            cur += timedelta(days=1)
-
-    def _influx_last_ts_between(self, measurement: str, start_utc: pd.Timestamp, end_utc: pd.Timestamp):
-        """
-        Ritorna l'ultimo timestamp (tz-aware UTC) presente in [start_utc, end_utc) per il measurement,
-        oppure None se vuoto. Usa SQL Influx v3.
-        """
-        # costruisci client/query function come negli altri helper
-        client = getattr(self, "_influx", None)
-        if client is None and hasattr(self, "client_influx"):
-            client = self.client_influx
-        if client is None:
-            client = InfluxDBClient3(host=self.cfg.influx_url, token=self.cfg.influx_token,
-                                     database=self.cfg.influx_bucket, org=None)
-    
-        s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-        e = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-        q = (
-            f'SELECT MAX(time) AS t FROM "{measurement}" '
-            f"WHERE time >= TIMESTAMP '{s}' AND time < TIMESTAMP '{e}'"
-        )
-        try:
-            t = client.query(q)
-            df = t.to_pandas() if hasattr(t, "to_pandas") else None
-            if df is None or df.empty or "t" not in df.columns:
-                return None
-            ts = pd.to_datetime(df["t"].iloc[0], utc=True, errors="coerce")
-            return ts if pd.notna(ts) else None
-        except Exception as ex:
-            print(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
-            return None
-
-    async def _td_get_with_retry(self, coro_factory, label: str, retries: int = 1):
-        """
-        Esegue la richiesta TD con 1 piccolo retry se fallisce per errori transitori
-        (timeout, disconnessione, cancel durante I/O). Ritorna (text, meta) o (None, None).
-        """
-    
-        for attempt in range(retries + 1):
-            try:
-                return await coro_factory()
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                print(f"[TD-HTTP][RETRY] {label} attempt={attempt+1} error={e}")
-                if attempt >= retries:
-                    print(f"[TD-HTTP][GIVEUP] {label}")
-                    return None, None
-                await asyncio.sleep(0.75)
-            except asyncio.CancelledError as e:
-                # a volte arriva da stream/flight; proviamo un solo retry "soft"
-                print(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
-                if attempt >= retries:
-                    print(f"[TD-HTTP][GIVEUP] {label} cancelled")
-                    return None, None
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                print(f"[TD-HTTP][ERROR] {label}: {e}")
-                return None, None
-
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # DUPLICATE CHECK UTILITIES
-    # ──────────────────────────────────────────────────────────────────────────
-    
-    def check_duplicates_in_sink(
-        self,
-        asset: str,
-        symbol: str,
-        interval: str,
-        sink: str,
-        day_iso: Optional[str] = None,
-        sample_limit: int = 10
-    ) -> dict:
-        """
-        Verifica la presenza di duplicati nel sink specificato.
-        
-        Args:
-            asset: "option", "stock", o "index"
-            symbol: simbolo (es. "TLRY", "AAPL")
-            interval: timeframe (es. "tick", "1m", "1d")
-            sink: "influxdb", "csv", o "parquet"
-            day_iso: giorno specifico (es. "2025-11-07"), o None per tutto
-            sample_limit: numero max di chiavi duplicate da restituire come esempio
-            
-        Returns:
-            dict con:
-                - total_rows: numero totale righe
-                - unique_rows: numero righe uniche
-                - duplicates: numero duplicati
-                - duplicate_rate: percentuale duplicati
-                - duplicate_keys: lista primi N esempi di chiavi duplicate
-                - key_columns: colonne usate come chiave
-        """
-        sink_lower = sink.lower()
-        
-        if sink_lower == "influxdb":
-            return self._check_duplicates_influx(asset, symbol, interval, day_iso, sample_limit)
-        elif sink_lower in ("csv", "parquet"):
-            return self._check_duplicates_file(asset, symbol, interval, sink_lower, day_iso, sample_limit)
-        else:
-            return {
-                "error": f"Sink non supportato: {sink}",
-                "total_rows": 0,
-                "unique_rows": 0,
-                "duplicates": 0,
-                "duplicate_rate": 0.0,
-                "duplicate_keys": [],
-                "key_columns": []
-            }
-    
     def _check_duplicates_influx(
         self,
         asset: str,
@@ -6361,641 +6322,711 @@ class ThetaSyncManager:
     # --------------------------------------------------------------------------
     # START: Multi-day duplicate check functionality
     # --------------------------------------------------------------------------
-    def check_duplicates_multi_day(
+
+    # =========================================================================
+    # (END)
+    # INFLUXDB - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # CACHE - Private Helpers
+    # =========================================================================
+    def _get_cached_first_date(self, asset: str, symbol: str, req_type: str) -> Optional[str]:
+        key = self._cache_key(asset, symbol, req_type)
+        val = self._coverage_cache.get(key, {}).get("first_date")
+        if val is None:
+            return None
+        if isinstance(val, (list, tuple)):
+            return self._extract_first_date_from_any(list(val))
+        if isinstance(val, dict):
+            return self._extract_first_date_from_any([val])
+        if isinstance(val, str):
+            return self._normalize_date_str(val)
+        return None
+
+    def _set_cached_first_date(self, asset: str, symbol: str, req_type: str, first_date: str) -> None:
+        fd = self._normalize_date_str(first_date) if isinstance(first_date, str) else None
+        if not fd and isinstance(first_date, (list, tuple)):
+            fd = self._extract_first_date_from_any(list(first_date))
+        elif not fd and isinstance(first_date, dict):
+            fd = self._extract_first_date_from_any([first_date])
+        if not fd:
+            return
+        self._coverage_cache[self._cache_key(asset, symbol, req_type)] = {"first_date": fd}
+
+    # ----------------------- JSON & DATE UTILS -----------------------
+
+    def _load_cache_file(self) -> Dict[str, Dict[str, str]]:
+        """Loads the coverage cache from disk containing first-date and last-date metadata for data series.
+
+        This method reads a JSON file that stores metadata about synchronized data series, including the
+        first and last dates of saved data. This cache enables efficient resume logic by avoiding redundant
+        discovery and file scanning.
+
+        Parameters
+        ----------
+        None
+            Uses the instance's _cache_path attribute to locate the cache file.
+
+        Returns
+        -------
+        dict of str to dict
+            A dictionary mapping cache keys to metadata dictionaries. Each metadata dict contains keys like
+            'series_last_day' and 'first_saved_day' with 'YYYY-MM-DD' date values. Returns an empty dict
+            if the cache file doesn't exist or is corrupted.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - __init__() during manager initialization to load existing cache
+        # - Methods that need to check cached first/last dates for series
+        """
+        path = getattr(self, "_cache_path", None)
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            # Corrupted or unreadable -> start fresh
+            return {}
+    
+    def _save_cache_file(self) -> None:
+        """Persists the coverage cache to disk atomically using a temporary file and atomic replace.
+
+        This method safely writes the in-memory coverage cache to disk by first writing to a temporary
+        file, then atomically replacing the existing cache file. This prevents corruption from interrupted
+        writes and ensures cache consistency.
+
+        Parameters
+        ----------
+        None
+            Uses the instance's _cache_path and _coverage_cache attributes.
+
+        Returns
+        -------
+        None
+            The cache is written to disk but no value is returned.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - run() after completing all synchronization tasks
+        # - clear_first_date_cache() after removing a cache entry
+        # - _touch_cache() after updating cache metadata
+        """
+        cache_dir = os.path.dirname(self._cache_path)
+        os.makedirs(cache_dir, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(prefix="cov_", suffix=".json", dir=cache_dir)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(self._coverage_cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self._cache_path)
+        except Exception:
+            # Best-effort: if atomic replace fails, try direct write (last resort)
+            try:
+                with open(self._cache_path, "w", encoding="utf-8") as f:
+                    json.dump(self._coverage_cache, f, ensure_ascii=False, indent=2)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+    
+    def _touch_cache(
         self,
         asset: str,
         symbol: str,
         interval: str,
         sink: str,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        sample_limit: int = 10,
-        verbose: bool = True
-    ) -> dict:
-        """Check for duplicate records across multiple trading days in the specified data sink.
+        *,
+        first_day: Optional[str] = None,
+        last_day: Optional[str] = None,
+    ) -> None:
+        """Updates the coverage cache entry for a data series, expanding the known date coverage window.
 
-        This method performs a comprehensive duplicate detection analysis across a date range of trading
-        days (Monday-Friday), automatically skipping weekends. It iterates through each trading day in
-        the specified range, calls check_duplicates_in_sink() for each day, and aggregates the results
-        into a comprehensive multi-day report. The method can auto-detect the available date range from
-        the data sink if start_date and end_date are not provided. This is essential for data quality
-        assurance, identifying data ingestion issues, and maintaining clean historical datasets across
-        CSV, Parquet, and InfluxDB storage backends.
+        This method updates the cached first and last dates for a series, ensuring the coverage window
+        only expands (never shrinks). It's used to track the extent of synchronized data without
+        needing to scan files on every run.
 
         Parameters
         ----------
         asset : str
-            The asset type to check. Possible values: "option", "stock", "index".
-            Determines which data structure and key columns to use for duplicate detection.
+            The asset type (e.g., 'stock', 'option', 'index').
         symbol : str
-            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
-            Must match an existing symbol in the specified sink.
+            The ticker symbol or root symbol.
         interval : str
-            The bar interval or timeframe (e.g., "tick", "1m", "5m", "10m", "1h", "1d").
-            Determines which data series to check for duplicates.
+            The bar interval (e.g., '1d', '5m', '1h').
         sink : str
-            The storage backend to check. Possible values: "influxdb", "csv", "parquet".
-            Different sinks use different duplicate detection strategies:
-            - "influxdb": Queries InfluxDB for duplicate timestamps
-            - "csv": Reads CSV files and checks for duplicate composite keys
-            - "parquet": Reads Parquet files and checks for duplicate composite keys
-        start_date : str, optional
-            Default: None (auto-detect from data)
-            The start date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
-            When None, automatically detects the earliest date available in the sink. Only trading
-            days (Mon-Fri) within this range are analyzed.
-        end_date : str, optional
-            Default: None (auto-detect from data)
-            The end date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
-            When None, automatically detects the latest date available in the sink. Only trading
-            days (Mon-Fri) within this range are analyzed.
-        sample_limit : int, optional
-            Default: 10
-            Maximum number of duplicate key examples to collect and display per day. Limits the
-            size of the example lists in the daily results to prevent memory issues with large
-            duplicate sets. Set to 0 to disable example collection.
-        verbose : bool, optional
-            Default: True
-            If True, prints detailed daily progress reports to console including per-day statistics,
-            duplicate rates, and overall summary. If False, runs silently and only returns the
-            results dictionary. Useful for scripting and automated quality checks.
+            The sink type (e.g., 'csv', 'parquet', 'influxdb').
+        first_day : str or None, optional
+            Default: None
+
+            The first date with data in 'YYYY-MM-DD' format. If provided and earlier than the cached
+            first date, the cache is updated to this earlier date.
+        last_day : str or None, optional
+            Default: None
+
+            The last date with data in 'YYYY-MM-DD' format. If provided and later than the cached
+            last date, the cache is updated to this later date.
 
         Returns
         -------
-        dict
-            A comprehensive results dictionary containing:
-            - 'days_analyzed' (int): Number of trading days checked (excludes weekends)
-            - 'total_rows' (int): Total number of data rows across all checked days
-            - 'total_duplicates' (int): Total number of duplicate records found across all days
-            - 'global_duplicate_rate' (float): Overall percentage of duplicates (0.0-100.0)
-            - 'days_with_duplicates' (int): Number of days that contain at least one duplicate
-            - 'daily_results' (list): List of per-day result dictionaries, each containing:
-                - 'date' (str): ISO date "YYYY-MM-DD"
-                - 'rows' (int): Number of rows for that day
-                - 'duplicates' (int): Number of duplicates found
-                - 'duplicate_rate' (float): Percentage of duplicates for that day
-                - 'duplicate_keys' (list): Sample duplicate keys (limited by sample_limit)
-            - 'summary' (dict): Summary information with:
-                - 'start_date' (str): Actual start date checked
-                - 'end_date' (str): Actual end date checked
-                - 'status' (str): "CLEAN" if no duplicates, "DUPLICATES_FOUND" otherwise
-            - 'error' (str, optional): Error message if date detection or parsing failed
+        None
+            The cache is updated in memory but not immediately persisted to disk.
 
         Example Usage
         -------------
-        # Example 1: Auto-detect date range (checks all available data)
-        manager = ThetaSyncManager(cfg, client=client)
-        result = manager.check_duplicates_multi_day(
-            asset="option",
-            symbol="TLRY",
-            interval="tick",
-            sink="influxdb",
-            verbose=True  # Print detailed progress
-        )
-        print(f"Days analyzed: {result['days_analyzed']}")
-        print(f"Total duplicates: {result['total_duplicates']:,}")
-        print(f"Duplicate rate: {result['global_duplicate_rate']}%")
-
-        # Example 2: Specify explicit date range
-        result = manager.check_duplicates_multi_day(
-            asset="option",
-            symbol="TLRY",
-            interval="5m",
-            sink="influxdb",
-            start_date="2025-11-03",
-            end_date="2025-11-07",
-            sample_limit=5,  # Show up to 5 duplicate examples per day
-            verbose=True
-        )
-
-        # Example 3: Silent mode (no console output)
-        result = manager.check_duplicates_multi_day(
-            asset="stock",
-            symbol="AAPL",
-            interval="1m",
-            sink="parquet",
-            start_date="2025-11-01",
-            end_date="2025-11-30",
-            verbose=False  # No console output
-        )
-        if result['days_with_duplicates'] > 0:
-            print(f"Found duplicates in {result['days_with_duplicates']} days")
-
-        # Example 4: Process results programmatically
-        result = manager.check_duplicates_multi_day(
-            asset="option",
-            symbol="TLRY",
-            interval="5m",
-            sink="csv",
-            verbose=False
-        )
-        if result['days_with_duplicates'] > 0:
-            for day_result in result['daily_results']:
-                if day_result['duplicates'] > 0:
-                    print(f"{day_result['date']}: {day_result['duplicates']} duplicates")
-
-        # Example 5: Compare different sinks
-        for sink_type in ["csv", "parquet", "influxdb"]:
-            result = manager.check_duplicates_multi_day(
-                asset="option",
-                symbol="TLRY",
-                interval="5m",
-                sink=sink_type,
-                start_date="2025-11-03",
-                end_date="2025-11-07",
-                verbose=False
-            )
-            print(f"{sink_type}: {result['total_duplicates']:,} duplicates")
+        # This is an internal helper method called by:
+        # - _download_and_store_options() after successfully downloading option data for a day
+        # - _download_and_store_equity_or_index() after downloading stock/index data
+        # - Methods that modify data series and need to update coverage metadata
         """
-        
-        # START: Auto-detect date range if not provided
-        if not start_date or not end_date:
-            first_day, last_day = self._get_first_last_day_from_sink(
-                asset, symbol, interval, sink.lower()
-            )
-            
-            if not first_day or not last_day:
-                print("[MULTI-DAY-CHECK][ERROR] No data found in sink. Cannot determine date range.")
-                return {
-                    "error": "No data found in sink",
-                    "days_analyzed": 0,
-                    "total_rows": 0,
-                    "total_duplicates": 0,
-                    "global_duplicate_rate": 0.0,
-                    "days_with_duplicates": 0,
-                    "daily_results": [],
-                    "summary": {}
-                }
-            
-            start_date = start_date or first_day
-            end_date = end_date or last_day
-        # END: Auto-detect date range
-        
-        # Parse dates
-        try:
-            start_dt = dt.fromisoformat(start_date)
-            end_dt = dt.fromisoformat(end_date)
-        except ValueError as e:
-            return {
-                "error": f"Invalid date format: {e}",
-                "days_analyzed": 0,
-                "total_rows": 0,
-                "total_duplicates": 0,
-                "global_duplicate_rate": 0.0,
-                "days_with_duplicates": 0,
-                "daily_results": [],
-                "summary": {}
-            }
-        
-        if verbose:
-            print(f"\n{'='*70}")
-            print(f"DUPLICATE CHECK - {symbol} {asset} {interval} [{sink}]")
-            print(f"Date range: {start_date} -> {end_date}")
-            print(f"{'='*70}\n")
-        
-        # START: Iterate through all days and check duplicates
-        total_days = 0
-        total_rows_all = 0
-        total_duplicates_all = 0
-        daily_results = []
-        
-        current_dt = start_dt
-        while current_dt <= end_dt:
-            day_iso = current_dt.date().isoformat()
-            
-            # Skip weekends
-            if current_dt.weekday() >= 5:
-                current_dt += timedelta(days=1)
-                continue
-            
-            # Check duplicates for this day
-            result = self.check_duplicates_in_sink(
-                asset=asset,
-                symbol=symbol,
-                interval=interval,
-                sink=sink,
-                day_iso=day_iso,
-                sample_limit=sample_limit
-            )
-            
-            # Only process days with data
-            if result.get('total_rows', 0) > 0:
-                total_days += 1
-                total_rows_all += result['total_rows']
-                total_duplicates_all += result['duplicates']
-                
-                # Store daily result
-                daily_result = {
-                    'date': day_iso,
-                    'total_rows': result['total_rows'],
-                    'duplicates': result['duplicates'],
-                    'duplicate_rate': result['duplicate_rate'],
-                    'duplicate_keys': result['duplicate_keys'][:3]  # first 3 examples
-                }
-                daily_results.append(daily_result)
-                
-                # Print daily progress if verbose
-                if verbose:
-                    status = "✅" if result['duplicates'] == 0 else "❌"
-                    print(f"{status} {day_iso}: {result['total_rows']:6d} rows, "
-                          f"{result['duplicates']:4d} duplicates ({result['duplicate_rate']:5.2f}%)")
-            
-            current_dt += timedelta(days=1)
-        # END: Iterate through days
-        
-        # START: Calculate global statistics
-        global_dup_rate = (
-            100.0 * total_duplicates_all / total_rows_all 
-            if total_rows_all > 0 else 0.0
-        )
-        days_with_dups = sum(1 for r in daily_results if r['duplicates'] > 0)
-        # END: Calculate global statistics
-        
-        # START: Print summary report if verbose
-        if verbose:
-            print(f"\n{'='*70}")
-            print(f"SUMMARY")
-            print(f"{'='*70}")
-            print(f"Days analyzed:          {total_days}")
-            print(f"Total rows:             {total_rows_all:,}")
-            print(f"Total duplicates:       {total_duplicates_all:,}")
-            print(f"Global duplicate rate:  {global_dup_rate:.2f}%")
-            print(f"Days with duplicates:   {days_with_dups}")
-            
-            # Show detailed breakdown for days with duplicates
-            if days_with_dups > 0:
-                print(f"\n{'='*70}")
-                print(f"DAYS WITH DUPLICATES - DETAILS")
-                print(f"{'='*70}")
-                for day_info in daily_results:
-                    if day_info['duplicates'] > 0:
-                        print(f"\n📅 {day_info['date']}: {day_info['duplicates']} duplicates "
-                              f"out of {day_info['total_rows']} rows ({day_info['duplicate_rate']:.2f}%)")
-                        if day_info['duplicate_keys']:
-                            print(f"   Example duplicate keys:")
-                            for i, key in enumerate(day_info['duplicate_keys'], 1):
-                                print(f"     {i}. {key}")
-            else:
-                print(f"\n✅ No duplicates found in any day!")
-            
-            print(f"\n{'='*70}\n")
-        # END: Print summary report
-        
-        return {
-            "days_analyzed": total_days,
-            "total_rows": total_rows_all,
-            "total_duplicates": total_duplicates_all,
-            "global_duplicate_rate": round(global_dup_rate, 2),
-            "days_with_duplicates": days_with_dups,
-            "daily_results": daily_results,
-            "summary": {
-                "symbol": symbol,
-                "asset": asset,
-                "interval": interval,
-                "sink": sink,
-                "start_date": start_date,
-                "end_date": end_date,
-                "status": "clean" if total_duplicates_all == 0 else "duplicates_found"
-            }
-        }
-    # --------------------------------------------------------------------------
-    # END: Multi-day duplicate check functionality
-    # --------------------------------------------------------------------------
+        key = self._cache_key(asset, symbol, interval, sink)
+        entry = self._coverage_cache.get(key, {})
+        fd = entry.get("first_saved_day")
+        ld = entry.get("series_last_day")
+    
+        if first_day:
+            fd = first_day if (fd is None or first_day < fd) else fd
+        if last_day:
+            ld = last_day if (ld is None or last_day > ld) else ld
+    
+        new_entry = {}
+        if fd is not None:
+            new_entry["first_saved_day"] = fd
+        if ld is not None:
+            new_entry["series_last_day"] = ld
+    
+        if new_entry:
+            self._coverage_cache[key] = new_entry
 
-    def generate_duplicate_report(
-        self,
-        asset: str,
-        symbol: str,
-        intervals: Optional[List[str]] = None,
-        sinks: Optional[List[str]] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        sample_limit: int = 5,
-        verbose: bool = True
-    ) -> dict:
-        """Generate a comprehensive duplicate detection report across multiple intervals and sinks.
+    
 
-        This method creates a complete duplicate analysis report for a given symbol by iterating through
-        all specified time intervals (or all available intervals if not specified) and all storage sinks
-        (or all available sinks if not specified). For each combination of interval and sink, it calls
-        check_duplicates_multi_day() to perform the analysis and aggregates the results into a unified
-        report. This provides a holistic view of data quality across all dimensions, making it easy to
-        identify which intervals or sinks have duplicate issues. The report includes summary statistics,
-        per-interval-sink breakdowns, and actionable insights for data cleanup.
+    def _cache_key(self, asset: str, symbol: str, interval: str, sink: str) -> str:
+        """Constructs a standardized cache key for identifying a specific data series.
+
+        This method creates a unique string key by combining asset, symbol, interval, and sink parameters,
+        which is used for caching first-date coverage and other series metadata.
 
         Parameters
         ----------
         asset : str
-            The asset type to analyze. Possible values: "option", "stock", "index".
-            Determines which data structure to analyze across all intervals and sinks.
+            The asset type (e.g., 'stock', 'option', 'index').
         symbol : str
-            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
-            The report will cover all data for this symbol across specified intervals and sinks.
-        intervals : list of str, optional
-            Default: None (checks all available intervals)
-            List of bar intervals to check (e.g., ["tick", "1m", "5m", "1h", "1d"]).
-            When None, automatically detects and checks all intervals that have data for this
-            symbol in any of the specified sinks. Common intervals: "tick", "1m", "5m", "10m",
-            "15m", "30m", "1h", "1d".
-        sinks : list of str, optional
-            Default: None (checks all available sinks)
-            List of storage backends to check. Possible values: ["influxdb", "csv", "parquet"].
-            When None, checks all three sink types. Each sink may have different data coverage
-            and duplicate patterns depending on ingestion history.
-        start_date : str, optional
-            Default: None (auto-detect from data)
-            The start date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
-            When None, uses the earliest available date across all interval-sink combinations.
-            Applied uniformly to all checks for consistency.
-        end_date : str, optional
-            Default: None (auto-detect from data)
-            The end date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
-            When None, uses the latest available date across all interval-sink combinations.
-            Applied uniformly to all checks for consistency.
-        sample_limit : int, optional
-            Default: 5
-            Maximum number of duplicate key examples to collect per day per interval-sink
-            combination. Lower values reduce memory usage and report size. Set to 0 to
-            disable example collection.
-        verbose : bool, optional
-            Default: True
-            If True, prints detailed progress and results for each interval-sink combination
-            as they are analyzed, plus a final summary table. If False, runs silently and
-            only returns the results dictionary. Useful for batch processing and automation.
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h').
+        sink : str
+            The sink type (e.g., 'csv', 'parquet', 'influxdb').
 
         Returns
         -------
-        dict
-            A comprehensive report dictionary containing:
-            - 'symbol' (str): The analyzed symbol
-            - 'asset' (str): The asset type
-            - 'date_range' (dict): The date range analyzed with 'start' and 'end'
-            - 'intervals_checked' (list): List of intervals that were analyzed
-            - 'sinks_checked' (list): List of sinks that were analyzed
-            - 'total_combinations' (int): Total number of interval-sink combinations checked
-            - 'combinations_with_duplicates' (int): Number of combinations that have duplicates
-            - 'results' (list): List of per-combination results, each containing:
-                - 'interval' (str): The interval checked
-                - 'sink' (str): The sink checked
-                - 'days_analyzed' (int): Number of trading days checked
-                - 'total_rows' (int): Total rows in this combination
-                - 'total_duplicates' (int): Total duplicates found
-                - 'duplicate_rate' (float): Percentage of duplicates
-                - 'days_with_duplicates' (int): Number of days with duplicates
-                - 'status' (str): "CLEAN" or "DUPLICATES_FOUND"
-            - 'summary' (dict): Aggregate statistics across all combinations:
-                - 'total_rows_all' (int): Sum of rows across all combinations
-                - 'total_duplicates_all' (int): Sum of duplicates across all combinations
-                - 'overall_duplicate_rate' (float): Global duplicate percentage
-                - 'worst_combination' (dict): Interval-sink with highest duplicate rate
-                - 'cleanest_sinks' (list): Sinks with no duplicates
-                - 'problematic_intervals' (list): Intervals with duplicates in any sink
+        str
+            A colon-separated cache key string in the format 'asset:symbol:interval:sink'.
 
         Example Usage
         -------------
-        # Example 1: Full comprehensive report (all intervals, all sinks, all dates)
-        manager = ThetaSyncManager(cfg, client=client)
-        report = manager.generate_duplicate_report(
-            asset="option",
-            symbol="TLRY",
-            verbose=True
-        )
-        print(f"Checked {report['total_combinations']} combinations")
-        print(f"Found issues in {report['combinations_with_duplicates']} combinations")
-
-        # Example 2: Specific intervals and date range
-        report = manager.generate_duplicate_report(
-            asset="stock",
-            symbol="AAPL",
-            intervals=["1m", "5m", "1h"],
-            sinks=["csv", "parquet"],
-            start_date="2025-11-01",
-            end_date="2025-11-30",
-            verbose=True
-        )
-
-        # Example 3: Silent mode for scripting
-        report = manager.generate_duplicate_report(
-            asset="option",
-            symbol="TLRY",
-            intervals=["tick", "5m"],
-            sinks=["influxdb"],
-            verbose=False
-        )
-        if report['combinations_with_duplicates'] > 0:
-            print("⚠️  Duplicates found! Check report['results'] for details")
-
-        # Example 4: Compare all sinks for a specific interval
-        report = manager.generate_duplicate_report(
-            asset="option",
-            symbol="TLRY",
-            intervals=["5m"],  # Only check 5-minute data
-            verbose=True
-        )
-        for result in report['results']:
-            print(f"{result['sink']}: {result['total_duplicates']} duplicates")
-
-        # Example 5: Process results programmatically
-        report = manager.generate_duplicate_report(
-            asset="stock",
-            symbol="AAPL",
-            verbose=False
-        )
-        worst = report['summary']['worst_combination']
-        if worst:
-            print(f"Worst: {worst['interval']} in {worst['sink']}: "
-                  f"{worst['duplicate_rate']}% duplicates")
+        # This is an internal helper method called by:
+        # - clear_first_date_cache() to delete specific cache entries
+        # - _touch_cache() to update cache entries
+        # - _load_cache_file() and _save_cache_file() for cache persistence operations
         """
+        return f"{asset}:{symbol}:{interval}:{sink.lower()}"
+    
+    def clear_first_date_cache(self, asset: str, symbol: str, req_type: str) -> None:
+        """Deletes a specific first-date cache entry from memory and persists the change to disk.
 
-        # Determine which intervals to check
-        if intervals is None:
-            # Auto-detect: find all intervals that have data
-            intervals = []
-            test_sinks = sinks if sinks else ["csv", "parquet", "influxdb"]
-            for sink in test_sinks:
-                try:
-                    sink_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol)
-                    if os.path.exists(sink_dir):
-                        for interval_name in os.listdir(sink_dir):
-                            interval_path = os.path.join(sink_dir, interval_name)
-                            if os.path.isdir(interval_path) and interval_name not in intervals:
-                                intervals.append(interval_name)
-                except Exception:
-                    pass
+        This method is useful when you know the first available date for a symbol has changed (e.g., after
+        historical data becomes available) and you want to force a fresh discovery on the next sync.
 
-            if not intervals:
-                intervals = ["tick", "1m", "5m", "10m", "15m", "30m", "1h", "1d"]  # Default fallback
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'stock', 'option', 'index').
+        symbol : str
+            The ticker symbol or root symbol whose cache entry should be cleared.
+        req_type : str
+            The request type (e.g., 'trade', 'quote', 'ohlc') that identifies the specific cache entry.
 
-        # Determine which sinks to check
-        if sinks is None:
-            sinks = ["csv", "parquet", "influxdb"]
+        Returns
+        -------
+        None
+            The cache entry is removed if it exists, and the cache file is saved immediately.
 
-        if verbose:
-            print(f"\n{'='*80}")
-            print(f"COMPREHENSIVE DUPLICATE REPORT")
-            print(f"Symbol: {symbol} ({asset})")
-            print(f"Intervals: {', '.join(intervals)}")
-            print(f"Sinks: {', '.join(sinks)}")
-            if start_date and end_date:
-                print(f"Date range: {start_date} to {end_date}")
+        Example Usage
+        -------------
+        # Clear cached first date for SPY options to force re-discovery
+        manager.clear_first_date_cache("option", "SPY", "trade")
+        # Next sync will re-discover the first available date
+        """
+        key = self._cache_key(asset, symbol, req_type)
+        if key in self._coverage_cache:
+            del self._coverage_cache[key]
+            self._save_cache_file()
+
+
+
+
+    # =========================================================================
+    # (END)
+    # CACHE - Private Helpers
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # UTILITIES - Private Helpers
+    # =========================================================================
+    def _validate_interval(self, interval: str) -> None:
+        """Validates that the requested bar interval is supported by the ThetaData client.
+
+        This method checks the interval string against the allowed intervals defined in the client's
+        Interval type. If invalid, it raises an error with a helpful message listing all valid options.
+
+        Parameters
+        ----------
+        interval : str
+            The interval string to validate (e.g., '1d', '5m', '1h', 'tick').
+
+        Returns
+        -------
+        None
+            Returns nothing if validation passes.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() before starting any download to ensure interval is valid
+        # - Various download methods to fail fast on invalid intervals
+        """
+        if interval not in _ALLOWED_INTERVALS:
+            allowed = ", ".join(sorted(_ALLOWED_INTERVALS))
+            raise ValueError(
+                f"Unsupported interval '{interval}'. Allowed values are: {allowed}. "
+                f"For daily bars use '1d'."
+            )
+
+
+    def _validate_sink(self, sink: str) -> None:
+        """Validates that the requested output sink is supported.
+
+        This method checks that the sink parameter is one of the supported output formats.
+        If invalid, it raises an error listing all valid sink options.
+
+        Parameters
+        ----------
+        sink : str
+            The sink type to validate. Supported values: 'csv', 'parquet', 'influxdb'.
+
+        Returns
+        -------
+        None
+            Returns nothing if validation passes.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() before starting downloads to ensure sink is valid
+        # - Methods that write data to verify the output format is supported
+        """
+        s = (sink or "").strip().lower()
+        if s not in ("csv", "parquet", "influxdb"):
+            raise ValueError(f"Unsupported sink '{sink}'. Allowed: csv | parquet | influxdb")
+
+
+
+    # ------------------------- CORE SYNC -----------------------------
+
+    def _as_utc(self, x):
+        """Converts an ISO8601 string or datetime object to a timezone-aware UTC datetime.
+
+        This helper method normalizes various datetime representations to a consistent UTC datetime format,
+        handling both timezone-naive and timezone-aware inputs.
+
+        Parameters
+        ----------
+        x : str or datetime
+            An ISO8601 formatted datetime string (with or without 'Z' suffix) or a datetime object.
+            String format can be like '2024-01-15T10:30:00Z' or '2024-01-15T10:30:00+00:00'.
+
+        Returns
+        -------
+        datetime
+            A timezone-aware datetime object in UTC. If input was timezone-naive, UTC is assumed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() for normalizing start/end times
+        # - _compute_resume_start_datetime() for time conversions
+        # - Various date handling methods throughout the manager
+        """
+        if isinstance(x, str):
+            x = dt.fromisoformat(x.replace("Z", "+00:00"))
+        if x.tzinfo is None:
+            x = x.replace(tzinfo=self.UTC)
+        return x.astimezone(self.UTC)
+
+    def _floor_to_interval_et(self, ts_utc: dt, minutes: int) -> dt:
+        """Floors a UTC timestamp to the nearest interval boundary in Eastern Time, then converts back to UTC.
+
+        This method is used to align timestamps to bar boundaries (e.g., 5-minute, 15-minute intervals) according
+        to Eastern Time market hours, which is important for consistent bar alignment.
+
+        Parameters
+        ----------
+        ts_utc : datetime
+            A timezone-aware datetime in UTC that needs to be floored to an interval boundary.
+        minutes : int
+            The interval size in minutes. For example, 5 for 5-minute bars, 60 for hourly bars.
+
+        Returns
+        -------
+        datetime
+            A timezone-aware datetime in UTC, floored to the specified interval boundary in Eastern Time.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() when computing resume start times for intraday bars
+        # - _force_start_hms_from_max_ts() (nested function) for bar alignment
+        """
+        et = ts_utc.astimezone(self.ET).replace(second=0, microsecond=0)
+        et = et.replace(minute=(et.minute // minutes) * minutes)
+        return et.astimezone(self.UTC)
+
+    # === >>> DATE PARAM HELPERS — BEGIN
+    def _compute_intraday_window_et(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Ritorna (start_et_hms, end_et_hms) per una singola day_iso.
+        start_et_hms è calcolato come (max timestamp del giorno già salvato) - overlap_seconds,
+        >>> POI ALLINEATO AL BUCKET per M/H frames <
+        """
+        ET = ZoneInfo("America/New_York")
+    
+        # >>> INFLUX-FIRST PATH (skip file scan) <
+        sink_lower = (sink or "").lower()
+        if sink_lower == "influxdb":
+            prefix = (self.cfg.influx_measure_prefix or "")
+            if asset == "option":
+                meas = f"{prefix}{symbol}-option-{interval}"
             else:
-                print(f"Date range: Auto-detect")
-            print(f"{'='*80}\n")
-
-        # Collect results for each combination
-        results = []
-        total_rows_all = 0
-        total_duplicates_all = 0
-        combinations_with_duplicates = 0
-
-        for interval in intervals:
-            for sink in sinks:
-                if verbose:
-                    print(f"\n--- Checking {interval} in {sink.upper()} ---")
-
+                meas = f"{prefix}{symbol}-{asset}-{interval}"
+            
+            day_start_utc = pd.Timestamp(f"{day_iso}T00:00:00", tz=ET).tz_convert("UTC")
+            day_end_utc = (pd.Timestamp(f"{day_iso}T00:00:00", tz=ET) + pd.Timedelta(days=1)).tz_convert("UTC")
+            
+            try:
+                last_in_day = self._influx_last_ts_between(meas, day_start_utc, day_end_utc)
+                if last_in_day is not None:
+                    max_ts = last_in_day.tz_convert(ET).tz_localize(None)  # ET-naive
+                else:
+                    return (None, None)
+            except Exception as e:
+                print(f"[WINDOW][INFLUX][WARN] query failed: {e}")
+                return (None, None)
+        else:
+            # File-based path (original logic)
+            parts = self._list_day_files(asset, symbol, interval, sink, day_iso)
+            if not parts:
+                return (None, None)
+    
+            # HEAD-REFILL guards
+            try:
+                part_list = self._list_day_part_files(asset, symbol, interval, sink, day_iso)
+                if part_list and part_list[0][0] > 1:
+                    return (None, None)
+            except Exception:
+                pass
+            try:
+                st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
+                if st.get("missing") or st.get("has_mixed"):
+                    return (None, None)
+            except Exception:
+                pass
+    
+            def _max_ts_from_file(path: str) -> Optional[pd.Timestamp]:
                 try:
-                    result = self.check_duplicates_multi_day(
-                        asset=asset,
-                        symbol=symbol,
-                        interval=interval,
-                        sink=sink,
-                        start_date=start_date,
-                        end_date=end_date,
-                        sample_limit=sample_limit,
-                        verbose=False  # Suppress individual reports
-                    )
+                    if path.endswith(".csv"):
+                        head = pd.read_csv(path, nrows=0)
+                        cols = list(head.columns)
+                        tcol = next((c for c in ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"] if c in cols), None)
+                        if not tcol:
+                            return None
+                        s = pd.read_csv(path, usecols=[tcol])[tcol]
+                        ts = pd.to_datetime(s, errors="coerce")
+                    else:
+                        df = pd.read_parquet(path, columns=["timestamp"])
+                        ts = pd.to_datetime(df["timestamp"], errors="coerce")
+                    if getattr(ts.dtype, "tz", None) is not None:
+                        ts = ts.dt.tz_convert(ET).dt.tz_localize(None)
+                    return ts.max() if ts.notna().any() else None
+                except Exception:
+                    return None
+    
+            max_ts = None
+            for p in parts:
+                mt = _max_ts_from_file(p)
+                if mt is not None and (max_ts is None or mt > max_ts):
+                    max_ts = mt
+    
+            if not max_ts:
+                return (None, None)
+    
+        # >>> COMMON: Overlap + Bucket Alignment <
+        overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
+        start_dt = max_ts - pd.Timedelta(seconds=overlap)
+        
+        iv = (interval or "").strip().lower()
+        if iv.endswith("m") or iv.endswith("h"):
+            m = int(iv[:-1]) * (60 if iv.endswith("h") else 1)
+            # Floor to bucket (ET-naive input, no tz conversion needed)
+            start_et_aware = start_dt.replace(tzinfo=ET)
+            floored_utc = self._floor_to_interval_et(start_et_aware.astimezone(self.UTC), m)
+            start_dt = floored_utc.astimezone(ET).replace(tzinfo=None)
+        
+        start_et_hms = start_dt.strftime("%H:%M:%S")
+        return (start_et_hms, None)
 
-                    # Extract list of dates with duplicates
-                    dates_with_duplicates = [
-                        day_result['date']
-                        for day_result in result.get("daily_results", [])
-                        if day_result.get('duplicates', 0) > 0
-                    ]
 
-                    combination_result = {
-                        "interval": interval,
-                        "sink": sink,
-                        "days_analyzed": result.get("days_analyzed", 0),
-                        "total_rows": result.get("total_rows", 0),
-                        "total_duplicates": result.get("total_duplicates", 0),
-                        "duplicate_rate": result.get("global_duplicate_rate", 0.0),
-                        "days_with_duplicates": result.get("days_with_duplicates", 0),
-                        "dates_with_duplicates": dates_with_duplicates,
-                        "status": result.get("summary", {}).get("status", "unknown")
-                    }
+    def _iso_date_only(self, s: str) -> str:
+        """Extracts the date portion from an ISO datetime string, returning only 'YYYY-MM-DD'.
 
-                    results.append(combination_result)
+        This helper handles various datetime string formats and extracts just the date component,
+        discarding any time information.
 
-                    total_rows_all += combination_result["total_rows"]
-                    total_duplicates_all += combination_result["total_duplicates"]
+        Parameters
+        ----------
+        s : str
+            A date or datetime string in formats like 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM:SS',
+            or 'YYYY-MM-DD HH:MM:SS'.
 
-                    if combination_result["total_duplicates"] > 0:
-                        combinations_with_duplicates += 1
+        Returns
+        -------
+        str
+            The date portion in 'YYYY-MM-DD' format.
 
-                    if verbose:
-                        status_icon = "✅" if combination_result["total_duplicates"] == 0 else "⚠️"
-                        print(f"  {status_icon} Rows: {combination_result['total_rows']:,}, "
-                              f"Duplicates: {combination_result['total_duplicates']:,} "
-                              f"({combination_result['duplicate_rate']:.2f}%)")
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _td_ymd() to normalize date strings before formatting
+        # - Various methods that need to extract date from datetime strings
+        """
+        s = str(s)
+        if "T" in s:
+            s = s.split("T", 1)[0]
+        elif " " in s:
+            s = s.split(" ", 1)[0]
+        return s
+    
+    def _td_ymd(self, day_iso: str) -> str:
+        """Converts an ISO date string to ThetaData's YYYYMMDD format required for API date parameters.
 
-                        # Print dates with duplicates if any
-                        if dates_with_duplicates:
-                            dates_str = ", ".join(dates_with_duplicates)
-                            print(f"      Dates with duplicates: {dates_str}")
+        This method normalizes various date formats to the compact YYYYMMDD format expected by ThetaData API
+        endpoints, with validation to ensure the result is exactly 8 digits.
 
-                except Exception as e:
-                    if verbose:
-                        print(f"  ❌ Error: {str(e)}")
-                    results.append({
-                        "interval": interval,
-                        "sink": sink,
-                        "error": str(e),
-                        "status": "error"
-                    })
+        Parameters
+        ----------
+        day_iso : str
+            An ISO date string like 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS'. The time portion is ignored.
 
-        # Calculate summary statistics
-        overall_duplicate_rate = (total_duplicates_all / total_rows_all * 100) if total_rows_all > 0 else 0.0
+        Returns
+        -------
+        str
+            A date string in 'YYYYMMDD' format (8 digits, no separators).
 
-        # Find worst combination
-        worst_combination = None
-        max_dup_rate = 0.0
-        for result in results:
-            if result.get("duplicate_rate", 0) > max_dup_rate:
-                max_dup_rate = result["duplicate_rate"]
-                worst_combination = result
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() when building API request parameters
+        # - _download_and_store_equity_or_index() for date parameter formatting
+        # - _expirations_that_traded() for daily expiration queries
+        """
+        d = self._iso_date_only(day_iso).replace("-", "")
+        if len(d) != 8 or not d.isdigit():
+            raise ValueError(f"Bad day_iso '{day_iso}' → '{d}' (expected YYYYMMDD)")
+        return d
+    # === <<< DATE PARAM HELPERS — END
 
-        # Find cleanest sinks
-        cleanest_sinks = []
-        for sink in sinks:
-            sink_results = [r for r in results if r.get("sink") == sink and r.get("status") != "error"]
-            if all(r.get("total_duplicates", 0) == 0 for r in sink_results):
-                cleanest_sinks.append(sink)
+    
+    
+    def _iso_stamp(self, ts) -> str:
+        """Convert a timestamp to a filename-safe ISO format string in UTC.
 
-        # Find problematic intervals
-        problematic_intervals = []
-        for interval in intervals:
-            interval_results = [r for r in results if r.get("interval") == interval and r.get("status") != "error"]
-            if any(r.get("total_duplicates", 0) > 0 for r in interval_results):
-                problematic_intervals.append(interval)
+        This method takes various timestamp representations (datetime objects, pandas Timestamps, or
+        ISO strings) and converts them to a consistent 'YYYY-MM-DDTHH-MM-SSZ' format using hyphens
+        instead of colons, making the result safe for use in file and directory names on all operating
+        systems (Windows, Linux, macOS).
 
-        # Print summary
-        if verbose:
-            print(f"\n{'='*80}")
-            print(f"SUMMARY")
-            print(f"{'='*80}")
-            print(f"Total combinations checked: {len(results)}")
-            print(f"Combinations with duplicates: {combinations_with_duplicates}")
-            print(f"Total rows across all: {total_rows_all:,}")
-            print(f"Total duplicates across all: {total_duplicates_all:,}")
-            print(f"Overall duplicate rate: {overall_duplicate_rate:.2f}%")
+        Parameters
+        ----------
+        ts : datetime, pandas.Timestamp, str, or None
+            The timestamp to convert. Accepts timezone-aware or naive datetime objects, pandas
+            Timestamps, ISO format strings, or None. If None, uses the current UTC time.
 
-            if worst_combination and worst_combination.get("duplicate_rate", 0) > 0:
-                print(f"\n⚠️  Worst combination: {worst_combination['interval']} in {worst_combination['sink']} "
-                      f"({worst_combination['duplicate_rate']:.2f}% duplicates)")
-                if worst_combination.get("dates_with_duplicates"):
-                    dates_str = ", ".join(worst_combination["dates_with_duplicates"])
-                    print(f"    Affected dates: {dates_str}")
+        Returns
+        -------
+        str
+            A filename-safe ISO format timestamp string in the form "YYYY-MM-DDTHH-MM-SSZ"
+            (e.g., "2024-03-15T14-30-00Z"). Colons are replaced with hyphens to ensure
+            cross-platform filename compatibility.
 
-            if cleanest_sinks:
-                print(f"\n✅ Clean sinks (no duplicates): {', '.join(cleanest_sinks)}")
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _make_file_basepath() to generate timestamp-prefixed filenames
+        # - File naming operations throughout the manager
 
-            if problematic_intervals:
-                print(f"\n⚠️  Intervals with duplicates: {', '.join(problematic_intervals)}")
+        from datetime import datetime, timezone
+        stamp = manager._iso_stamp(datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc))
+        # Returns: "2024-03-15T14-30-00Z"
 
-            # List all combinations with duplicates and their dates
-            problematic_combinations = [r for r in results if r.get("total_duplicates", 0) > 0]
-            if problematic_combinations:
-                print(f"\n{'='*80}")
-                print(f"DETAILED BREAKDOWN - COMBINATIONS WITH DUPLICATES")
-                print(f"{'='*80}")
-                for combo in problematic_combinations:
-                    print(f"\n  {combo['interval']} in {combo['sink'].upper()}: "
-                          f"{combo['total_duplicates']:,} duplicates ({combo['duplicate_rate']:.2f}%)")
-                    if combo.get("dates_with_duplicates"):
-                        dates_str = ", ".join(combo["dates_with_duplicates"])
-                        print(f"    Dates: {dates_str}")
+        stamp = manager._iso_stamp(None)
+        # Returns: current UTC time like "2024-03-20T10-45-32Z"
+        """
+        if ts is None:
+            return dt.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+        if hasattr(ts, "to_pydatetime"):
+            ts = ts.to_pydatetime()
+        try:
+            # Usa la tua utility per ottenere un datetime UTC aware
+            ts = self._as_utc(ts)
+        except Exception:
+            # Fallback filename-safe se era una stringa bizzarra
+            return str(ts).replace(":", "-").replace(" ", "T")
+        return ts.strftime("%Y-%m-%dT%H-%M-%SZ")
+    
+    def _et_hms_from_iso_utc(iso: str, minus_seconds: int = 0) -> str:
+        """
+        Build ET 'HH:MM:SS' from either:
+        - UTC ISO (ending with 'Z' or explicit offset)  -> convert to ET, minus overlap
+        - naive ET string ("YYYY-MM-DD HH:MM:SS")      -> treat as ET, minus overlap
+        """
+        try:
+            txt = str(iso).strip()
+            if ("Z" in txt) or (len(txt) >= 6 and txt[-6] in "+-"):
+                # UTC input -> convert to ET
+                dt = dt.fromisoformat(txt.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
+            else:
+                # Naive ET input -> attach ET tz without shifting the clock
+                dt = dt.fromisoformat(txt).replace(tzinfo=ZoneInfo("America/New_York"))
+    
+            if minus_seconds and int(minus_seconds) > 0:
+                dt = dt - timedelta(seconds=int(minus_seconds))
+            return dt.strftime("%H:%M:%S")
+        except Exception:
+            return "00:00:00"
 
-            print(f"\n{'='*80}\n")
+    
+    def _min_ts_from_df(self, df) -> Optional[str]:
+        """Best-effort extraction of the minimum timestamp column from a DataFrame."""
+        for col in ("timestamp","TIMESTAMP","datetime","DATETIME","QUOTE_DATETIME"):
+            if col in df.columns:
+                try:
+                    s = df[col]
+                    # fast path: if already string ISO
+                    if s.dtype == object:
+                        # find first non-empty then min
+                        vals = [x for x in s.values if isinstance(x, str) and x]
+                        if vals:
+                            m = min(self._as_utc(v) for v in vals)
+                            return self._iso_stamp(m)
+                    # general path
+                    ts = s.min()
+                    return self._iso_stamp(ts)
+                except Exception:
+                    continue
+        return None
 
-        return {
-            "symbol": symbol,
-            "asset": asset,
-            "date_range": {
-                "start": start_date,
-                "end": end_date
-            },
-            "intervals_checked": intervals,
-            "sinks_checked": sinks,
-            "total_combinations": len(results),
-            "combinations_with_duplicates": combinations_with_duplicates,
-            "results": results,
-            "summary": {
-                "total_rows_all": total_rows_all,
-                "total_duplicates_all": total_duplicates_all,
-                "overall_duplicate_rate": round(overall_duplicate_rate, 2),
-                "worst_combination": worst_combination,
-                "cleanest_sinks": cleanest_sinks,
-                "problematic_intervals": problematic_intervals
-            }
-        }
 
+
+    def _ensure_list(self, data: Any, keys=("data", "results", "items", "expirations", "dates", "contracts")) -> List[Any]:
+        if data is None:
+            return []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for k in keys:
+                v = data.get(k)
+                if isinstance(v, list):
+                    return v
+            return [data]
+        return [data]
+
+    def _normalize_date_str(self, s: str) -> Optional[str]:
+        if not s:
+            return None
+        s = str(s)
+        if len(s) == 8 and s.isdigit():
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return s
+
+    def _parse_date(self, d):
+        """Ritorna date da str 'YYYY-MM-DD' o 'YYYYMMDD', da datetime/date."""
+
+        if isinstance(d, date) and not isinstance(d, datetime):
+            return d
+        if isinstance(d, datetime):
+            return d.date()
+        if isinstance(d, str):
+            s = d.strip()
+            if "-" in s:
+                return datetime.strptime(s, "%Y-%m-%d").date()
+            return datetime.strptime(s, "%Y%m%d").date()
+        raise ValueError(f"Formato data non supportato: {type(d)}={d!r}")
+    
+    def _iter_days(self, start, end):
+        """Genera stringhe 'YYYY-MM-DD' da start a end (inclusivi)."""
+
+        sd = self._parse_date(start)
+        ed = self._parse_date(end)
+        if sd > ed:
+            sd, ed = ed, sd
+        cur = sd
+        while cur <= ed:
+            yield cur.isoformat()
+            cur += timedelta(days=1)
+
+    async def _maybe_await(self, x):
+        """Conditionally await a value if it's awaitable, otherwise return it directly.
+
+        This utility method provides safe handling of values that may or may not be coroutines or
+        async functions. If the value is awaitable (like an async function result), it awaits it.
+        Otherwise, it returns the value immediately. This enables writing code that can handle both
+        sync and async operations uniformly.
+
+        Parameters
+        ----------
+        x : Any
+            The value to potentially await. Can be any Python object, including coroutines, futures,
+            or regular values.
+
+        Returns
+        -------
+        Any
+            If x is awaitable (inspect.isawaitable returns True), returns the result of awaiting x.
+            Otherwise, returns x unchanged.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by methods that may receive either
+        # synchronous values or async coroutines as parameters
+
+        # With async value:
+        result = await manager._maybe_await(some_async_function())
+        # Awaits and returns the result
+
+        # With sync value:
+        result = await manager._maybe_await(42)
+        # Returns: 42 immediately
+        """
+        return await x if inspect.isawaitable(x) else x
+
+
+
+    # =========================================================================
+    # (END)
+    # UTILITIES - Private Helpers
+    # =========================================================================
