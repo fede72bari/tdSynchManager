@@ -6455,6 +6455,434 @@ class ThetaSyncManager:
     # (BEGIN)
     # LOCAL DB QUERY
     # =========================================================================
+    def list_available_data(
+        self,
+        asset: Optional[str] = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        sink: Optional[str] = None
+    ) -> pd.DataFrame:
+        """List all available data series in local sinks with date range information.
+
+        This method scans the local sink directories (CSV, Parquet, InfluxDB) and returns a summary
+        of all available time series with their earliest and latest timestamps. Useful for discovering
+        what data is available before querying.
+
+        Parameters
+        ----------
+        asset : str, optional
+            Filter by asset type ("option", "stock", "index"). If None, returns all assets.
+        symbol : str, optional
+            Filter by symbol. If None, returns all symbols.
+        interval : str, optional
+            Filter by interval (e.g., "1m", "5m", "1d"). If None, returns all intervals.
+        sink : str, optional
+            Filter by sink type ("csv", "parquet", "influxdb"). If None, scans all sinks.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            - asset: Asset type
+            - symbol: Ticker symbol
+            - interval: Time interval
+            - sink: Storage format
+            - first_datetime: Earliest available timestamp (UTC)
+            - last_datetime: Latest available timestamp (UTC)
+            - file_count: Number of files (for CSV/Parquet) or 0 for InfluxDB
+            - total_size_mb: Total size in MB (for CSV/Parquet) or None for InfluxDB
+
+        Example Usage
+        -------------
+        # List all available data
+        available = manager.list_available_data()
+
+        # List only AAPL stock data in CSV format
+        aapl_csv = manager.list_available_data(asset="stock", symbol="AAPL", sink="csv")
+
+        # List all 5-minute interval data
+        five_min = manager.list_available_data(interval="5m")
+        """
+        results = []
+
+        # Determine which sinks to scan
+        sinks_to_scan = []
+        if sink is None:
+            sinks_to_scan = ["csv", "parquet", "influxdb"]
+        else:
+            sinks_to_scan = [sink.lower()]
+
+        # Scan CSV and Parquet sinks
+        for sink_type in ["csv", "parquet"]:
+            if sink_type not in sinks_to_scan:
+                continue
+
+            data_root = os.path.join(self.cfg.root_dir, "data")
+            if not os.path.isdir(data_root):
+                continue
+
+            # Scan asset directories
+            for asset_dir in os.listdir(data_root):
+                if asset is not None and asset_dir.lower() != asset.lower():
+                    continue
+
+                asset_path = os.path.join(data_root, asset_dir)
+                if not os.path.isdir(asset_path):
+                    continue
+
+                # Scan symbol directories
+                for symbol_dir in os.listdir(asset_path):
+                    if symbol is not None and symbol_dir.upper() != symbol.upper():
+                        continue
+
+                    symbol_path = os.path.join(asset_path, symbol_dir)
+                    if not os.path.isdir(symbol_path):
+                        continue
+
+                    # Scan interval directories
+                    for interval_dir in os.listdir(symbol_path):
+                        if interval is not None and interval_dir.lower() != interval.lower():
+                            continue
+
+                        interval_path = os.path.join(symbol_path, interval_dir)
+                        if not os.path.isdir(interval_path):
+                            continue
+
+                        # Check if sink directory exists
+                        sink_path = os.path.join(interval_path, sink_type)
+                        if not os.path.isdir(sink_path):
+                            continue
+
+                        # Get list of files
+                        files = self._list_series_files(asset_dir, symbol_dir, interval_dir, sink_type)
+                        if not files:
+                            continue
+
+                        # Get earliest and latest dates
+                        earliest, latest, _ = self._series_earliest_and_latest_day(
+                            asset_dir, symbol_dir, interval_dir, sink_type
+                        )
+
+                        # Get first and last timestamps from actual data
+                        first_ts = None
+                        last_ts = None
+                        total_size = 0
+
+                        try:
+                            # First timestamp from first file
+                            if sink_type == "csv":
+                                first_ts = self._first_timestamp_in_csv(files[0])
+                                last_ts = self._last_csv_timestamp(files[-1])
+                            else:  # parquet
+                                first_ts = self._first_timestamp_in_parquet(files[0])
+                                # For last timestamp, read last file
+                                df_last = pd.read_parquet(files[-1])
+                                time_col = self._detect_time_col(df_last.columns)
+                                if time_col and not df_last.empty:
+                                    last_ts = pd.to_datetime(df_last[time_col].max(), utc=True).isoformat()
+
+                            # Calculate total size
+                            for f in files:
+                                if os.path.isfile(f):
+                                    total_size += os.path.getsize(f)
+                        except Exception as e:
+                            print(f"[WARNING] Error reading timestamps for {asset_dir}/{symbol_dir}/{interval_dir}: {e}")
+
+                        results.append({
+                            "asset": asset_dir,
+                            "symbol": symbol_dir,
+                            "interval": interval_dir,
+                            "sink": sink_type,
+                            "first_datetime": first_ts,
+                            "last_datetime": last_ts,
+                            "file_count": len(files),
+                            "total_size_mb": round(total_size / (1024 * 1024), 2) if total_size > 0 else 0
+                        })
+
+        # Scan InfluxDB sink (if configured and requested)
+        if "influxdb" in sinks_to_scan:
+            try:
+                # For now, InfluxDB listing is not implemented as it requires different approach
+                # We would need to query SHOW MEASUREMENTS and then get min/max timestamps
+                # This is left as TODO for future enhancement
+                pass
+            except Exception:
+                pass
+
+        df = pd.DataFrame(results)
+        if df.empty:
+            return pd.DataFrame(columns=[
+                "asset", "symbol", "interval", "sink", "first_datetime",
+                "last_datetime", "file_count", "total_size_mb"
+            ])
+
+        return df.sort_values(["asset", "symbol", "interval", "sink"]).reset_index(drop=True)
+
+
+    def query_local_data(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str,
+        start_date: Optional[str] = None,
+        start_datetime: Optional[str] = None,
+        end_date: Optional[str] = None,
+        end_datetime: Optional[str] = None,
+        max_rows: Optional[int] = None
+    ) -> Tuple[Optional[pd.DataFrame], List[str]]:
+        """Query and extract data from local sinks within a date/time range.
+
+        This method reads data from local storage (CSV, Parquet, or InfluxDB) for a specified
+        symbol and time range. It returns both the data and a list of warnings/errors encountered.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "option", "stock", or "index" (required).
+        symbol : str
+            Ticker symbol to query (required).
+        interval : str
+            Time interval: "tick", "1m", "5m", "1h", "1d", etc. (required).
+        sink : str
+            Storage format: "csv", "parquet", or "influxdb" (required).
+        start_date : str, optional
+            Start date in ISO format "YYYY-MM-DD". If provided without start_datetime,
+            assumes 00:00:00 UTC on this date.
+        start_datetime : str, optional
+            Start datetime in ISO format "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD HH:MM:SS".
+            If provided, takes precedence over start_date.
+        end_date : str, optional
+            End date in ISO format "YYYY-MM-DD". If not provided, queries up to the latest data.
+            If provided without end_datetime, assumes 23:59:59 UTC on this date.
+        end_datetime : str, optional
+            End datetime in ISO format "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD HH:MM:SS".
+            If provided, takes precedence over end_date.
+        max_rows : int, optional
+            Maximum number of rows to return. If the result exceeds this limit, returns
+            only the first max_rows and adds a warning.
+
+        Returns
+        -------
+        tuple[pd.DataFrame or None, list of str]
+            A tuple containing:
+            - df: Pandas DataFrame with the queried data, or None if no data found or error occurred
+            - warnings: List of warning/error messages:
+                * "NO_DATA_DIR": Data directory not found for this series
+                * "NO_FILES": No data files found in the specified range
+                * "MAX_ROWS_REACHED": Result truncated to max_rows limit
+                * "READ_ERROR: <details>": Error reading data files
+                * "INFLUXDB_NOT_CONFIGURED": InfluxDB sink requested but not configured
+
+        Example Usage
+        -------------
+        # Query all available data for AAPL stock at 5m interval
+        df, warnings = manager.query_local_data(
+            asset="stock",
+            symbol="AAPL",
+            interval="5m",
+            sink="parquet",
+            start_date="2024-01-01"
+        )
+
+        # Query with specific datetime range and row limit
+        df, warnings = manager.query_local_data(
+            asset="option",
+            symbol="SPY",
+            interval="1m",
+            sink="csv",
+            start_datetime="2024-01-01T14:30:00",
+            end_datetime="2024-01-01T16:00:00",
+            max_rows=10000
+        )
+
+        # Check for warnings
+        if warnings:
+            for w in warnings:
+                print(f"Warning: {w}")
+        """
+        warnings = []
+
+        # Validate inputs
+        self._validate_sink(sink)
+        self._validate_interval(interval)
+
+        sink_lower = sink.lower()
+
+        # Parse start datetime
+        start_ts = None
+        if start_datetime:
+            try:
+                start_ts = pd.to_datetime(start_datetime, utc=True)
+            except Exception as e:
+                warnings.append(f"INVALID_START_DATETIME: {e}")
+                return None, warnings
+        elif start_date:
+            try:
+                start_ts = pd.to_datetime(start_date, utc=True)
+            except Exception as e:
+                warnings.append(f"INVALID_START_DATE: {e}")
+                return None, warnings
+        else:
+            warnings.append("NO_START: Either start_date or start_datetime is required")
+            return None, warnings
+
+        # Parse end datetime
+        end_ts = None
+        if end_datetime:
+            try:
+                end_ts = pd.to_datetime(end_datetime, utc=True)
+            except Exception as e:
+                warnings.append(f"INVALID_END_DATETIME: {e}")
+                return None, warnings
+        elif end_date:
+            try:
+                # End of day
+                end_ts = pd.to_datetime(end_date, utc=True) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            except Exception as e:
+                warnings.append(f"INVALID_END_DATE: {e}")
+                return None, warnings
+
+        # Handle different sinks
+        if sink_lower == "influxdb":
+            # Query InfluxDB
+            try:
+                cli = self._ensure_influx_client()
+            except Exception as e:
+                warnings.append(f"INFLUXDB_NOT_CONFIGURED: {e}")
+                return None, warnings
+
+            # Build measurement name
+            measurement = f"{symbol.upper()}-{asset.lower()}-{interval.lower()}"
+            if self.cfg.influx_measurement_prefix:
+                measurement = f"{self.cfg.influx_measurement_prefix}{measurement}"
+
+            # Build query
+            where_clauses = []
+            if start_ts:
+                where_clauses.append(f"time >= TIMESTAMP '{start_ts.isoformat().replace('+00:00', 'Z')}'")
+            if end_ts:
+                where_clauses.append(f"time <= TIMESTAMP '{end_ts.isoformat().replace('+00:00', 'Z')}'")
+
+            where_str = " AND ".join(where_clauses) if where_clauses else "1=1"
+            limit_str = f"LIMIT {max_rows}" if max_rows else ""
+
+            query = f'SELECT * FROM "{measurement}" WHERE {where_str} ORDER BY time {limit_str}'
+
+            try:
+                result = cli.query(query)
+                df = result.to_pandas() if hasattr(result, "to_pandas") else result
+
+                if df is None or df.empty:
+                    warnings.append("NO_DATA: No data found in InfluxDB for specified range")
+                    return None, warnings
+
+                # Check if max_rows was reached
+                if max_rows and len(df) >= max_rows:
+                    warnings.append(f"MAX_ROWS_REACHED: Result limited to {max_rows} rows")
+
+                # Normalize timestamp column
+                if "time" in df.columns:
+                    df = df.rename(columns={"time": "timestamp"})
+                if "timestamp" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
+
+                return df, warnings
+
+            except Exception as e:
+                warnings.append(f"INFLUXDB_QUERY_ERROR: {e}")
+                return None, warnings
+
+        else:
+            # Query CSV or Parquet files
+            data_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
+
+            if not os.path.isdir(data_dir):
+                warnings.append(f"NO_DATA_DIR: Directory not found: {data_dir}")
+                return None, warnings
+
+            # Get all files for this series
+            all_files = self._list_series_files(asset, symbol, interval, sink_lower)
+
+            if not all_files:
+                warnings.append(f"NO_FILES: No data files found in {data_dir}")
+                return None, warnings
+
+            # Filter files by date range based on filename
+            # Filename format: YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext
+            relevant_files = []
+            for f in all_files:
+                fname = os.path.basename(f)
+                # Extract date from filename
+                date_match = re.match(r'^(\d{4}-\d{2}-\d{2})', fname)
+                if date_match:
+                    file_date = pd.to_datetime(date_match.group(1), utc=True)
+                    # Include file if its date overlaps with our range
+                    if start_ts and file_date < start_ts.normalize() - pd.Timedelta(days=1):
+                        continue  # Too early
+                    if end_ts and file_date > end_ts.normalize() + pd.Timedelta(days=1):
+                        continue  # Too late
+                    relevant_files.append(f)
+
+            if not relevant_files:
+                warnings.append(f"NO_FILES_IN_RANGE: No files found for date range {start_ts} to {end_ts}")
+                return None, warnings
+
+            # Read and concatenate files
+            dfs = []
+            total_rows = 0
+
+            try:
+                for file_path in relevant_files:
+                    if sink_lower == "csv":
+                        df_chunk = pd.read_csv(file_path)
+                    else:  # parquet
+                        df_chunk = pd.read_parquet(file_path)
+
+                    if df_chunk.empty:
+                        continue
+
+                    # Normalize timestamp column
+                    time_col = self._detect_time_col(df_chunk.columns)
+                    if time_col:
+                        df_chunk[time_col] = pd.to_datetime(df_chunk[time_col], utc=True).dt.tz_localize(None)
+
+                        # Filter by timestamp range
+                        if start_ts:
+                            df_chunk = df_chunk[df_chunk[time_col] >= start_ts.tz_localize(None)]
+                        if end_ts:
+                            df_chunk = df_chunk[df_chunk[time_col] <= end_ts.tz_localize(None)]
+
+                    if not df_chunk.empty:
+                        dfs.append(df_chunk)
+                        total_rows += len(df_chunk)
+
+                        # Check max_rows limit
+                        if max_rows and total_rows >= max_rows:
+                            warnings.append(f"MAX_ROWS_REACHED: Result limited to {max_rows} rows (more data available)")
+                            break
+
+                if not dfs:
+                    warnings.append("NO_DATA: No data found in specified time range")
+                    return None, warnings
+
+                # Concatenate all chunks
+                result_df = pd.concat(dfs, ignore_index=True)
+
+                # Apply max_rows limit
+                if max_rows and len(result_df) > max_rows:
+                    result_df = result_df.head(max_rows)
+
+                # Sort by timestamp
+                time_col = self._detect_time_col(result_df.columns)
+                if time_col:
+                    result_df = result_df.sort_values(time_col).reset_index(drop=True)
+
+                return result_df, warnings
+
+            except Exception as e:
+                warnings.append(f"READ_ERROR: {e}")
+                return None, warnings
 
     # =========================================================================
     # (END)
