@@ -6372,31 +6372,140 @@ class ThetaSyncManager:
         sample_limit: int = 10,
         verbose: bool = True
     ) -> dict:
-        """
-        Check for duplicates across multiple days in the specified sink.
-        
-        This function iterates through all trading days (Mon-Fri) in the given range,
-        calling check_duplicates_in_sink() for each day and aggregating the results.
-        
-        Args:
-            asset: "option", "stock", or "index"
-            symbol: symbol ticker (e.g., "TLRY", "AAPL")
-            interval: timeframe (e.g., "tick", "1m", "5m", "1d")
-            sink: "influxdb", "csv", or "parquet"
-            start_date: start date ISO format (e.g., "2025-11-03"), or None to auto-detect
-            end_date: end date ISO format (e.g., "2025-11-07"), or None to auto-detect
-            sample_limit: max number of duplicate key examples to collect per day
-            verbose: if True, print daily progress reports
-            
-        Returns:
-            dict with:
-                - days_analyzed: number of trading days checked
-                - total_rows: total rows across all days
-                - total_duplicates: total duplicates found
-                - global_duplicate_rate: overall percentage of duplicates
-                - days_with_duplicates: number of days containing duplicates
-                - daily_results: list of per-day results
-                - summary: dict with date range and status
+        """Check for duplicate records across multiple trading days in the specified data sink.
+
+        This method performs a comprehensive duplicate detection analysis across a date range of trading
+        days (Monday-Friday), automatically skipping weekends. It iterates through each trading day in
+        the specified range, calls check_duplicates_in_sink() for each day, and aggregates the results
+        into a comprehensive multi-day report. The method can auto-detect the available date range from
+        the data sink if start_date and end_date are not provided. This is essential for data quality
+        assurance, identifying data ingestion issues, and maintaining clean historical datasets across
+        CSV, Parquet, and InfluxDB storage backends.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type to check. Possible values: "option", "stock", "index".
+            Determines which data structure and key columns to use for duplicate detection.
+        symbol : str
+            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
+            Must match an existing symbol in the specified sink.
+        interval : str
+            The bar interval or timeframe (e.g., "tick", "1m", "5m", "10m", "1h", "1d").
+            Determines which data series to check for duplicates.
+        sink : str
+            The storage backend to check. Possible values: "influxdb", "csv", "parquet".
+            Different sinks use different duplicate detection strategies:
+            - "influxdb": Queries InfluxDB for duplicate timestamps
+            - "csv": Reads CSV files and checks for duplicate composite keys
+            - "parquet": Reads Parquet files and checks for duplicate composite keys
+        start_date : str, optional
+            Default: None (auto-detect from data)
+            The start date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
+            When None, automatically detects the earliest date available in the sink. Only trading
+            days (Mon-Fri) within this range are analyzed.
+        end_date : str, optional
+            Default: None (auto-detect from data)
+            The end date of the range to check in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
+            When None, automatically detects the latest date available in the sink. Only trading
+            days (Mon-Fri) within this range are analyzed.
+        sample_limit : int, optional
+            Default: 10
+            Maximum number of duplicate key examples to collect and display per day. Limits the
+            size of the example lists in the daily results to prevent memory issues with large
+            duplicate sets. Set to 0 to disable example collection.
+        verbose : bool, optional
+            Default: True
+            If True, prints detailed daily progress reports to console including per-day statistics,
+            duplicate rates, and overall summary. If False, runs silently and only returns the
+            results dictionary. Useful for scripting and automated quality checks.
+
+        Returns
+        -------
+        dict
+            A comprehensive results dictionary containing:
+            - 'days_analyzed' (int): Number of trading days checked (excludes weekends)
+            - 'total_rows' (int): Total number of data rows across all checked days
+            - 'total_duplicates' (int): Total number of duplicate records found across all days
+            - 'global_duplicate_rate' (float): Overall percentage of duplicates (0.0-100.0)
+            - 'days_with_duplicates' (int): Number of days that contain at least one duplicate
+            - 'daily_results' (list): List of per-day result dictionaries, each containing:
+                - 'date' (str): ISO date "YYYY-MM-DD"
+                - 'rows' (int): Number of rows for that day
+                - 'duplicates' (int): Number of duplicates found
+                - 'duplicate_rate' (float): Percentage of duplicates for that day
+                - 'duplicate_keys' (list): Sample duplicate keys (limited by sample_limit)
+            - 'summary' (dict): Summary information with:
+                - 'start_date' (str): Actual start date checked
+                - 'end_date' (str): Actual end date checked
+                - 'status' (str): "CLEAN" if no duplicates, "DUPLICATES_FOUND" otherwise
+            - 'error' (str, optional): Error message if date detection or parsing failed
+
+        Example Usage
+        -------------
+        # Example 1: Auto-detect date range (checks all available data)
+        manager = ThetaSyncManager(cfg, client=client)
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="tick",
+            sink="influxdb",
+            verbose=True  # Print detailed progress
+        )
+        print(f"Days analyzed: {result['days_analyzed']}")
+        print(f"Total duplicates: {result['total_duplicates']:,}")
+        print(f"Duplicate rate: {result['global_duplicate_rate']}%")
+
+        # Example 2: Specify explicit date range
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="5m",
+            sink="influxdb",
+            start_date="2025-11-03",
+            end_date="2025-11-07",
+            sample_limit=5,  # Show up to 5 duplicate examples per day
+            verbose=True
+        )
+
+        # Example 3: Silent mode (no console output)
+        result = manager.check_duplicates_multi_day(
+            asset="stock",
+            symbol="AAPL",
+            interval="1m",
+            sink="parquet",
+            start_date="2025-11-01",
+            end_date="2025-11-30",
+            verbose=False  # No console output
+        )
+        if result['days_with_duplicates'] > 0:
+            print(f"Found duplicates in {result['days_with_duplicates']} days")
+
+        # Example 4: Process results programmatically
+        result = manager.check_duplicates_multi_day(
+            asset="option",
+            symbol="TLRY",
+            interval="5m",
+            sink="csv",
+            verbose=False
+        )
+        if result['days_with_duplicates'] > 0:
+            for day_result in result['daily_results']:
+                if day_result['duplicates'] > 0:
+                    print(f"{day_result['date']}: {day_result['duplicates']} duplicates")
+
+        # Example 5: Compare different sinks
+        for sink_type in ["csv", "parquet", "influxdb"]:
+            result = manager.check_duplicates_multi_day(
+                asset="option",
+                symbol="TLRY",
+                interval="5m",
+                sink=sink_type,
+                start_date="2025-11-03",
+                end_date="2025-11-07",
+                verbose=False
+            )
+            print(f"{sink_type}: {result['total_duplicates']:,} duplicates")
         """
         
         # START: Auto-detect date range if not provided
@@ -6424,8 +6533,8 @@ class ThetaSyncManager:
         
         # Parse dates
         try:
-            start_dt = datetime.fromisoformat(start_date)
-            end_dt = datetime.fromisoformat(end_date)
+            start_dt = dt.fromisoformat(start_date)
+            end_dt = dt.fromisoformat(end_date)
         except ValueError as e:
             return {
                 "error": f"Invalid date format: {e}",
@@ -6552,4 +6661,341 @@ class ThetaSyncManager:
     # --------------------------------------------------------------------------
     # END: Multi-day duplicate check functionality
     # --------------------------------------------------------------------------
+
+    def generate_duplicate_report(
+        self,
+        asset: str,
+        symbol: str,
+        intervals: Optional[List[str]] = None,
+        sinks: Optional[List[str]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        sample_limit: int = 5,
+        verbose: bool = True
+    ) -> dict:
+        """Generate a comprehensive duplicate detection report across multiple intervals and sinks.
+
+        This method creates a complete duplicate analysis report for a given symbol by iterating through
+        all specified time intervals (or all available intervals if not specified) and all storage sinks
+        (or all available sinks if not specified). For each combination of interval and sink, it calls
+        check_duplicates_multi_day() to perform the analysis and aggregates the results into a unified
+        report. This provides a holistic view of data quality across all dimensions, making it easy to
+        identify which intervals or sinks have duplicate issues. The report includes summary statistics,
+        per-interval-sink breakdowns, and actionable insights for data cleanup.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type to analyze. Possible values: "option", "stock", "index".
+            Determines which data structure to analyze across all intervals and sinks.
+        symbol : str
+            The ticker symbol or root symbol to analyze (e.g., "TLRY", "AAPL", "SPY", "ES").
+            The report will cover all data for this symbol across specified intervals and sinks.
+        intervals : list of str, optional
+            Default: None (checks all available intervals)
+            List of bar intervals to check (e.g., ["tick", "1m", "5m", "1h", "1d"]).
+            When None, automatically detects and checks all intervals that have data for this
+            symbol in any of the specified sinks. Common intervals: "tick", "1m", "5m", "10m",
+            "15m", "30m", "1h", "1d".
+        sinks : list of str, optional
+            Default: None (checks all available sinks)
+            List of storage backends to check. Possible values: ["influxdb", "csv", "parquet"].
+            When None, checks all three sink types. Each sink may have different data coverage
+            and duplicate patterns depending on ingestion history.
+        start_date : str, optional
+            Default: None (auto-detect from data)
+            The start date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-03").
+            When None, uses the earliest available date across all interval-sink combinations.
+            Applied uniformly to all checks for consistency.
+        end_date : str, optional
+            Default: None (auto-detect from data)
+            The end date for the analysis in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
+            When None, uses the latest available date across all interval-sink combinations.
+            Applied uniformly to all checks for consistency.
+        sample_limit : int, optional
+            Default: 5
+            Maximum number of duplicate key examples to collect per day per interval-sink
+            combination. Lower values reduce memory usage and report size. Set to 0 to
+            disable example collection.
+        verbose : bool, optional
+            Default: True
+            If True, prints detailed progress and results for each interval-sink combination
+            as they are analyzed, plus a final summary table. If False, runs silently and
+            only returns the results dictionary. Useful for batch processing and automation.
+
+        Returns
+        -------
+        dict
+            A comprehensive report dictionary containing:
+            - 'symbol' (str): The analyzed symbol
+            - 'asset' (str): The asset type
+            - 'date_range' (dict): The date range analyzed with 'start' and 'end'
+            - 'intervals_checked' (list): List of intervals that were analyzed
+            - 'sinks_checked' (list): List of sinks that were analyzed
+            - 'total_combinations' (int): Total number of interval-sink combinations checked
+            - 'combinations_with_duplicates' (int): Number of combinations that have duplicates
+            - 'results' (list): List of per-combination results, each containing:
+                - 'interval' (str): The interval checked
+                - 'sink' (str): The sink checked
+                - 'days_analyzed' (int): Number of trading days checked
+                - 'total_rows' (int): Total rows in this combination
+                - 'total_duplicates' (int): Total duplicates found
+                - 'duplicate_rate' (float): Percentage of duplicates
+                - 'days_with_duplicates' (int): Number of days with duplicates
+                - 'status' (str): "CLEAN" or "DUPLICATES_FOUND"
+            - 'summary' (dict): Aggregate statistics across all combinations:
+                - 'total_rows_all' (int): Sum of rows across all combinations
+                - 'total_duplicates_all' (int): Sum of duplicates across all combinations
+                - 'overall_duplicate_rate' (float): Global duplicate percentage
+                - 'worst_combination' (dict): Interval-sink with highest duplicate rate
+                - 'cleanest_sinks' (list): Sinks with no duplicates
+                - 'problematic_intervals' (list): Intervals with duplicates in any sink
+
+        Example Usage
+        -------------
+        # Example 1: Full comprehensive report (all intervals, all sinks, all dates)
+        manager = ThetaSyncManager(cfg, client=client)
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            verbose=True
+        )
+        print(f"Checked {report['total_combinations']} combinations")
+        print(f"Found issues in {report['combinations_with_duplicates']} combinations")
+
+        # Example 2: Specific intervals and date range
+        report = manager.generate_duplicate_report(
+            asset="stock",
+            symbol="AAPL",
+            intervals=["1m", "5m", "1h"],
+            sinks=["csv", "parquet"],
+            start_date="2025-11-01",
+            end_date="2025-11-30",
+            verbose=True
+        )
+
+        # Example 3: Silent mode for scripting
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            intervals=["tick", "5m"],
+            sinks=["influxdb"],
+            verbose=False
+        )
+        if report['combinations_with_duplicates'] > 0:
+            print("⚠️  Duplicates found! Check report['results'] for details")
+
+        # Example 4: Compare all sinks for a specific interval
+        report = manager.generate_duplicate_report(
+            asset="option",
+            symbol="TLRY",
+            intervals=["5m"],  # Only check 5-minute data
+            verbose=True
+        )
+        for result in report['results']:
+            print(f"{result['sink']}: {result['total_duplicates']} duplicates")
+
+        # Example 5: Process results programmatically
+        report = manager.generate_duplicate_report(
+            asset="stock",
+            symbol="AAPL",
+            verbose=False
+        )
+        worst = report['summary']['worst_combination']
+        if worst:
+            print(f"Worst: {worst['interval']} in {worst['sink']}: "
+                  f"{worst['duplicate_rate']}% duplicates")
+        """
+
+        # Determine which intervals to check
+        if intervals is None:
+            # Auto-detect: find all intervals that have data
+            intervals = []
+            test_sinks = sinks if sinks else ["csv", "parquet", "influxdb"]
+            for sink in test_sinks:
+                try:
+                    sink_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol)
+                    if os.path.exists(sink_dir):
+                        for interval_name in os.listdir(sink_dir):
+                            interval_path = os.path.join(sink_dir, interval_name)
+                            if os.path.isdir(interval_path) and interval_name not in intervals:
+                                intervals.append(interval_name)
+                except Exception:
+                    pass
+
+            if not intervals:
+                intervals = ["tick", "1m", "5m", "10m", "15m", "30m", "1h", "1d"]  # Default fallback
+
+        # Determine which sinks to check
+        if sinks is None:
+            sinks = ["csv", "parquet", "influxdb"]
+
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"COMPREHENSIVE DUPLICATE REPORT")
+            print(f"Symbol: {symbol} ({asset})")
+            print(f"Intervals: {', '.join(intervals)}")
+            print(f"Sinks: {', '.join(sinks)}")
+            if start_date and end_date:
+                print(f"Date range: {start_date} to {end_date}")
+            else:
+                print(f"Date range: Auto-detect")
+            print(f"{'='*80}\n")
+
+        # Collect results for each combination
+        results = []
+        total_rows_all = 0
+        total_duplicates_all = 0
+        combinations_with_duplicates = 0
+
+        for interval in intervals:
+            for sink in sinks:
+                if verbose:
+                    print(f"\n--- Checking {interval} in {sink.upper()} ---")
+
+                try:
+                    result = self.check_duplicates_multi_day(
+                        asset=asset,
+                        symbol=symbol,
+                        interval=interval,
+                        sink=sink,
+                        start_date=start_date,
+                        end_date=end_date,
+                        sample_limit=sample_limit,
+                        verbose=False  # Suppress individual reports
+                    )
+
+                    # Extract list of dates with duplicates
+                    dates_with_duplicates = [
+                        day_result['date']
+                        for day_result in result.get("daily_results", [])
+                        if day_result.get('duplicates', 0) > 0
+                    ]
+
+                    combination_result = {
+                        "interval": interval,
+                        "sink": sink,
+                        "days_analyzed": result.get("days_analyzed", 0),
+                        "total_rows": result.get("total_rows", 0),
+                        "total_duplicates": result.get("total_duplicates", 0),
+                        "duplicate_rate": result.get("global_duplicate_rate", 0.0),
+                        "days_with_duplicates": result.get("days_with_duplicates", 0),
+                        "dates_with_duplicates": dates_with_duplicates,
+                        "status": result.get("summary", {}).get("status", "unknown")
+                    }
+
+                    results.append(combination_result)
+
+                    total_rows_all += combination_result["total_rows"]
+                    total_duplicates_all += combination_result["total_duplicates"]
+
+                    if combination_result["total_duplicates"] > 0:
+                        combinations_with_duplicates += 1
+
+                    if verbose:
+                        status_icon = "✅" if combination_result["total_duplicates"] == 0 else "⚠️"
+                        print(f"  {status_icon} Rows: {combination_result['total_rows']:,}, "
+                              f"Duplicates: {combination_result['total_duplicates']:,} "
+                              f"({combination_result['duplicate_rate']:.2f}%)")
+
+                        # Print dates with duplicates if any
+                        if dates_with_duplicates:
+                            dates_str = ", ".join(dates_with_duplicates)
+                            print(f"      Dates with duplicates: {dates_str}")
+
+                except Exception as e:
+                    if verbose:
+                        print(f"  ❌ Error: {str(e)}")
+                    results.append({
+                        "interval": interval,
+                        "sink": sink,
+                        "error": str(e),
+                        "status": "error"
+                    })
+
+        # Calculate summary statistics
+        overall_duplicate_rate = (total_duplicates_all / total_rows_all * 100) if total_rows_all > 0 else 0.0
+
+        # Find worst combination
+        worst_combination = None
+        max_dup_rate = 0.0
+        for result in results:
+            if result.get("duplicate_rate", 0) > max_dup_rate:
+                max_dup_rate = result["duplicate_rate"]
+                worst_combination = result
+
+        # Find cleanest sinks
+        cleanest_sinks = []
+        for sink in sinks:
+            sink_results = [r for r in results if r.get("sink") == sink and r.get("status") != "error"]
+            if all(r.get("total_duplicates", 0) == 0 for r in sink_results):
+                cleanest_sinks.append(sink)
+
+        # Find problematic intervals
+        problematic_intervals = []
+        for interval in intervals:
+            interval_results = [r for r in results if r.get("interval") == interval and r.get("status") != "error"]
+            if any(r.get("total_duplicates", 0) > 0 for r in interval_results):
+                problematic_intervals.append(interval)
+
+        # Print summary
+        if verbose:
+            print(f"\n{'='*80}")
+            print(f"SUMMARY")
+            print(f"{'='*80}")
+            print(f"Total combinations checked: {len(results)}")
+            print(f"Combinations with duplicates: {combinations_with_duplicates}")
+            print(f"Total rows across all: {total_rows_all:,}")
+            print(f"Total duplicates across all: {total_duplicates_all:,}")
+            print(f"Overall duplicate rate: {overall_duplicate_rate:.2f}%")
+
+            if worst_combination and worst_combination.get("duplicate_rate", 0) > 0:
+                print(f"\n⚠️  Worst combination: {worst_combination['interval']} in {worst_combination['sink']} "
+                      f"({worst_combination['duplicate_rate']:.2f}% duplicates)")
+                if worst_combination.get("dates_with_duplicates"):
+                    dates_str = ", ".join(worst_combination["dates_with_duplicates"])
+                    print(f"    Affected dates: {dates_str}")
+
+            if cleanest_sinks:
+                print(f"\n✅ Clean sinks (no duplicates): {', '.join(cleanest_sinks)}")
+
+            if problematic_intervals:
+                print(f"\n⚠️  Intervals with duplicates: {', '.join(problematic_intervals)}")
+
+            # List all combinations with duplicates and their dates
+            problematic_combinations = [r for r in results if r.get("total_duplicates", 0) > 0]
+            if problematic_combinations:
+                print(f"\n{'='*80}")
+                print(f"DETAILED BREAKDOWN - COMBINATIONS WITH DUPLICATES")
+                print(f"{'='*80}")
+                for combo in problematic_combinations:
+                    print(f"\n  {combo['interval']} in {combo['sink'].upper()}: "
+                          f"{combo['total_duplicates']:,} duplicates ({combo['duplicate_rate']:.2f}%)")
+                    if combo.get("dates_with_duplicates"):
+                        dates_str = ", ".join(combo["dates_with_duplicates"])
+                        print(f"    Dates: {dates_str}")
+
+            print(f"\n{'='*80}\n")
+
+        return {
+            "symbol": symbol,
+            "asset": asset,
+            "date_range": {
+                "start": start_date,
+                "end": end_date
+            },
+            "intervals_checked": intervals,
+            "sinks_checked": sinks,
+            "total_combinations": len(results),
+            "combinations_with_duplicates": combinations_with_duplicates,
+            "results": results,
+            "summary": {
+                "total_rows_all": total_rows_all,
+                "total_duplicates_all": total_duplicates_all,
+                "overall_duplicate_rate": round(overall_duplicate_rate, 2),
+                "worst_combination": worst_combination,
+                "cleanest_sinks": cleanest_sinks,
+                "problematic_intervals": problematic_intervals
+            }
+        }
 
