@@ -5525,7 +5525,7 @@ class ThetaSyncManager:
     
     ### >>> REALTIME INTRADAY WINDOW (inclusive ET) — HELPERS [BEGIN]
     @staticmethod
-    def _tail_csv_last_n_lines(self, path: str, n: int = 64) -> list[str]:
+    def _tail_csv_last_n_lines(path: str, n: int = 64) -> list[str]:
         """
         Read the last N non-empty lines from a CSV file without loading the entire file.
 
