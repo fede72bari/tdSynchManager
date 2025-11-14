@@ -4526,7 +4526,6 @@ class ThetaSyncManager:
     
     
     ### >>> REALTIME INTRADAY WINDOW (inclusive ET) — HELPERS [BEGIN]
-    @staticmethod
     def _first_timestamp_in_csv(self, path: str):
         """Read a small chunk and return the earliest timestamp as pandas.Timestamp(UTC) or None."""
 
