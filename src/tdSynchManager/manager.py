@@ -1,13 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+import glob
+import importlib
+import inspect
+import io
+import json
+import math
 import os
-from typing import Any, Iterable, Optional, get_args
-from datetime import datetime as dt, timezone
+import re
+import tempfile
+import uuid
+from datetime import datetime as dt, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, get_args
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from .client import ThetaDataV3Client, Interval
-from .config import ManagerConfig, config_from_env
+import aiohttp
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from .client import Interval, ThetaDataV3Client
+from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
+
+try:  # optional at runtime
+    ipy_display = importlib.import_module("IPython.display").display
+except Exception:  # pragma: no cover
+    ipy_display = None
+
+try:  # optional dependency, only needed for InfluxDB sinks
+    InfluxDBClient3 = importlib.import_module("influxdb_client_3").InfluxDBClient3
+except Exception:  # pragma: no cover
+    InfluxDBClient3 = None
 
 # -*- coding: utf-8 -*-
 """
@@ -33,11 +61,6 @@ Notes
   ['timestamp','expiration','strike','right'] (schema may differ by server setup).
 """
 
-from .client import ThetaDataV3Client
-from .config import ManagerConfig, config_from_env
-
-
-
 # ------------- user client (we assume you've imported it) -------------
 # from your_module import ThetaDataV3Client, ThetaDataV3HTTPError
 # The client exposes _make_request(endpoint, params) -> (payload, full_url)
@@ -48,10 +71,30 @@ _ALLOWED_INTERVALS = set(get_args(Interval))
 
 # --- Drop-in: logga gli errori del server per ogni richiesta ThetaData ---
 def install_td_server_error_logger(client):
-    """
-    Wrappa client._make_request per stampare status code, URL completo
-    e corpo di risposta in caso di errore (qualunque eccezione).
-    Non modifica il flusso: rilancia sempre l'eccezione dopo il log.
+    """Wraps the ThetaData client's _make_request method to log detailed error information when HTTP requests fail.
+
+    This utility function intercepts all requests made by the ThetaData client and logs comprehensive
+    error details including status code, full URL, and response body whenever an exception occurs. The
+    original exception is always re-raised after logging, ensuring normal error handling continues.
+
+    Parameters
+    ----------
+    client : ThetaDataV3Client
+        The ThetaData client instance whose _make_request method will be wrapped for error logging.
+        The client must have a _make_request method available.
+
+    Returns
+    -------
+    None
+        This function modifies the client in-place by replacing its _make_request method.
+
+    Example Usage
+    -------------
+    # Enable detailed error logging for ThetaData API requests
+    from tdSynchManager.client import ThetaDataV3Client
+    client = ThetaDataV3Client(base_url="http://localhost:25503/v3")
+    install_td_server_error_logger(client)
+    # Now all failed requests will log detailed error information
     """
     orig = getattr(client, "_make_request", None)
     if not callable(orig):
@@ -67,7 +110,6 @@ def install_td_server_error_logger(client):
             body   = getattr(e, "body", None) or getattr(e, "text", None) or getattr(e, "response_text", None)
             # ricostruisci l’URL completo se il client lo fornisce in uscita:
             try:
-                from urllib.parse import urlencode
                 base = getattr(client, "base_url", "http://localhost:25503/v3")
                 url  = f"{base}{endpoint}?{urlencode(params or {})}"
             except Exception:
@@ -87,130 +129,6 @@ def install_td_server_error_logger(client):
 
 
 # ---------------------------------------------------------------------
-# CONFIG & TASKS
-# ---------------------------------------------------------------------
-
-@dataclass
-class ManagerConfig:
-    """Global configuration for ThetaSyncManager.
-
-    Attributes
-    ----------
-    root_dir : str
-        Root folder for outputs and internal cache.
-    max_concurrency : int
-        Maximum number of concurrent sync jobs.
-    max_file_mb : int
-        Per-file size cap (MB) for CSV/Parquet sinks before rotating to _partNN.
-    overlap_seconds : int
-        Safety overlap applied when resuming from the last saved timestamp.
-    cache_dir_name : str
-        Subfolder (under root_dir) for internal cache files.
-    cache_file_name : str
-        JSON filename for coverage cache.
-    option_check_first_k_expirations : int
-        How many oldest expirations to probe when discovering option first date.
-    discovery_request_type : str
-        Request type used for discovery ("trade" or "quote").
-    """
-
-    root_dir: str
-    max_concurrency: int = 8
-    max_file_mb: int = 200
-    overlap_seconds: int = 60
-    cache_dir_name: str = ".theta_cache"
-    cache_file_name: str = "coverage.json"
-    option_check_first_k_expirations: int = 3
-    discovery_request_type: str = "trade"
-    eod_batch_days: int = 30 
-    eod_head_overlap_days: int = 1
-    eod_resume_overlap_days: int = 1
-
-    # --- InfluxDB (minimal) ---
-    influx_url: Optional[str] = None
-    influx_org: Optional[str] = None          # InfluxDB v2/v3 (org name)
-    influx_bucket: Optional[str] = None       # bucket (db)
-    influx_token: Optional[str] = None        # auth token
-    influx_precision: str = "ns"              # "ns","us","ms","s"
-    influx_measure_prefix: str = ""           # optional, e.g., "td_"
-    influx_write_batch: int = 5000            # batch size for writes
-
-
-@dataclass
-class DiscoverPolicy:
-    """
-    Discovery policy for finding the first date with available data.
-
-    Attributes
-    ----------
-    mode : str
-        - "auto": use cache if present, discover if missing.
-        - "force": ignore cache and re-discover (if supported in your build).
-        - "mild_skip": skip global discovery but keep per-day middle checks
-                       (legacy 'skip' behavior).
-        - "skip": strong skip — no global discovery AND bypass per-day middle checks;
-                  resume starts from last-known timestamp minus overlap_seconds.
-    request_type : str
-        "trade" or "quote"; determines which list/dates tree we use.
-    check_first_k_expirations : Optional[int]
-        If not None, overrides ManagerConfig.option_check_first_k_expirations.
-    enable_option_binary_fallback : bool
-        Enable binary-search fallback on /option/list/contracts/{request_type}
-        if expirations->dates yields nothing.
-    binary_search_start : str
-        Fallback lower bound (inclusive) date in ISO format.
-    binary_search_end : Optional[str]
-        Fallback upper bound (inclusive); defaults to today if None.
-    """
-
-    mode: str = "auto"
-    request_type: str = "trade"   # "trade" | "quote"
-    check_first_k_expirations: Optional[int] = None
-    enable_option_binary_fallback: bool = True
-    binary_search_start: str = "2010-01-01"
-    binary_search_end: Optional[str] = None
-
-
-
-@dataclass
-class Task:
-    """A synchronization job definition.
-
-    Attributes
-    ----------
-    asset : str
-        One of {"stock", "index", "option"}.
-    symbols : List[str]
-        List of roots/symbols to sync (e.g., ["AAPL"], ["SPY"], ["ES"]).
-    intervals : List[str]
-        Bars timeframe identifiers (e.g., ["1m"], ["10m"], ["1h"]).
-    sink : str
-        Storage sink {"parquet", "csv"}.
-    refresh_seconds : Optional[int]
-        Informational (external scheduler can call manager periodically).
-    enrich_bar_greeks : bool
-        If True and asset=="option", also persist per-interval Greeks as companion file.
-    first_date_override : Optional[str]
-        Optional ISO date (YYYY-MM-DD) to force the start coverage for this task.
-    discover_policy : DiscoverPolicy
-        Controls discovery behavior (auto/force/skip, request type, fallbacks).
-    ignore_existing: bool = False  
-        Ignore last datetime in the database and restart from the given date
-    """
-
-    asset: str
-    symbols: List[str]
-    intervals: List[str]
-    sink: str
-    refresh_seconds: Optional[int] = None
-    enrich_bar_greeks: bool = False
-    enrich_tick_greeks: bool = False
-    first_date_override: Optional[str] = None
-    discover_policy: DiscoverPolicy = field(default_factory=DiscoverPolicy)
-    ignore_existing: bool = False  
-
-
-# ---------------------------------------------------------------------
 # MANAGER
 # ---------------------------------------------------------------------
 
@@ -222,13 +140,39 @@ class ThetaSyncManager:
     """
 
     def __init__(self, cfg: ManagerConfig, client: Any, tz_et: str = "America/New_York"):
-        """
+        """Initializes the ThetaSyncManager with configuration, client, and timezone settings.
+
+        This constructor sets up the manager's core components including concurrency control, caching mechanisms,
+        timezone handling, and directory structure. It also loads any existing first-date coverage cache from disk.
+
         Parameters
         ----------
         cfg : ManagerConfig
-            Global configuration.
+            Global configuration object containing settings for concurrency, file size caps, resume behavior,
+            cache directory names, and other operational parameters.
         client : ThetaDataV3Client
-            Your low-level HTTP client wrapper (async). Must be an instance entered with `async with`.
+            An async HTTP client instance for ThetaData API communication. Must support async context manager
+            protocol (async with) and provide methods for fetching market data.
+        tz_et : str, optional
+            Default: "America/New_York"
+
+            The timezone string for Eastern Time, used for aligning market hours and daily boundaries.
+            Must be a valid IANA timezone identifier recognized by Python's zoneinfo module.
+
+        Returns
+        -------
+        None
+            This is a constructor method that initializes instance attributes.
+
+        Example Usage
+        -------------
+        # Initialize the sync manager with configuration and client
+        from tdSynchManager import ManagerConfig, ThetaSyncManager
+        from tdSynchManager.client import ThetaDataV3Client
+
+        cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
+        async with ThetaDataV3Client(base_url="http://localhost:25503/v3") as client:
+            manager = ThetaSyncManager(cfg, client)
         """
         self.cfg = cfg
         self.client = client
@@ -253,7 +197,29 @@ class ThetaSyncManager:
 
 
     def _as_utc(self, x):
-        """Accetta str ISO8601 o datetime; ritorna datetime timezone-aware in UTC."""
+        """Converts an ISO8601 string or datetime object to a timezone-aware UTC datetime.
+
+        This helper method normalizes various datetime representations to a consistent UTC datetime format,
+        handling both timezone-naive and timezone-aware inputs.
+
+        Parameters
+        ----------
+        x : str or datetime
+            An ISO8601 formatted datetime string (with or without 'Z' suffix) or a datetime object.
+            String format can be like '2024-01-15T10:30:00Z' or '2024-01-15T10:30:00+00:00'.
+
+        Returns
+        -------
+        datetime
+            A timezone-aware datetime object in UTC. If input was timezone-naive, UTC is assumed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() for normalizing start/end times
+        # - _compute_resume_start_datetime() for time conversions
+        # - Various date handling methods throughout the manager
+        """
         if isinstance(x, str):
             x = dt.fromisoformat(x.replace("Z", "+00:00"))
         if x.tzinfo is None:
@@ -261,14 +227,57 @@ class ThetaSyncManager:
         return x.astimezone(self.UTC)
 
     def _floor_to_interval_et(self, ts_utc: dt, minutes: int) -> dt:
-        """Arrotonda per difetto al multiplo 'minutes' in ET, poi riporta in UTC."""
+        """Floors a UTC timestamp to the nearest interval boundary in Eastern Time, then converts back to UTC.
+
+        This method is used to align timestamps to bar boundaries (e.g., 5-minute, 15-minute intervals) according
+        to Eastern Time market hours, which is important for consistent bar alignment.
+
+        Parameters
+        ----------
+        ts_utc : datetime
+            A timezone-aware datetime in UTC that needs to be floored to an interval boundary.
+        minutes : int
+            The interval size in minutes. For example, 5 for 5-minute bars, 60 for hourly bars.
+
+        Returns
+        -------
+        datetime
+            A timezone-aware datetime in UTC, floored to the specified interval boundary in Eastern Time.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() when computing resume start times for intraday bars
+        # - _force_start_hms_from_max_ts() (nested function) for bar alignment
+        """
         et = ts_utc.astimezone(self.ET).replace(second=0, microsecond=0)
         et = et.replace(minute=(et.minute // minutes) * minutes)
         return et.astimezone(self.UTC)
 
     # === >>> DATE PARAM HELPERS — BEGIN
     def _iso_date_only(self, s: str) -> str:
-        """Ritorna 'YYYY-MM-DD' da 'YYYY-MM-DD' o 'YYYY-MM-DDTHH:MM:SS' o 'YYYY-MM-DD HH:MM:SS'."""
+        """Extracts the date portion from an ISO datetime string, returning only 'YYYY-MM-DD'.
+
+        This helper handles various datetime string formats and extracts just the date component,
+        discarding any time information.
+
+        Parameters
+        ----------
+        s : str
+            A date or datetime string in formats like 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM:SS',
+            or 'YYYY-MM-DD HH:MM:SS'.
+
+        Returns
+        -------
+        str
+            The date portion in 'YYYY-MM-DD' format.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _td_ymd() to normalize date strings before formatting
+        # - Various methods that need to extract date from datetime strings
+        """
         s = str(s)
         if "T" in s:
             s = s.split("T", 1)[0]
@@ -277,7 +286,28 @@ class ThetaSyncManager:
         return s
     
     def _td_ymd(self, day_iso: str) -> str:
-        """Ritorna 'YYYYMMDD' (ThetaData 'date=') dalla tua day_iso (accetta con o senza 'T...')."""
+        """Converts an ISO date string to ThetaData's YYYYMMDD format required for API date parameters.
+
+        This method normalizes various date formats to the compact YYYYMMDD format expected by ThetaData API
+        endpoints, with validation to ensure the result is exactly 8 digits.
+
+        Parameters
+        ----------
+        day_iso : str
+            An ISO date string like 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS'. The time portion is ignored.
+
+        Returns
+        -------
+        str
+            A date string in 'YYYYMMDD' format (8 digits, no separators).
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() when building API request parameters
+        # - _download_and_store_equity_or_index() for date parameter formatting
+        # - _expirations_that_traded() for daily expiration queries
+        """
         d = self._iso_date_only(day_iso).replace("-", "")
         if len(d) != 8 or not d.isdigit():
             raise ValueError(f"Bad day_iso '{day_iso}' → '{d}' (expected YYYYMMDD)")
@@ -291,17 +321,41 @@ class ThetaSyncManager:
         asset: str, symbol: str, interval: str, sink: str, day_iso: str,
         first_last_hint: Optional[tuple[Optional[str], Optional[str]]] = None,
     ) -> bool:
-        """
-        Return True if we should SKIP downloading for this day because a file already exists
-        and it's a middle day (not the earliest nor the latest local file).
-        This prevents re-downloading all days after a retrograde start date.
-    
-        The rule applies to any asset/timeframe as long as files are saved as:
-          {root}/data/{asset}/{symbol}/{interval}/{sink}/{YYYY-MM-DD}T00-00-00Z-{symbol}-{asset}-{interval}.{sink}
-    
-        Notes:
-        - Only meaningful for file sinks ("csv", "parquet"). For other sinks it returns False.
-        - Ignores renamed files that don't start with a date (e.g., "MOD2022-...").
+        """Determines whether to skip downloading data for a day because it's already complete and is a middle day.
+
+        This method implements intelligent resume logic by skipping re-downloads of complete middle days (days
+        that fall strictly between the earliest and latest existing files). It always processes edge days (first
+        and last) to ensure they are complete, and handles retrograde start dates properly. For options, it also
+        checks whether daily parts are complete before deciding to skip.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'option', 'stock', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h', 'tick').
+        sink : str
+            The output sink type. Only 'csv' and 'parquet' are supported; other sinks return False.
+        day_iso : str
+            The day being evaluated in 'YYYY-MM-DD' format.
+        first_last_hint : tuple of (str or None, str or None), optional
+            Default: None
+
+            A hint containing (first_existing_day, last_existing_day) to avoid re-scanning files.
+            If None, the method will scan files to determine the earliest and latest days.
+
+        Returns
+        -------
+        bool
+            True if the day should be skipped (complete middle day), False if it should be processed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() to decide whether to skip downloading for each day in the sync range
+        # - Download methods to optimize resume behavior and avoid redundant downloads
         """
 
         # ### >>> FAST RESUME — MIDDLE-DAY BYPASS (only strong 'skip') — BEGIN
@@ -379,12 +433,37 @@ class ThetaSyncManager:
     # -------------------------- PUBLIC API ---------------------------
 
     async def run(self, tasks: List[Task]) -> None:
-        """Run a batch of tasks concurrently.
+        """Executes a batch of synchronization tasks concurrently for multiple symbols and intervals.
 
-        For each task and symbol:
-          1) Resolve first available date (override, cache, or discovery policy).
-          2) For each interval, run incremental sync (resume + overlap).
-          3) Persist cache to disk if updated.
+        This is the main entry point for the ThetaSyncManager. It orchestrates the entire synchronization process
+        including first-date discovery, incremental syncing with resume logic, and cache persistence. All tasks
+        are executed concurrently up to the configured max_concurrency limit.
+
+        Parameters
+        ----------
+        tasks : list of Task
+            A list of Task objects, where each task specifies the asset type, symbols list, intervals list,
+            sink type, and optional configuration like first_date_override or discover_policy.
+
+        Returns
+        -------
+        None
+            This method performs synchronization and saves state to disk but does not return a value.
+
+        Example Usage
+        -------------
+        # Run synchronization tasks for multiple symbols and intervals
+        from tdSynchManager import Task, ThetaSyncManager, ManagerConfig
+        from tdSynchManager.client import ThetaDataV3Client
+
+        cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
+        async with ThetaDataV3Client() as client:
+            manager = ThetaSyncManager(cfg, client)
+            tasks = [
+                Task(asset="stock", symbols=["AAPL", "MSFT"], intervals=["1d", "5m"], sink="parquet"),
+                Task(asset="option", symbols=["SPY"], intervals=["1d"], sink="csv")
+            ]
+            await manager.run(tasks)
         """
         jobs = []
         for task in tasks:
@@ -397,7 +476,31 @@ class ThetaSyncManager:
         self._save_cache_file()
 
     def clear_first_date_cache(self, asset: str, symbol: str, req_type: str) -> None:
-        """Delete a single first-date cache entry for (asset, symbol, request_type)."""
+        """Deletes a specific first-date cache entry from memory and persists the change to disk.
+
+        This method is useful when you know the first available date for a symbol has changed (e.g., after
+        historical data becomes available) and you want to force a fresh discovery on the next sync.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'stock', 'option', 'index').
+        symbol : str
+            The ticker symbol or root symbol whose cache entry should be cleared.
+        req_type : str
+            The request type (e.g., 'trade', 'quote', 'ohlc') that identifies the specific cache entry.
+
+        Returns
+        -------
+        None
+            The cache entry is removed if it exists, and the cache file is saved immediately.
+
+        Example Usage
+        -------------
+        # Clear cached first date for SPY options to force re-discovery
+        manager.clear_first_date_cache("option", "SPY", "trade")
+        # Next sync will re-discover the first available date
+        """
         key = self._cache_key(asset, symbol, req_type)
         if key in self._coverage_cache:
             del self._coverage_cache[key]
@@ -406,11 +509,26 @@ class ThetaSyncManager:
 
 
     def _validate_interval(self, interval: str) -> None:
-        """
-        Validate the requested bar interval against the client-defined `Interval` Literal.
-    
-        Raises:
-            ValueError: if the interval is not supported.
+        """Validates that the requested bar interval is supported by the ThetaData client.
+
+        This method checks the interval string against the allowed intervals defined in the client's
+        Interval type. If invalid, it raises an error with a helpful message listing all valid options.
+
+        Parameters
+        ----------
+        interval : str
+            The interval string to validate (e.g., '1d', '5m', '1h', 'tick').
+
+        Returns
+        -------
+        None
+            Returns nothing if validation passes.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() before starting any download to ensure interval is valid
+        # - Various download methods to fail fast on invalid intervals
         """
         if interval not in _ALLOWED_INTERVALS:
             allowed = ", ".join(sorted(_ALLOWED_INTERVALS))
@@ -421,8 +539,26 @@ class ThetaSyncManager:
 
 
     def _validate_sink(self, sink: str) -> None:
-        """
-        Validate output sink against supported options.
+        """Validates that the requested output sink is supported.
+
+        This method checks that the sink parameter is one of the supported output formats.
+        If invalid, it raises an error listing all valid sink options.
+
+        Parameters
+        ----------
+        sink : str
+            The sink type to validate. Supported values: 'csv', 'parquet', 'influxdb'.
+
+        Returns
+        -------
+        None
+            Returns nothing if validation passes.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _sync_symbol() before starting downloads to ensure sink is valid
+        # - Methods that write data to verify the output format is supported
         """
         s = (sink or "").strip().lower()
         if s not in ("csv", "parquet", "influxdb"):
@@ -433,17 +569,65 @@ class ThetaSyncManager:
     # ------------------------- CORE SYNC -----------------------------
 
     async def _spawn_sync(self, task: Task, symbol: str, interval: str, first_date: Optional[str]) -> None:
-        """Concurrency wrapper to guard sync jobs with a semaphore."""
+        """Wraps a single symbol sync job with semaphore-based concurrency control.
+
+        This method ensures that the number of concurrent synchronization jobs does not exceed the
+        configured max_concurrency limit by acquiring a semaphore before executing the sync.
+
+        Parameters
+        ----------
+        task : Task
+            The task configuration containing asset type, sink, and other settings.
+        symbol : str
+            The ticker symbol or root symbol to synchronize.
+        interval : str
+            The bar interval to sync (e.g., '1d', '5m', '1h').
+        first_date : str or None
+            The first available date for this symbol, or None if not yet determined.
+
+        Returns
+        -------
+        None
+            This method coordinates synchronization but does not return a value.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - run() to spawn each symbol+interval sync job with concurrency control
+        """
         async with self._sem:
             await self._sync_symbol(task, symbol, interval, first_date)
             
         
     async def _sync_symbol(self, task: Task, symbol: str, interval: str, first_date: Optional[str]) -> None:
-        """
-        Incrementally synchronize a (asset, symbol, interval) time-series with:
-          0) Pre-history (if requested start predates earliest saved file)
-          1) Gap backfill limited to pre-resume window
-          2) EOD batched resume from (last_saved+1 or computed resume), or day-by-day for intraday/options
+        """Incrementally synchronizes a single symbol's time-series data with intelligent resume logic.
+
+        This is the core synchronization method that orchestrates the entire data download process including:
+        pre-history filling (retrograde dates), gap backfilling for missing days, and efficient resume from
+        the last saved point with configurable overlap. It handles both end-of-day (EOD) batch downloads
+        and day-by-day processing for intraday and options data.
+
+        Parameters
+        ----------
+        task : Task
+            The task configuration specifying asset type, sink, discover policy, and other settings.
+        symbol : str
+            The ticker symbol or root symbol to synchronize.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h', 'tick').
+        first_date : str or None
+            The first available date for this symbol (discovered or from cache), or None to auto-discover.
+
+        Returns
+        -------
+        None
+            This method performs synchronization and writes data to the configured sink.
+
+        Example Usage
+        -------------
+        # This is an internal method called by:
+        # - _spawn_sync() after acquiring semaphore for concurrency control
+        # Coordinates all phases of data synchronization for one symbol+interval combination
         """
 
         self._validate_interval(interval)
@@ -876,6 +1060,37 @@ class ThetaSyncManager:
 
 
     def _make_file_basepath(self, asset: str, symbol: str, interval: str, start_iso: str, ext: str) -> str:
+        """Constructs the full file path for storing market data based on asset, symbol, interval, and date.
+
+        This method creates a standardized directory structure and filename format for organizing market data
+        files. The directory hierarchy is: root/data/{asset}/{symbol}/{interval}/{sink}/, and files are named
+        with an ISO timestamp prefix for chronological sorting.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'option', 'stock', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h').
+        start_iso : str
+            The ISO datetime string for the data start time (e.g., '2024-01-15T00-00-00Z').
+        ext : str
+            The file extension/sink type (e.g., 'csv', 'parquet', 'influxdb').
+
+        Returns
+        -------
+        str
+            The complete absolute file path including directory and filename.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() to determine where to save option data
+        # - _download_and_store_equity_or_index() to determine where to save stock/index data
+        # - Various methods that need to construct file paths for data persistence
+        """
         sink_dir = self._sink_dir_name(ext)
         folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
         # ⬇️ non creare cartelle per Influx
@@ -1279,7 +1494,6 @@ class ThetaSyncManager:
                         df["timestamp"] = pd.to_datetime(df["trade_timestamp"], errors="coerce")
                         # Ensure ET-naive timestamps (manager expects ET-naive everywhere).
                         if getattr(df["timestamp"].dtype, "tz", None) is not None:
-                            from zoneinfo import ZoneInfo
                             df["timestamp"] = (
                                 df["timestamp"]
                                 .dt.tz_convert(ZoneInfo("America/New_York"))
@@ -1643,7 +1857,6 @@ class ThetaSyncManager:
             # Parse as ET-naive; if any tz-aware values exist, convert to ET and drop tz.
             tmp = pd.to_datetime(df_all[tcol], errors="coerce")
             if getattr(tmp.dtype, "tz", None) is not None:
-                from zoneinfo import ZoneInfo
                 tmp = tmp.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
             df_all[tcol] = tmp
             order_cols = [tcol] + [c for c in ["expiration","right","strike","root","option_symbol","symbol"] if c in df_all.columns]
@@ -1749,7 +1962,6 @@ class ThetaSyncManager:
                         return None
                     ts = pd.to_datetime(d[tcol], errors="coerce")
                     if getattr(ts.dtype, "tz", None) is not None:
-                        from zoneinfo import ZoneInfo
                         ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                     return ts.max() if ts.notna().any() else None
                 except Exception:
@@ -1769,7 +1981,6 @@ class ThetaSyncManager:
             # Normalizza left side (df_all) a ET-naive
             ts_all = pd.to_datetime(df_all[tcol_df], errors="coerce")
             if getattr(ts_all.dtype, "tz", None) is not None:
-                from zoneinfo import ZoneInfo
                 ts_all = ts_all.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
             
             cutoff_naive = pd.to_datetime(cutoff).tz_localize(None) if hasattr(cutoff, 'tz') else cutoff
@@ -1794,7 +2005,6 @@ class ThetaSyncManager:
                         # Normalizza timestamp chunk
                         ts_chunk = pd.to_datetime(last_chunk[tcol_df], errors="coerce")
                         if getattr(ts_chunk.dtype, "tz", None) is not None:
-                            from zoneinfo import ZoneInfo
                             ts_chunk = ts_chunk.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                         last_chunk[tcol_df] = ts_chunk
                         
@@ -1912,12 +2122,35 @@ class ThetaSyncManager:
                        
     
     async def _expirations_that_traded(self, symbol: str, day_iso: str, req_type: str = "trade") -> list[str]:
-        """Return list of expirations (YYYYMMDD) that had trades/quotes that day.
-    
-        Handles both:
-          - columnar dict (e.g., {'symbol': [...], 'strike': [...], 'expiration': [...], 'right': [...]})
-          - list of dicts
-          - fallback: parse from OCC option symbol if needed
+        """Fetches and caches the list of option expiration dates that had activity on a specific trading day.
+
+        This method queries the ThetaData API for all option contracts that traded or were quoted on the given
+        day, extracts their expiration dates, and caches the result for reuse. It handles multiple response
+        formats from the API including columnar dictionaries and lists of contract objects.
+
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
+        day_iso : str
+            The trading day in 'YYYY-MM-DD' format to query for active expirations.
+        req_type : str, optional
+            Default: "trade"
+            Possible values: ["trade", "quote"]
+
+            The type of activity to query - either trades or quotes.
+
+        Returns
+        -------
+        list of str
+            A list of expiration dates in 'YYYYMMDD' format that had activity on the specified day.
+            Returns an empty list if no contracts traded/quoted or if the API call fails.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() to determine which expirations to download for a given day
+        # - First-date discovery methods to identify which expirations were active
         """
         cache_key = (symbol, day_iso, req_type)
         if cache_key in self._exp_by_day_cache:
@@ -1973,7 +2206,6 @@ class ThetaSyncManager:
             return []
     
         items = _dig_to_list(payload) or []
-        import re
         for it in items:
             if not isinstance(it, dict):
                 continue
@@ -2017,7 +2249,62 @@ class ThetaSyncManager:
         expiration: str = "*",           # <— aggiunto: "*" per tutta la chain
         fmt: str = "csv",
     ) -> Tuple[str, str]:
-        """Fetch /option/history/greeks/all for one trading day using the client."""
+        """Fetches historical Greeks data for options from the ThetaData API for a single trading day.
+
+        This method retrieves Greeks (delta, gamma, theta, vega, rho, etc.) for option contracts on a
+        specific day using the /option/history/greeks/all endpoint. It supports filtering by strike,
+        right (call/put), and expiration, with wildcard support for fetching entire chains.
+
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker root symbol (e.g., 'SPY', 'AAPL').
+        day_iso : str
+            The trading day in 'YYYY-MM-DD' format.
+        interval : str
+            The bar interval for Greeks data (e.g., '1d', '5m', '1h').
+        strike : str, optional
+            Default: "*"
+
+            The strike price filter. Use "*" for all strikes or specify a specific strike.
+        right : str, optional
+            Default: "both"
+            Possible values: ["call", "put", "both"]
+
+            Filter for call options, put options, or both.
+        rate_type : str, optional
+            Default: "sofr"
+
+            The interest rate type to use for Greeks calculations.
+        annual_dividend : float or None, optional
+            Default: None
+
+            Annual dividend amount for the underlying. If None, the API uses its default.
+        rate_value : float or None, optional
+            Default: None
+
+            Specific interest rate value. If None, the API uses current market rates.
+        expiration : str, optional
+            Default: "*"
+
+            Expiration date filter in 'YYYYMMDD' format, or "*" for all expirations.
+        fmt : str, optional
+            Default: "csv"
+
+            Response format from the API ('csv' or 'json').
+
+        Returns
+        -------
+        tuple of (str, str)
+            A tuple containing (response_text, full_url). The response_text is the raw CSV or JSON data
+            from the API, and full_url is the complete request URL for debugging.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() when enrich_greeks=True to fetch companion Greeks data
+        # - Methods that need historical Greeks enrichment for options analysis
+        """
         ymd = self._td_ymd(day_iso)
         return await self.client.option_history_all_greeks(
             symbol=symbol,
@@ -2038,7 +2325,32 @@ class ThetaSyncManager:
 
 
     async def _write_df_to_sink(self, base_path: str, df, sink: str) -> None:
-        """Write a DataFrame into CSV/Parquet/Influx with rotation and dedupe/overlap safety."""
+        """Writes a DataFrame to the configured sink (CSV, Parquet, or InfluxDB).
+
+        This method handles the persistence of data to different storage backends, routing the DataFrame
+        to the appropriate writer based on the sink type. Each sink type handles deduplication, rotation,
+        and overlap safety differently.
+
+        Parameters
+        ----------
+        base_path : str
+            The full file path (for CSV/Parquet) or measurement name (for InfluxDB) where data should be written.
+        df : pandas.DataFrame
+            The DataFrame containing market data to persist.
+        sink : str
+            The sink type. Supported values: 'csv', 'parquet', 'influxdb'.
+
+        Returns
+        -------
+        None
+            Data is written to the specified sink but no value is returned.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() after fetching and processing option data
+        # - _download_and_store_equity_or_index() after fetching stock/index data
+        """
         s = (sink or "").strip().lower()
         if s == "csv":
             csv_text = df.to_csv(index=False)
@@ -2061,20 +2373,68 @@ class ThetaSyncManager:
         stop_before_part: int | None = None,
     ) -> int:
         """
-        Write a DataFrame to Parquet using atomic, size-capped, append-by-rotation parts.
-    
-        Guarantees
+        Write DataFrame to Parquet format using atomic, size-capped, append-by-rotation part files.
+
+        This method provides intelligent data persistence with automatic deduplication, stable sorting,
+        and file size management. It never modifies existing Parquet files in-place; instead, it creates
+        new numbered part files (_partNN.parquet) with atomic write guarantees.
+
+        Parameters
         ----------
-        - Stable ordering before write: timestamp -> expiration -> strike -> right (when present).
-        - No duplicates inside the new batch and at the boundary vs the latest existing part.
-        - Part rotation that respects self.cfg.max_file_mb (cap per file).
-        - Atomic writes (tmp file + os.replace), no zero-byte leftovers.
-    
+        base_path : str
+            Base file path. Any existing _partNN suffix is automatically removed before processing.
+            Example: "data/option/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-option-5m.parquet"
+        df_new : pandas.DataFrame
+            New data to append. Must contain valid data; empty DataFrames are skipped.
+        force_first_part : int, optional
+            Default: None
+            If specified, forces writing to start at this part number, bypassing latest part detection.
+            Used for head-refill operations.
+        stop_before_part : int, optional
+            Default: None
+            If specified, stops writing before reaching this part number. Prevents overwriting
+            existing parts during head-refill operations.
+
+        Returns
+        -------
+        int
+            Number of rows successfully written to disk.
+
+        Example Usage
+        -------------
+        # Called by _write_parquet_from_csv and option download methods
+        rows_written = manager._append_parquet_df(
+            base_path="data/stock/AAPL/5m/parquet/2024-03-15T00-00-00Z-AAPL-stock-5m.parquet",
+            df_new=dataframe_with_new_bars
+        )
+        # Returns: 1500 (number of rows written)
+
+        # Head-refill with constraints:
+        rows_written = manager._append_parquet_df(
+            base_path="...", df_new=df,
+            force_first_part=1, stop_before_part=8
+        )
+
+        Behavior
+        --------
+        1. Sorting: Orders by timestamp → expiration → strike → right (when columns present).
+        2. Deduplication: Removes duplicates within new batch and at boundary with last part.
+        3. Boundary handling: For options, uses complex key (timestamp, expiration, strike, right).
+           For stocks/indices, uses timestamp only with tail-based deduplication.
+        4. Size management: Binary searches to find maximum rows fitting within max_file_mb limit.
+        5. Rotation: Automatically creates next _partNN file when current exceeds size limit.
+        6. Atomic writes: Uses temporary file + os.replace to prevent corruption.
+
         Notes
         -----
-        - Never appends inside an existing Parquet file: each chunk becomes a new *_partNN.parquet.
-        - Timestamps are assumed ET-naive upstream; no tz conversion is performed here.
-        - Head-refill is supported via force_first_part / stop_before_part.
+        - Never appends data inside existing Parquet files; always creates new part files.
+        - Assumes timestamps are ET-naive; no timezone conversion performed.
+        - Uses overlap_seconds config for boundary deduplication window.
+        - For options: deduplicates on (timestamp, expiration, strike, right).
+        - For stocks/indices: deduplicates on timestamp only.
+        - Implements binary search to efficiently pack maximum rows per part.
+        - Zero-byte files are automatically cleaned up.
+        - PyArrow engine used for optimal Parquet I/O performance.
         """
     
         # normalizza: se arriva un path già con _partNN rimuovilo
@@ -2130,7 +2490,6 @@ class ThetaSyncManager:
                                 if ts_col in tail_df.columns:
                                     tail_ts = pd.to_datetime(tail_df[ts_col], errors="coerce")
                                     if getattr(tail_ts.dtype, "tz", None) is not None:
-                                        from zoneinfo import ZoneInfo
                                         tail_ts = tail_ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                                     existing_ts = set(tail_ts.dropna())
                                     if existing_ts:
@@ -2253,24 +2612,67 @@ class ThetaSyncManager:
         range_end_iso: Optional[str] = None,
     ) -> None:
         """
-        Download and persist equity/index data to the configured sink.
-    
-        Behavior
-        --------
-        - EOD ("1d"):
-            * Calls EOD endpoints with an inclusive [start_date=day_iso, end_date=range_end_iso or day_iso].
-            * Parses the returned rows (possibly multiple days) and DROPS any day already persisted
-              (idempotent append for both CSV and Parquet).
-        - Intraday (interval != "1d"):
-            * Calls OHLC endpoints for a single day.
-            * For CSV sink, filters rows to timestamp > last timestamp already saved (overlap-safe append).
-    
+        Download and persist equity or index OHLC data for a single trading day or date range.
+
+        This method handles both end-of-day (EOD) and intraday data downloads for stocks and indices,
+        with intelligent resume capabilities and idempotent behavior. For EOD intervals, it can fetch
+        multiple days in a single API call and append only new data. For intraday intervals, it performs
+        overlap-safe appends by filtering out already-persisted timestamps.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "stock" or "index".
+        symbol : str
+            Ticker symbol (e.g., "AAPL", "$SPX").
+        interval : str
+            Bar interval. Use "1d" for daily EOD data. For intraday, use intervals like
+            "1m", "5m", "30m", "1h", or "tick" for tick-level data.
+        day_iso : str
+            Start date in ISO format "YYYY-MM-DD". For EOD, this is the beginning of the
+            date range. For intraday, this is the single trading day to fetch.
+        sink : str
+            Output format: "csv", "parquet", or "influxdb".
+        base_path_override : str, optional
+            Default: None
+            If provided, overrides the default file path construction.
+        range_end_iso : str, optional
+            Default: None (same as day_iso)
+            For EOD intervals only: inclusive end date for the range. Allows fetching multiple
+            days in a single API call. Automatically clamped to yesterday to avoid API errors
+            on current-day requests.
+
+        Returns
+        -------
+        None
+            Data is written directly to disk (CSV/Parquet) or InfluxDB. No return value.
+
+        Example Usage
+        -------------
+        # Called by public download_equity and download_index methods
+        # Single-day intraday download:
+        await manager._download_and_store_equity_or_index(
+            asset="stock", symbol="AAPL", interval="5m",
+            day_iso="2024-03-15", sink="parquet"
+        )
+
+        # Multi-day EOD batch download:
+        await manager._download_and_store_equity_or_index(
+            asset="stock", symbol="AAPL", interval="1d",
+            day_iso="2024-01-01", sink="csv", range_end_iso="2024-03-15"
+        )
+
         Notes
         -----
-        - Reuses existing helpers:
-            _find_existing_series_base, _make_file_basepath, _min_ts_from_df,
-            _append_csv_text, _write_parquet_from_csv, _csv_has_day, _last_csv_timestamp.
-        - No new wrappers/helpers introduced.
+        - EOD behavior: Calls /stock/history/eod or /index/history/eod with date range.
+          Automatically clamps end date to yesterday. Drops already-persisted days for idempotency.
+        - Intraday behavior: Calls /stock/history/ohlc, /index/history/ohlc, or tick endpoints.
+          Computes resume window based on last timestamp. Filters new data > last saved timestamp.
+        - For InfluxDB: uses measurement naming "{prefix}{symbol}-{asset}-{interval}".
+        - Uses client methods: stock_history_eod, stock_history_ohlc, stock_history_trade_quote,
+          index_history_eod, index_history_ohlc, index_history_price.
+        - Integrates with: _compute_intraday_window_et, _append_csv_text, _write_parquet_from_csv,
+          _csv_has_day, _influx_day_has_any, _influx_last_ts_between, _touch_cache.
         """
     
         sink_lower = sink.lower()
@@ -2502,7 +2904,6 @@ class ThetaSyncManager:
                 # Normalizza timestamp (ET-naive)
                 ts = pd.to_datetime(df_day[tcol], errors="coerce")
                 if getattr(ts.dtype, "tz", None) is not None:
-                    from zoneinfo import ZoneInfo
                     ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                 df_day[tcol] = ts
 
@@ -2614,11 +3015,53 @@ class ThetaSyncManager:
         asset: str = "stock",
     ) -> Optional[str]:
         """
-        Scopri la prima data disponibile per STOCK/INDEX usando i wrapper del client.
-        - STOCK: usa /stock/list/dates con data_type in {"trade","quote"}.
-        - INDEX: usa /index/list/dates con data_type in {"price","ohlc"}.
-          Se arriva "trade"/"quote", mappiamo a "price" (gli indici non hanno trade/quote).
-        Ritorna una data ISO 'YYYY-MM-DD' oppure None.
+        Discover the earliest available date for stock or index data using ThetaData list endpoints.
+
+        This method queries the appropriate endpoint based on asset type and data type to find the
+        first date for which data is available. It handles the semantic differences between stock
+        and index data types (stocks have "trade"/"quote", indices have "price"/"ohlc").
+
+        Parameters
+        ----------
+        symbol : str
+            Ticker symbol (e.g., "AAPL" for stocks, "$SPX" for indices).
+        req_type : str, optional
+            Default: "trade"
+            Possible values: ["trade", "quote", "price", "ohlc"]
+            Type of data to query. For stocks: "trade" or "quote". For indices: "price" or "ohlc".
+            If "trade"/"quote" is specified for an index, automatically maps to "price".
+        asset : str, optional
+            Default: "stock"
+            Possible values: ["stock", "index"]
+            Asset class. Determines which API endpoint to use.
+
+        Returns
+        -------
+        str or None
+            Earliest available date in ISO format "YYYY-MM-DD", or None if no data is available
+            or the API request fails.
+
+        Example Usage
+        -------------
+        # Called by download_equity and download_index when determining date range
+        first_date = await manager._discover_equity_first_date(
+            symbol="AAPL", req_type="trade", asset="stock"
+        )
+        # Returns: "2010-01-04" (or earliest available date)
+
+        # For index data:
+        first_date = await manager._discover_equity_first_date(
+            symbol="$SPX", req_type="price", asset="index"
+        )
+
+        Notes
+        -----
+        - For stocks: uses /stock/list/dates endpoint with data_type="trade" or "quote".
+        - For indices: uses /index/list/dates endpoint with data_type="price" or "ohlc".
+        - Automatically maps "trade"/"quote" → "price" when asset is "index" since indices
+          don't have trade/quote semantics.
+        - Uses helper methods: _ensure_list, _extract_first_date_from_any for robust JSON parsing.
+        - Searches nested JSON keys: ("data", "results", "items", "dates").
         """
         # Normalizza l'asset
         asset = (asset or "stock").lower()
@@ -2658,15 +3101,68 @@ class ThetaSyncManager:
         bin_start: str = "2010-01-01",
         bin_end: Optional[str] = None,
     ) -> Optional[str]:
-        """Discover earliest option date for a root symbol.
+        """
+        Discover the earliest available date for option data for a given underlying symbol.
 
-        Strategy
-        --------
-        1) Fetch expirations: /option/list/expirations?symbol=ROOT
-        2) For the K oldest expirations, fetch /option/list/dates/{req_type}
-           with *ONE* expiration per request (strike="*", right="both").
-        3) Return the minimum date found. If none and `fallback_binary` is True,
-           binary search using /option/list/contracts/{req_type}?date=YYYYMMDD&symbol=ROOT.
+        This method uses a multi-strategy approach: first checking the oldest expirations via
+        /option/list/dates, then falling back to binary search via /option/list/contracts if
+        needed. The approach avoids HTTP 414 errors by querying one expiration at a time.
+
+        Parameters
+        ----------
+        symbol : str
+            Underlying root symbol (e.g., "AAPL", "SPX").
+        req_type : str, optional
+            Default: "trade"
+            Possible values: ["trade", "quote"]
+            Type of option data to query.
+        check_first_k : int, optional
+            Default: 3
+            Number of oldest expirations to check via /option/list/dates. Checking multiple
+            expirations increases reliability but uses more API calls.
+        fallback_binary : bool, optional
+            Default: True
+            If True and no dates are found via expiration checking, performs a binary search
+            over the date range [bin_start, bin_end] using /option/list/contracts.
+        bin_start : str, optional
+            Default: "2010-01-01"
+            Start date for binary search fallback (ISO format "YYYY-MM-DD").
+        bin_end : str, optional
+            Default: None (uses current date)
+            End date for binary search fallback (ISO format "YYYY-MM-DD").
+
+        Returns
+        -------
+        str or None
+            Earliest available date in ISO format "YYYY-MM-DD", or None if no data is found.
+
+        Example Usage
+        -------------
+        # Called by download_options when determining historical start date
+        first_date = await manager._discover_option_first_date(
+            symbol="AAPL", req_type="trade", check_first_k=3
+        )
+        # Returns: "2010-01-04" (or earliest date with option data)
+
+        # With custom binary search range:
+        first_date = await manager._discover_option_first_date(
+            symbol="SPY", req_type="trade",
+            fallback_binary=True, bin_start="2015-01-01"
+        )
+
+        Notes
+        -----
+        Strategy:
+        1. Fetches all expirations via /option/list/expirations?symbol=ROOT.
+        2. For the K oldest expirations, queries /option/list/dates/{req_type} with ONE
+           expiration per request (strike="*", right="both") to avoid HTTP 414 errors.
+        3. Returns the minimum date found across checked expirations.
+        4. If no dates found and fallback_binary=True, performs binary search using
+           /option/list/contracts/{req_type}?date=YYYYMMDD&symbol=ROOT.
+
+        - Uses expiration cache (_exp_cache) to avoid repeated API calls.
+        - Helper methods: _ensure_list, _extract_expirations_as_dates, _extract_first_date_from_any.
+        - Fallback method: _binary_search_first_date_option.
         """
         # 1) expirations
         if symbol in self._exp_cache:
@@ -2717,7 +3213,45 @@ class ThetaSyncManager:
 
     async def _binary_search_first_date_option(self, symbol: str, req_type: str,
                                                start_date: str, end_date: str) -> Optional[str]:
-        """Binary-search earliest date with option contracts for the given root."""
+        """
+        Perform binary search to find the earliest date with option contract data.
+
+        This method is used as a fallback when standard expiration-based discovery fails. It uses
+        /option/list/contracts endpoint to check for data availability on specific dates, narrowing
+        the search range via binary search until the first date with data is found.
+
+        Parameters
+        ----------
+        symbol : str
+            Underlying root symbol (e.g., "AAPL", "SPX").
+        req_type : str
+            Type of data to check: "trade" or "quote".
+        start_date : str
+            Beginning of search range in ISO format "YYYY-MM-DD".
+        end_date : str
+            End of search range in ISO format "YYYY-MM-DD".
+
+        Returns
+        -------
+        str or None
+            Earliest date in ISO format "YYYY-MM-DD" with option data, or None if no data
+            is found in the range.
+
+        Example Usage
+        -------------
+        # Called internally by _discover_option_first_date as fallback
+        first_date = await manager._binary_search_first_date_option(
+            symbol="AAPL", req_type="trade",
+            start_date="2010-01-01", end_date="2024-12-31"
+        )
+
+        Notes
+        -----
+        - Uses /option/list/contracts endpoint to check data availability for each candidate date.
+        - Implements classic binary search algorithm: O(log N) where N is days in range.
+        - Returns the first date (earliest) where has_data_async returns True.
+        - Automatically swaps start/end if provided in wrong order.
+        """
         sd = dt.fromisoformat(start_date).date()
         ed = dt.fromisoformat(end_date).date()
         if sd > ed:
@@ -2763,20 +3297,61 @@ class ThetaSyncManager:
 
     
     def _cache_key(self, asset: str, symbol: str, interval: str, sink: str) -> str:
-        """Build a stable cache key for a (asset, symbol, interval, sink) series."""
+        """Constructs a standardized cache key for identifying a specific data series.
+
+        This method creates a unique string key by combining asset, symbol, interval, and sink parameters,
+        which is used for caching first-date coverage and other series metadata.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'stock', 'option', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h').
+        sink : str
+            The sink type (e.g., 'csv', 'parquet', 'influxdb').
+
+        Returns
+        -------
+        str
+            A colon-separated cache key string in the format 'asset:symbol:interval:sink'.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - clear_first_date_cache() to delete specific cache entries
+        # - _touch_cache() to update cache entries
+        # - _load_cache_file() and _save_cache_file() for cache persistence operations
+        """
         return f"{asset}:{symbol}:{interval}:{sink.lower()}"
     
     def _load_cache_file(self) -> Dict[str, Dict[str, str]]:
+        """Loads the coverage cache from disk containing first-date and last-date metadata for data series.
+
+        This method reads a JSON file that stores metadata about synchronized data series, including the
+        first and last dates of saved data. This cache enables efficient resume logic by avoiding redundant
+        discovery and file scanning.
+
+        Parameters
+        ----------
+        None
+            Uses the instance's _cache_path attribute to locate the cache file.
+
+        Returns
+        -------
+        dict of str to dict
+            A dictionary mapping cache keys to metadata dictionaries. Each metadata dict contains keys like
+            'series_last_day' and 'first_saved_day' with 'YYYY-MM-DD' date values. Returns an empty dict
+            if the cache file doesn't exist or is corrupted.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - __init__() during manager initialization to load existing cache
+        # - Methods that need to check cached first/last dates for series
         """
-        Load coverage cache from disk.
-        Returns a dict like:
-          {
-            "stock:AAPL:1d:csv": {"series_last_day": "2025-08-21", "first_saved_day": "2024-11-04"},
-            ...
-          }
-        If file doesn't exist or is invalid, returns {}.
-        """
-        import os, json
         path = getattr(self, "_cache_path", None)
         if not path or not os.path.exists(path):
             return {}
@@ -2789,10 +3364,29 @@ class ThetaSyncManager:
             return {}
     
     def _save_cache_file(self) -> None:
+        """Persists the coverage cache to disk atomically using a temporary file and atomic replace.
+
+        This method safely writes the in-memory coverage cache to disk by first writing to a temporary
+        file, then atomically replacing the existing cache file. This prevents corruption from interrupted
+        writes and ensures cache consistency.
+
+        Parameters
+        ----------
+        None
+            Uses the instance's _cache_path and _coverage_cache attributes.
+
+        Returns
+        -------
+        None
+            The cache is written to disk but no value is returned.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - run() after completing all synchronization tasks
+        # - clear_first_date_cache() after removing a cache entry
+        # - _touch_cache() after updating cache metadata
         """
-        Persist coverage cache to disk atomically.
-        """
-        import os, json, tempfile
         cache_dir = os.path.dirname(self._cache_path)
         os.makedirs(cache_dir, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="cov_", suffix=".json", dir=cache_dir)
@@ -2821,10 +3415,44 @@ class ThetaSyncManager:
         first_day: Optional[str] = None,
         last_day: Optional[str] = None,
     ) -> None:
-        """
-        Update cache entry for a series.
-        - first_day / last_day are 'YYYY-MM-DD' strings.
-        - Only expands the known coverage window; never shrinks it.
+        """Updates the coverage cache entry for a data series, expanding the known date coverage window.
+
+        This method updates the cached first and last dates for a series, ensuring the coverage window
+        only expands (never shrinks). It's used to track the extent of synchronized data without
+        needing to scan files on every run.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'stock', 'option', 'index').
+        symbol : str
+            The ticker symbol or root symbol.
+        interval : str
+            The bar interval (e.g., '1d', '5m', '1h').
+        sink : str
+            The sink type (e.g., 'csv', 'parquet', 'influxdb').
+        first_day : str or None, optional
+            Default: None
+
+            The first date with data in 'YYYY-MM-DD' format. If provided and earlier than the cached
+            first date, the cache is updated to this earlier date.
+        last_day : str or None, optional
+            Default: None
+
+            The last date with data in 'YYYY-MM-DD' format. If provided and later than the cached
+            last date, the cache is updated to this later date.
+
+        Returns
+        -------
+        None
+            The cache is updated in memory but not immediately persisted to disk.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _download_and_store_options() after successfully downloading option data for a day
+        # - _download_and_store_equity_or_index() after downloading stock/index data
+        # - Methods that modify data series and need to update coverage metadata
         """
         key = self._cache_key(asset, symbol, interval, sink)
         entry = self._coverage_cache.get(key, {})
@@ -2871,7 +3499,6 @@ class ThetaSyncManager:
         list
             Sorted list of absolute file paths (canonical only).
         """
-        import os, re
     
         ext = ".csv" if sink_lower == "csv" else ".parquet"
         series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
@@ -2906,13 +3533,47 @@ class ThetaSyncManager:
     
     def _series_earliest_and_latest_day(self, asset: str, symbol: str, interval: str, sink_lower: str):
         """
-        Inspect all series files and return (earliest_day, latest_day, files).
-        - earliest_day: inferred from filename prefix '{YYYY-MM-DD}T...'
-        - latest_day  : inferred from last timestamp inside the file (CSV path).
-        Returns (None, None, []) if no files exist.
+        Determine the earliest and latest calendar days covered by a time series.
+
+        This method scans all canonical part files for a given series and extracts the date range
+        by inspecting filenames (which encode the starting day). It's used for coverage tracking
+        and determining what data already exists before downloading.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "option", "stock", or "index".
+        symbol : str
+            Ticker symbol (case-insensitive matching).
+        interval : str
+            Timeframe (e.g., "5m", "1m", "1d").
+        sink_lower : str
+            Sink format: "csv" or "parquet".
+
+        Returns
+        -------
+        tuple[str or None, str or None, list]
+            Three-element tuple: (earliest_day, latest_day, files)
+            - earliest_day: ISO date "YYYY-MM-DD" from earliest filename prefix, or None.
+            - latest_day: ISO date "YYYY-MM-DD" from latest filename prefix, or None.
+            - files: List of absolute file paths for all canonical part files, sorted by name.
+            Returns (None, None, []) if no files exist.
+
+        Example Usage
+        -------------
+        # Called by _get_first_last_day_from_sink and coverage tracking methods
+        earliest, latest, files = manager._series_earliest_and_latest_day(
+            asset="stock", symbol="AAPL", interval="5m", sink_lower="parquet"
+        )
+        # Returns: ("2020-01-02", "2024-03-15", [list of file paths])
+
+        Notes
+        -----
+        - Uses _list_series_files to get canonical part files only (excludes legacy base files).
+        - Extracts dates from filename format: "YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext"
+        - Both earliest and latest are derived from filename prefixes (not file contents).
+        - For daily-part files, each file represents exactly one calendar day.
         """
-        import os
-        import pandas as pd
     
         files = self._list_series_files(asset, symbol, interval, sink_lower)
         if not files:
@@ -3055,11 +3716,9 @@ class ThetaSyncManager:
                     # **FIX: Se user chiede retrogrado, NON sovrascrivere con series_last**
                     if not (user_fd and series_first_iso and user_fd < series_first_iso):
                         if (not resume_pinned) and series_last_iso:
-                            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
                             next_day = (dt.fromisoformat(series_last_iso).date() + timedelta(days=1))
                             last_ts = _dt.combine(next_day, _dt.min.time(), tzinfo=_tz.utc)
                             try:
-                                import os
                                 last_path = None
                                 for p in reversed(series_files):
                                     if os.path.basename(p).startswith(series_last_iso):
@@ -3269,7 +3928,44 @@ class ThetaSyncManager:
 
 
     def _tail_csv_last_n_lines(self, path: str, n: int = 64) -> list[str]:
-        """Ritorna fino a n ultime righe NON vuote del file CSV, dalla più recente alla più vecchia."""
+        """
+        Read the last N non-empty lines from a CSV file without loading the entire file.
+
+        This method efficiently reads from the end of large CSV files using backward chunked
+        reading, which is much faster than loading and tailing the entire file. It's used for
+        extracting the most recent timestamps and performing boundary deduplication.
+
+        Parameters
+        ----------
+        path : str
+            Absolute path to the CSV file.
+        n : int, optional
+            Default: 64
+            Maximum number of lines to return.
+
+        Returns
+        -------
+        list[str]
+            List of up to N non-empty lines from the end of the file, ordered from newest
+            (most recent) to oldest. Returns empty list if file doesn't exist or is empty.
+
+        Example Usage
+        -------------
+        # Called by _last_csv_timestamp and boundary deduplication operations
+        last_lines = manager._tail_csv_last_n_lines(
+            path="data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
+            n=64
+        )
+        # Returns: ["2024-03-15T20:00:00Z,150.23,150.45,...", ...]
+
+        Notes
+        -----
+        - Uses 4KB block-based backward reading for efficiency on large files.
+        - Strips carriage returns and newlines from each line.
+        - Skips empty lines automatically.
+        - Does not parse CSV structure; returns raw text lines.
+        - Optimal for extracting timestamps without pandas overhead.
+        """
         if not os.path.exists(path):
             return []
         out = []
@@ -3296,7 +3992,35 @@ class ThetaSyncManager:
         return out  # newest-first
     
     def _parse_csv_first_col_as_dt(self, line: str):
-        """Parsa la prima colonna (ISO) come datetime; ritorna UTC datetime o None."""
+        """Parse the first column of a CSV line as an ISO datetime string and return a UTC-aware datetime.
+
+        This helper method extracts the first comma-separated value from a CSV line, interprets it as
+        an ISO 8601 formatted timestamp, and converts it to a timezone-aware datetime object in UTC.
+        Returns None if parsing fails, making it safe for handling malformed or non-timestamp data.
+
+        Parameters
+        ----------
+        line : str
+            A single line from a CSV file where the first column contains an ISO 8601 timestamp
+            (e.g., "2024-03-15T14:30:00Z,150.23,100,...").
+
+        Returns
+        -------
+        datetime or None
+            A timezone-aware datetime object in UTC timezone representing the parsed timestamp.
+            Returns None if the line is empty, malformed, or the first column cannot be parsed as a date.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _tail_csv_last_n_lines() to extract timestamps from CSV tail lines
+        # - _compute_intraday_window_et() to determine resume start times
+        # - Other methods that need to parse timestamps from CSV data quickly
+
+        line = "2024-03-15T14:30:00Z,150.23,100,..."
+        ts = manager._parse_csv_first_col_as_dt(line)
+        # Returns: datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc)
+        """
         first = line.split(",", 1)[0].strip()
         try:
             return dt.fromisoformat(first.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -3305,9 +4029,38 @@ class ThetaSyncManager:
     
     
     def _csv_has_day(self, base_path: str, day_iso: str) -> bool:
-        """
-        True se in (base + _partNN) esiste almeno una riga del giorno 'day_iso'.
-        Usa 'created' -> 'timestamp' -> 'last_trade' come colonna tempo.
+        """Check if any data exists for a specific day across all CSV parts (base and _partNN files).
+
+        This method scans through the base CSV file and all rotated part files (_part01, _part02, etc.)
+        to determine if at least one row exists for the specified trading day. It intelligently selects
+        the time column from 'created', 'timestamp', or 'last_trade' (in that priority order) and parses
+        dates to check for matches. This is used to verify data coverage and detect gaps.
+
+        Parameters
+        ----------
+        base_path : str
+            The base file path (e.g., "data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m.csv").
+            The method will automatically check this file plus all _partNN variants.
+        day_iso : str
+            The target day to search for in ISO format "YYYY-MM-DD" (e.g., "2024-03-15").
+
+        Returns
+        -------
+        bool
+            True if at least one row exists for the specified day in any of the CSV files (base or parts).
+            False if no data exists for that day or if no files are found.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _skip_existing_middle_day() to determine if a day should be skipped during download
+        # - Gap detection logic to identify missing trading days
+
+        has_data = manager._csv_has_day(
+            base_path="data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m.csv",
+            day_iso="2024-03-15"
+        )
+        # Returns: True if data exists for March 15, 2024
         """
 
         # elenca tutti i part: base + _partNN
@@ -3344,7 +4097,38 @@ class ThetaSyncManager:
 
 
     async def _maybe_await(self, x):
-        """Se x è awaitable lo awaita, altrimenti lo ritorna così com'è."""
+        """Conditionally await a value if it's awaitable, otherwise return it directly.
+
+        This utility method provides safe handling of values that may or may not be coroutines or
+        async functions. If the value is awaitable (like an async function result), it awaits it.
+        Otherwise, it returns the value immediately. This enables writing code that can handle both
+        sync and async operations uniformly.
+
+        Parameters
+        ----------
+        x : Any
+            The value to potentially await. Can be any Python object, including coroutines, futures,
+            or regular values.
+
+        Returns
+        -------
+        Any
+            If x is awaitable (inspect.isawaitable returns True), returns the result of awaiting x.
+            Otherwise, returns x unchanged.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by methods that may receive either
+        # synchronous values or async coroutines as parameters
+
+        # With async value:
+        result = await manager._maybe_await(some_async_function())
+        # Awaits and returns the result
+
+        # With sync value:
+        result = await manager._maybe_await(42)
+        # Returns: 42 immediately
+        """
         return await x if inspect.isawaitable(x) else x
 
 
@@ -3395,9 +4179,50 @@ class ThetaSyncManager:
    
     def _missing_1d_days_csv(self, asset: str, symbol: str, interval: str, sink: str,
                              first_day: str, last_day: str) -> list[str]:
-        """
-        Ritorna i business days mancanti nella serie 1d leggendo TUTTI i part (base + _partNN).
-        Usa 'created' -> 'timestamp' -> 'last_trade' come fallback dell'asse temporale.
+        """Identify missing business days in a daily (1d) time series by scanning all CSV parts.
+
+        This method reads through the base CSV file and all rotated part files (_partNN) to determine
+        which business days (Monday-Friday, excluding holidays) are missing from the saved data within
+        the specified date range. It intelligently selects the time column from 'created', 'timestamp',
+        or 'last_trade' (in priority order) and compares observed dates against expected business days.
+        Returns a list of missing dates for gap-filling operations.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type (e.g., 'stock', 'option', 'index').
+        symbol : str
+            The ticker symbol or root symbol (e.g., 'AAPL', 'SPY').
+        interval : str
+            The bar interval, must be '1d' for this method to work correctly.
+        sink : str
+            The sink type (e.g., 'csv', 'parquet').
+        first_day : str
+            The start date of the range to check in ISO format "YYYY-MM-DD".
+        last_day : str
+            The end date of the range to check in ISO format "YYYY-MM-DD".
+
+        Returns
+        -------
+        list of str
+            A list of missing business day dates in ISO format "YYYY-MM-DD", sorted chronologically.
+            Returns an empty list if no files exist or if all business days are present.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - Gap detection and backfill logic to identify which days need to be downloaded
+        # - Data integrity verification during resume operations
+
+        missing = manager._missing_1d_days_csv(
+            asset="stock",
+            symbol="AAPL",
+            interval="1d",
+            sink="csv",
+            first_day="2024-01-01",
+            last_day="2024-01-31"
+        )
+        # Returns: ["2024-01-05", "2024-01-12", "2024-01-19"] (business days with no data)
         """
 
         base = self._find_existing_series_base(asset, symbol, interval, sink)
@@ -3452,7 +4277,32 @@ class ThetaSyncManager:
                 
 
     def _last_csv_day(self, base_path: str) -> Optional[str]:
-        """Ultimo giorno presente considerando anche i file ruotati (_partNN)."""
+        """Extract the last (most recent) day present in CSV data including rotated part files.
+
+        This method identifies the latest part file (_partNN) for the given base path, reads the last
+        line from that file, and extracts the date from the first column timestamp. This is used to
+        determine the most recent date in the saved data for resume operations and coverage tracking.
+
+        Parameters
+        ----------
+        base_path : str
+            The base file path (e.g., "data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv").
+
+        Returns
+        -------
+        str or None
+            The last day present in ISO format "YYYY-MM-DD" (e.g., "2024-03-15").
+            Returns None if no files exist or if the last line cannot be parsed.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _get_first_last_day_from_sink() to determine date ranges
+        # - Resume logic to find the last saved date
+
+        last_day = manager._last_csv_day("data/stock/AAPL/1d/csv/2024-01-01T00-00-00Z-AAPL-stock-1d.csv")
+        # Returns: "2024-03-15"
+        """
         target = self._pick_latest_part(base_path, "csv")
         if not target:
             target = self._next_part_path(base_path, "csv")  # start from _part01
@@ -3468,7 +4318,35 @@ class ThetaSyncManager:
 
 
     def _sink_dir_name(self, sink: str) -> str:
-        """Normalize sink to folder name."""
+        """Normalize a sink type string to its corresponding directory name.
+
+        This method converts various sink type spellings and aliases to their canonical directory
+        names used in the file system structure. It handles common variations and ensures consistent
+        folder naming across the data storage hierarchy.
+
+        Parameters
+        ----------
+        sink : str
+            The sink type string which may be in various forms (e.g., "CSV", "csv", "svc", "Parquet",
+            "influx", "influxdb", "influxdb3", or any other sink identifier).
+
+        Returns
+        -------
+        str
+            The normalized directory name: "csv", "parquet", "influxdb", or the original sink string
+            if no normalization rule applies. Defaults to "csv" if sink is None or empty.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _make_file_basepath() to construct file paths
+        # - _list_series_files() to locate data directories
+        # - Other file system operations that need consistent directory naming
+
+        dir_name = manager._sink_dir_name("CSV")  # Returns: "csv"
+        dir_name = manager._sink_dir_name("influxdb3")  # Returns: "influxdb"
+        dir_name = manager._sink_dir_name(None)  # Returns: "csv" (default)
+        """
         s = (sink or "").strip().lower()
         if s in ("svc", "csv"): return "csv"
         if s == "parquet": return "parquet"
@@ -3477,7 +4355,39 @@ class ThetaSyncManager:
 
 
     def _iso_stamp(self, ts) -> str:
-        """Return 'YYYY-MM-DDTHH-MM-SSZ' in UTC, safe for filenames."""
+        """Convert a timestamp to a filename-safe ISO format string in UTC.
+
+        This method takes various timestamp representations (datetime objects, pandas Timestamps, or
+        ISO strings) and converts them to a consistent 'YYYY-MM-DDTHH-MM-SSZ' format using hyphens
+        instead of colons, making the result safe for use in file and directory names on all operating
+        systems (Windows, Linux, macOS).
+
+        Parameters
+        ----------
+        ts : datetime, pandas.Timestamp, str, or None
+            The timestamp to convert. Accepts timezone-aware or naive datetime objects, pandas
+            Timestamps, ISO format strings, or None. If None, uses the current UTC time.
+
+        Returns
+        -------
+        str
+            A filename-safe ISO format timestamp string in the form "YYYY-MM-DDTHH-MM-SSZ"
+            (e.g., "2024-03-15T14-30-00Z"). Colons are replaced with hyphens to ensure
+            cross-platform filename compatibility.
+
+        Example Usage
+        -------------
+        # This is an internal helper method called by:
+        # - _make_file_basepath() to generate timestamp-prefixed filenames
+        # - File naming operations throughout the manager
+
+        from datetime import datetime, timezone
+        stamp = manager._iso_stamp(datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc))
+        # Returns: "2024-03-15T14-30-00Z"
+
+        stamp = manager._iso_stamp(None)
+        # Returns: current UTC time like "2024-03-20T10-45-32Z"
+        """
         if ts is None:
             return dt.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
         if hasattr(ts, "to_pydatetime"):
@@ -3501,7 +4411,6 @@ class ThetaSyncManager:
                         # find first non-empty then min
                         vals = [x for x in s.values if isinstance(x, str) and x]
                         if vals:
-                            from datetime import datetime
                             m = min(self._as_utc(v) for v in vals)
                             return self._iso_stamp(m)
                     # general path
@@ -3514,7 +4423,6 @@ class ThetaSyncManager:
 
 
     def _find_existing_series_base(self, asset, symbol, interval, sink):
-        import os, re
         sink_dir = self._sink_dir_name(sink)
         folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_dir)
         if not os.path.isdir(folder):
@@ -3535,7 +4443,6 @@ class ThetaSyncManager:
 
 
     def _find_existing_daily_base_for_day(self, asset, symbol, interval, sink, day_iso):
-        import os, re
         sink_dir = self._sink_dir_name(sink)  # richiede il piccolo helper _sink_dir_name
         folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
         if not os.path.isdir(folder):
@@ -3591,7 +4498,59 @@ class ThetaSyncManager:
         force_first_part: int | None = None,
         stop_before_part: int | None = None
     ) -> None:
-        
+        """
+        Append CSV text to part files with automatic size-based rotation and atomic writes.
+
+        This method implements intelligent file rotation that respects the configured max_file_mb
+        limit. It never writes to legacy base files; all data goes into numbered _partNN.csv files.
+        The method handles header management and ensures no data loss through atomic operations.
+
+        Parameters
+        ----------
+        base_path : str
+            Base file path (e.g., "data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m.csv").
+            The _partNN suffix will be added automatically.
+        csv_text : str
+            CSV content including header row. Must be non-empty and properly formatted.
+        force_first_part : int, optional
+            Default: None
+            If specified, forces writing to start at this part number, ignoring existing parts.
+            Used by head-refill operations.
+        stop_before_part : int, optional
+            Default: None
+            If specified, stops writing before reaching this part number. Prevents overwriting
+            existing parts during head-refill operations.
+
+        Returns
+        -------
+        None
+            Data is written directly to disk with side effects only.
+
+        Example Usage
+        -------------
+        # Called by _download_and_store_equity_or_index and option download methods
+        await manager._append_csv_text(
+            base_path="data/stock/AAPL/5m/csv/2024-03-15T00-00-00Z-AAPL-stock-5m.csv",
+            csv_text="timestamp,open,high,low,close,volume\\n2024-03-15T09:30:00Z,150.0,..."
+        )
+
+        # Head-refill with part constraints:
+        await manager._append_csv_text(
+            base_path="...", csv_text="...",
+            force_first_part=1, stop_before_part=5
+        )
+
+        Notes
+        -----
+        - Never appends to legacy base files; always uses _partNN.csv format starting from _part01.
+        - Automatically rotates to next part when current part would exceed max_file_mb.
+        - Writes header only to new files (size == 0).
+        - Performs byte-level space calculations to avoid exceeding size limits.
+        - Processes CSV line-by-line to pack maximum data into each part file.
+        - Uses synchronous file I/O (open/write/close) for atomic operations.
+        - If target part already exists, appends to it until size limit reached.
+        """
+
         # Seleziona il target corrente o l'ultimo _partNN
         target = self._pick_latest_part(base_path, "csv")
         base_no_ext = base_path[:-4] if base_path.endswith(".csv") else base_path
@@ -3683,7 +4642,6 @@ class ThetaSyncManager:
         Convert CSV text to DataFrame and persist into capped Parquet parts
         (..._partNN.parquet) using the same binary-search chunking as _append_parquet_df.
         """
-        import pandas as pd
         df_new = pd.read_csv(io.StringIO(csv_text))
         if df_new.empty:
             return
@@ -3692,7 +4650,6 @@ class ThetaSyncManager:
         if "timestamp" in df_new.columns:
             df_new["timestamp"] = pd.to_datetime(df_new["timestamp"], errors="coerce")
             if getattr(df_new["timestamp"].dtype, "tz", None) is not None:
-                from zoneinfo import ZoneInfo
                 df_new["timestamp"] = df_new["timestamp"].dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                         
         if "expiration" in df_new.columns:
@@ -3723,12 +4680,10 @@ class ThetaSyncManager:
         """
         if getattr(self, "_influx", None):
             return self._influx
-        try:
-            from influxdb_client_3 import InfluxDBClient3
-        except Exception as e:
+        if InfluxDBClient3 is None:
             raise RuntimeError(
                 "influxdb3-python è richiesto per sink='influxdb' (pip install influxdb3-python pyarrow)"
-            ) from e
+            )
     
         host = self.cfg.influx_url or "http://localhost:8181"   # mappa url→host (v3)
         database = self.cfg.influx_bucket                       # mappa bucket→database (v3)
@@ -3747,7 +4702,6 @@ class ThetaSyncManager:
         {YYYY-MM-DDTHH-MM-SSZ}-{symbol}-{asset}-{interval}.<sink>
         -> measurement = [{prefix}]{symbol}-{asset}-{interval}
         """
-        import os
         base = os.path.basename(base_path)
         stem, _ = os.path.splitext(base)
         parts = stem.split("Z-", 1)
@@ -3755,7 +4709,6 @@ class ThetaSyncManager:
         return f"{(self.cfg.influx_measure_prefix or '')}{tail}"
 
     def _influx_last_timestamp(self, measurement: str):
-        import pandas as pd
         cli = self._ensure_influx_client()
         q = f'SELECT MAX(time) AS last_ts FROM "{measurement}"'
         try:
@@ -3785,7 +4738,6 @@ class ThetaSyncManager:
 
     def _influx__first_ts_between(self, measurement: str, start_utc_iso: str, end_utc_iso: str):
         """Return first timestamp in [start,end) as pandas.Timestamp(UTC) or None."""
-        import pandas as pd
         cli = self._ensure_influx_client()
         q = (
             f'SELECT MIN(time) AS first_ts FROM "{measurement}" '
@@ -3824,7 +4776,6 @@ class ThetaSyncManager:
         Applica un dedup "hard" lato codice su chiave logica:
         (__ts_utc + eventuali tag: symbol, expiration, right, strike [+ sequence se presente]).
         """
-        import math, numpy as np, pandas as pd
         cli = self._ensure_influx_client()
         if df_new is None or len(df_new) == 0:
             return 0
@@ -3848,9 +4799,7 @@ class ThetaSyncManager:
         s = pd.to_datetime(df_new[tcol], errors="coerce")
         # se già tz-aware, portala a ET naive per coerenza e poi rilocalizza
         if getattr(s.dtype, "tz", None) is not None:
-            from zoneinfo import ZoneInfo
             s = s.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-        from zoneinfo import ZoneInfo
         s = s.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
     
         df = df_new.copy()
@@ -4030,7 +4979,6 @@ class ThetaSyncManager:
             # If any timezone-aware values slip in, convert to ET and drop tz.
             if getattr(ts.dtype, "tz", None) is not None:
                 try:
-                    from zoneinfo import ZoneInfo
                     ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                 except Exception:
                     ts = ts.dt.tz_localize(None)
@@ -4056,7 +5004,6 @@ class ThetaSyncManager:
         """
         try:
             txt = str(iso).strip()
-            from zoneinfo import ZoneInfo
             if ("Z" in txt) or (len(txt) >= 6 and txt[-6] in "+-"):
                 # UTC input -> convert to ET
                 dt = dt.fromisoformat(txt.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
@@ -4165,7 +5112,52 @@ class ThetaSyncManager:
 
 
     def _list_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> list[str]:
-        """Return all files (base + _partNN) for that day, sorted by name."""
+        """
+        Return all files associated with a specific trading day, including all part files.
+
+        This method finds both legacy base files and all numbered part files (_part01, _part02, etc.)
+        that belong to a single trading day. It's used for operations that need to process or analyze
+        all data fragments for a given day.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type: "option", "stock", or "index".
+        symbol : str
+            Ticker symbol.
+        interval : str
+            Timeframe (e.g., "5m", "1d").
+        sink : str
+            File format: "csv" or "parquet".
+        day_iso : str
+            Trading day in ISO format "YYYY-MM-DD".
+
+        Returns
+        -------
+        list[str]
+            Sorted list of absolute file paths matching the day prefix. Includes both base file
+            (if exists) and all _partNN files. Returns empty list if no files found or directory
+            doesn't exist.
+
+        Example Usage
+        -------------
+        # Called by _day_parts_status, _csv_has_day, and cleanup operations
+        day_files = manager._list_day_files(
+            asset="stock", symbol="AAPL", interval="5m",
+            sink="csv", day_iso="2024-03-15"
+        )
+        # Returns: [
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m.csv",
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part01.csv",
+        #   "path/2024-03-15T00-00-00Z-AAPL-stock-5m_part02.csv"
+        # ]
+
+        Notes
+        -----
+        - Matches filename prefix: "{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}"
+        - Includes files with and without _partNN suffix.
+        - Returns sorted list for stable ordering in processing operations.
+        """
         sink_dir = self._sink_dir_name(sink)
         folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
         if not os.path.isdir(folder):
@@ -4200,7 +5192,6 @@ class ThetaSyncManager:
           - has_mixed: legacy base + parts together
           - needs_rebuild: True if head missing or gaps -> purge & rewrite from _part01
         """
-        import os, re
     
         ext = sink
         # Canonical base path (anche se non esiste su disco)
@@ -4244,7 +5235,6 @@ class ThetaSyncManager:
 
     def _list_day_part_files(self, asset: str, symbol: str, interval: str, sink_lower: str, day_iso: str):
         """Return sorted list of (part_num, filepath) for the given day."""
-        import os, re
         folder = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, self._sink_dir_name(sink_lower))
         if not os.path.isdir(folder):
             return []
@@ -4288,7 +5278,6 @@ class ThetaSyncManager:
 
     def _first_timestamp_in_parquet(self, path: str, ts_candidates=("timestamp","ts","time","datetime")):
         # legge il primo timestamp dal primo row group del parquet
-        import pyarrow.parquet as pq
         pf = pq.ParquetFile(path)
         names = set(pf.schema_arrow.names)
         col = next((c for c in ts_candidates if c in names), None)
@@ -4770,12 +5759,7 @@ class ThetaSyncManager:
             return df
     
         # Optional display
-        _display = None
-        if show:
-            try:
-                from IPython.display import display as _display  # noqa
-            except Exception:
-                _display = None
+        _display = ipy_display if show and ipy_display is not None else None
     
         results_by_day = {}
         summary_rows = []
@@ -5014,7 +5998,6 @@ class ThetaSyncManager:
         if client is None and hasattr(self, "client_influx"):
             client = self.client_influx
         if client is None:
-            from influxdb_client_3 import InfluxDBClient3
             client = InfluxDBClient3(host=self.cfg.influx_url, token=self.cfg.influx_token,
                                      database=self.cfg.influx_bucket, org=None)
     
@@ -5040,8 +6023,6 @@ class ThetaSyncManager:
         Esegue la richiesta TD con 1 piccolo retry se fallisce per errori transitori
         (timeout, disconnessione, cancel durante I/O). Ritorna (text, meta) o (None, None).
         """
-        import asyncio
-        import aiohttp
     
         for attempt in range(retries + 1):
             try:
@@ -5123,7 +6104,6 @@ class ThetaSyncManager:
         sample_limit: int
     ) -> dict:
         """Check duplicati in InfluxDB."""
-        from zoneinfo import ZoneInfo
         
         # Costruisci measurement name
         prefix = self.cfg.influx_measure_prefix or ""
@@ -5262,7 +6242,6 @@ class ThetaSyncManager:
         sample_limit: int
     ) -> dict:
         """Check duplicati in CSV/Parquet."""
-        import os
         
         # Trova file
         if day_iso:
@@ -5419,7 +6398,6 @@ class ThetaSyncManager:
                 - daily_results: list of per-day results
                 - summary: dict with date range and status
         """
-        from datetime import datetime, timedelta
         
         # START: Auto-detect date range if not provided
         if not start_date or not end_date:
@@ -5574,5 +6552,4 @@ class ThetaSyncManager:
     # --------------------------------------------------------------------------
     # END: Multi-day duplicate check functionality
     # --------------------------------------------------------------------------
-
 

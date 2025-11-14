@@ -5,7 +5,7 @@ tdSynchManager package initializer.
 Clean public surface:
     from tdSynchManager import (
         ThetaSyncManager, ThetaDataV3Client, ManagerConfig,
-        build_default_client, new_manager, __version__
+        new_manager, __version__
     )
 
 Note: This file is unrelated to class constructors (__init__ methods).
@@ -29,14 +29,13 @@ __version__ = _detect_version()
 
 # === >>> PUBLIC API RE-EXPORTS — BEGIN
 from .client import ThetaDataV3Client
-from .manager import ThetaSyncManager, build_default_client
+from .manager import ThetaSyncManager
 from .config import ManagerConfig
 
 __all__ = [
     "ThetaDataV3Client",
     "ThetaSyncManager",
     "ManagerConfig",
-    "build_default_client",
     "new_manager",
     "__version__",
 ]
