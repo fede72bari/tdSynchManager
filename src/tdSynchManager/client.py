@@ -208,37 +208,46 @@ class ThetaDataV3Client:
         content types (like CSV). All HTTP errors and network exceptions are converted to
         ThetaDataV3HTTPError for consistent error handling throughout the client.
 
-        Parameters:
-            endpoint (str): The API endpoint path to request, starting with a forward slash.
-                Examples: "/stock/list/symbols", "/option/history/trade", "/index/snapshot/price".
-                This is appended to the base_url configured during client initialization.
-            params (Dict[str, Any], optional): Query parameters to include in the request URL.
-                Defaults to None (no parameters). Common parameters include: "symbol", "date",
-                "format", "start_date", "end_date", "interval", etc. The dictionary keys are
-                parameter names and values are automatically URL-encoded.
+        Parameters
+        ----------
+        endpoint : str
+            The API endpoint path to request, starting with a forward slash.
+            Examples: "/stock/list/symbols", "/option/history/trade", "/index/snapshot/price".
+            This is appended to the base_url configured during client initialization.
+        params : Dict[str, Any], optional
+            Default: None
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The parsed response data. If the response Content-Type is
-                  "application/json", this is the parsed JSON object (dict, list, etc.). For CSV
-                  or other content types, this is the raw response text string. If JSON parsing
-                  fails despite JSON content type, returns the raw text as fallback.
-                - Second element: The complete request URL as a string, including all query
-                  parameters. Useful for debugging, logging, and error reporting.
+            Query parameters to include in the request URL. Common parameters include: "symbol",
+            "date", "format", "start_date", "end_date", "interval", etc. The dictionary keys are
+            parameter names and values are automatically URL-encoded.
 
-        Raises:
-            ThetaDataV3HTTPError: Raised for any HTTP error (status codes outside 200-299 range)
-                or network-level errors (connection failures, timeouts). The exception includes
-                the status code (0 for network errors), full URL, and raw response text.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The parsed response data. If the response Content-Type is
+              "application/json", this is the parsed JSON object (dict, list, etc.). For CSV
+              or other content types, this is the raw response text string. If JSON parsing
+              fails despite JSON content type, returns the raw text as fallback.
+            - Second element: The complete request URL as a string, including all query
+              parameters. Useful for debugging, logging, and error reporting.
 
-        Example Usage:
-            This method is called internally by all public API methods such as:
-            - stock_list_symbols() -> calls _make_request("/stock/list/symbols", ...)
-            - stock_history_ohlc() -> calls _make_request("/stock/history/ohlc", ...)
-            - option_snapshot_trade() -> calls _make_request("/option/snapshot/trade", ...)
-            - index_history_price() -> calls _make_request("/index/history/price", ...)
+        Raises
+        ------
+        ThetaDataV3HTTPError
+            Raised for any HTTP error (status codes outside 200-299 range) or network-level
+            errors (connection failures, timeouts). The exception includes the status code
+            (0 for network errors), full URL, and raw response text.
 
-            Users should not call this method directly; instead, use the public endpoint methods.
+        Example Usage
+        -------------
+        This method is called internally by all public API methods such as:
+        - stock_list_symbols() -> calls _make_request("/stock/list/symbols", ...)
+        - stock_history_ohlc() -> calls _make_request("/stock/history/ohlc", ...)
+        - option_snapshot_trade() -> calls _make_request("/option/snapshot/trade", ...)
+        - index_history_price() -> calls _make_request("/index/history/price", ...)
+
+        Users should not call this method directly; instead, use the public endpoint methods.
         """
         url = f"{self.base_url}{endpoint}"
         full_url = f"{url}?{urlencode(params or {})}"
@@ -278,31 +287,37 @@ class ThetaDataV3Client:
         specific historical or real-time data. It returns the data in the requested format and provides
         the request URL for reference.
 
-        Parameters:
-            format_type (str, optional): The desired response format for the data. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON array of objects, easiest for programmatic parsing
-                - "csv": Returns data as comma-separated values, suitable for spreadsheet import
-                - "ndjson": Returns newline-delimited JSON, useful for streaming large datasets
+        Parameters
+        ----------
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-                The format choice affects how the returned data is structured and should be selected
-                based on your processing requirements and tooling.
+            The desired response format for the data. The format choice affects how the returned
+            data is structured and should be selected based on your processing requirements and
+            tooling.
+            - "json": Returns data as a JSON array of objects, easiest for programmatic parsing
+            - "csv": Returns data as comma-separated values, suitable for spreadsheet import
+            - "ndjson": Returns newline-delimited JSON, useful for streaming large datasets
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The list of stock symbols. If format_type is "json", this is a list
-                  of dictionaries with symbol details. If "csv" or "ndjson", this is a string containing
-                  the formatted data.
-                - Second element: The complete request URL as a string, including query parameters.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The list of stock symbols. If format_type is "json", this is a list
+              of dictionaries with symbol details. If "csv" or "ndjson", this is a string containing
+              the formatted data.
+            - Second element: The complete request URL as a string, including query parameters.
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                symbols, url = await client.stock_list_symbols(format_type="json")
-                print(f"Found {len(symbols)} stock symbols")
-                for sym in symbols[:5]:
-                    print(sym)
-            ```
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            symbols, url = await client.stock_list_symbols(format_type="json")
+            print(f"Found {len(symbols)} stock symbols")
+            for sym in symbols[:5]:
+                print(sym)
+        ```
         """
         params = {"format": format_type}
         return await self._make_request("/stock/list/symbols", params)
@@ -318,40 +333,51 @@ class ThetaDataV3Client:
         in UTC timezone format. The response helps identify gaps in historical data and plan
         comprehensive data downloads efficiently.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples include "AAPL" (Apple Inc.),
-                "MSFT" (Microsoft Corporation), "SPY" (S&P 500 ETF), "TSLA" (Tesla Inc.). The symbol
-                must be a valid ticker available in the ThetaData database. Use stock_list_symbols()
-                to discover available symbols.
-            data_type (str): The type of market data to check availability for. Defaults to "trade".
-                Possible values:
-                - "trade": Checks for trade (execution) data availability. Trade data includes
-                  actual transactions with price, size, timestamp, and exchange information.
-                - "quote": Checks for quote (bid/ask) data availability. Quote data includes best
-                  bid and offer prices with sizes from the National Best Bid and Offer (NBBO).
-            format_type (str, optional): The desired response format. Defaults to "json".
-                Possible values:
-                - "json": Returns dates as a JSON array, ideal for programmatic processing
-                - "csv": Returns dates as comma-separated values
-                - "ndjson": Returns dates as newline-delimited JSON
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples include "AAPL" (Apple Inc.),
+            "MSFT" (Microsoft Corporation), "SPY" (S&P 500 ETF), "TSLA" (Tesla Inc.). The symbol
+            must be a valid ticker available in the ThetaData database. Use stock_list_symbols()
+            to discover available symbols.
+        data_type : str
+            Default: "trade"
+            Possible values: ["trade", "quote"]
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: List of available dates. For JSON format, this is a list of date
-                  strings in YYYY-MM-DD format (UTC). For CSV/NDJSON, this is a formatted string.
-                - Second element: The complete request URL including all query parameters.
+            The type of market data to check availability for.
+            - "trade": Checks for trade (execution) data availability. Trade data includes
+              actual transactions with price, size, timestamp, and exchange information.
+            - "quote": Checks for quote (bid/ask) data availability. Quote data includes best
+              bid and offer prices with sizes from the National Best Bid and Offer (NBBO).
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Check trade data availability for Apple
-                dates, url = await client.stock_list_dates("AAPL", data_type="trade")
-                print(f"Trade data available for {len(dates)} dates")
-                print(f"First date: {dates[0]}, Last date: {dates[-1]}")
+            The desired response format.
+            - "json": Returns dates as a JSON array, ideal for programmatic processing
+            - "csv": Returns dates as comma-separated values
+            - "ndjson": Returns dates as newline-delimited JSON
 
-                # Check quote data availability
-                quote_dates, url = await client.stock_list_dates("SPY", data_type="quote")
-            ```
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: List of available dates. For JSON format, this is a list of date
+              strings in YYYY-MM-DD format (UTC). For CSV/NDJSON, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Check trade data availability for Apple
+            dates, url = await client.stock_list_dates("AAPL", data_type="trade")
+            print(f"Trade data available for {len(dates)} dates")
+            print(f"First date: {dates[0]}, Last date: {dates[-1]}")
+
+            # Check quote data availability
+            quote_dates, url = await client.stock_list_dates("SPY", data_type="quote")
+        ```
         """
         params = {
             "symbol": symbol,
@@ -372,33 +398,41 @@ class ThetaDataV3Client:
         intraday trading ranges. The response includes timestamp in UTC, volume, and other market
         metrics that provide a comprehensive view of current price action.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
-                (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol available in the ThetaData
-                database. Use stock_list_symbols() to discover available symbols.
-            format_type (str, optional): The desired response format. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON object with structured fields, ideal for programmatic use
-                - "csv": Returns data as comma-separated values, suitable for import to spreadsheets
-                - "ndjson": Returns newline-delimited JSON format
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol available in the ThetaData
+            database. Use stock_list_symbols() to discover available symbols.
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The OHLC snapshot data. For JSON format, this is a dictionary with
-                  fields like open, high, low, close, volume, timestamp. For CSV/NDJSON, this is a
-                  formatted string.
-                - Second element: The complete request URL including query parameters.
+            The desired response format.
+            - "json": Returns data as a JSON object with structured fields, ideal for programmatic use
+            - "csv": Returns data as comma-separated values, suitable for import to spreadsheets
+            - "ndjson": Returns newline-delimited JSON format
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get current OHLC for Apple
-                ohlc_data, url = await client.stock_snapshot_ohlc("AAPL")
-                print(f"Current AAPL - Open: {ohlc_data['open']}, Close: {ohlc_data['close']}")
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The OHLC snapshot data. For JSON format, this is a dictionary with
+              fields like open, high, low, close, volume, timestamp. For CSV/NDJSON, this is a
+              formatted string.
+            - Second element: The complete request URL including query parameters.
 
-                # Get OHLC in CSV format
-                ohlc_csv, url = await client.stock_snapshot_ohlc("SPY", format_type="csv")
-            ```
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get current OHLC for Apple
+            ohlc_data, url = await client.stock_snapshot_ohlc("AAPL")
+            print(f"Current AAPL - Open: {ohlc_data['open']}, Close: {ohlc_data['close']}")
+
+            # Get OHLC in CSV format
+            ohlc_csv, url = await client.stock_snapshot_ohlc("SPY", format_type="csv")
+        ```
         """
         params = {"symbol": symbol, "format": format_type}
         return await self._make_request("/stock/snapshot/ohlc", params)
@@ -415,30 +449,38 @@ class ThetaDataV3Client:
         actual executions rather than quotes, providing definitive evidence of price levels where
         transactions occurred.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "GOOGL"
-                (Alphabet Inc.), "NVDA" (NVIDIA Corporation). Must be a valid symbol in the ThetaData
-                database. Use stock_list_symbols() to find available symbols.
-            format_type (str, optional): The desired response format. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON object with structured trade information
-                - "csv": Returns data in comma-separated values format
-                - "ndjson": Returns data in newline-delimited JSON format
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "GOOGL"
+            (Alphabet Inc.), "NVDA" (NVIDIA Corporation). Must be a valid symbol in the ThetaData
+            database. Use stock_list_symbols() to find available symbols.
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The last trade data. For JSON format, this is a dictionary with fields
-                  such as price, size, timestamp, exchange, conditions. For CSV/NDJSON, this is a string.
-                - Second element: The complete request URL including all query parameters.
+            The desired response format.
+            - "json": Returns data as a JSON object with structured trade information
+            - "csv": Returns data in comma-separated values format
+            - "ndjson": Returns data in newline-delimited JSON format
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get last trade for Tesla
-                trade_data, url = await client.stock_snapshot_trade("TSLA")
-                print(f"Last trade: ${trade_data['price']} for {trade_data['size']} shares")
-                print(f"Exchange: {trade_data['exchange']}")
-            ```
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The last trade data. For JSON format, this is a dictionary with fields
+              such as price, size, timestamp, exchange, conditions. For CSV/NDJSON, this is a string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get last trade for Tesla
+            trade_data, url = await client.stock_snapshot_trade("TSLA")
+            print(f"Last trade: ${trade_data['price']} for {trade_data['size']} shares")
+            print(f"Exchange: {trade_data['exchange']}")
+        ```
         """
         params = {"symbol": symbol, "format": format_type}
         return await self._make_request("/stock/snapshot/trade", params)
@@ -455,33 +497,41 @@ class ThetaDataV3Client:
         data as it represents available prices rather than completed transactions, providing insight into
         where buyers and sellers are willing to transact.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "AMZN"
-                (Amazon.com Inc.), "META" (Meta Platforms Inc.). Must be a valid symbol available in the
-                ThetaData database. Use stock_list_symbols() to discover available symbols.
-            format_type (str, optional): The desired response format. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON object with structured quote fields
-                - "csv": Returns data in comma-separated values format
-                - "ndjson": Returns data in newline-delimited JSON format
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "AMZN"
+            (Amazon.com Inc.), "META" (Meta Platforms Inc.). Must be a valid symbol available in the
+            ThetaData database. Use stock_list_symbols() to discover available symbols.
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The quote data. For JSON format, this is a dictionary with fields such
-                  as bid_price, bid_size, ask_price, ask_size, spread, timestamp, exchange. For CSV/NDJSON,
-                  this is a formatted string.
-                - Second element: The complete request URL including all query parameters.
+            The desired response format.
+            - "json": Returns data as a JSON object with structured quote fields
+            - "csv": Returns data in comma-separated values format
+            - "ndjson": Returns data in newline-delimited JSON format
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get current quote for Microsoft
-                quote_data, url = await client.stock_snapshot_quote("MSFT")
-                spread = quote_data['ask_price'] - quote_data['bid_price']
-                print(f"Bid: ${quote_data['bid_price']} x {quote_data['bid_size']}")
-                print(f"Ask: ${quote_data['ask_price']} x {quote_data['ask_size']}")
-                print(f"Spread: ${spread:.2f}")
-            ```
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The quote data. For JSON format, this is a dictionary with fields such
+              as bid_price, bid_size, ask_price, ask_size, spread, timestamp, exchange. For CSV/NDJSON,
+              this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get current quote for Microsoft
+            quote_data, url = await client.stock_snapshot_quote("MSFT")
+            spread = quote_data['ask_price'] - quote_data['bid_price']
+            print(f"Bid: ${quote_data['bid_price']} x {quote_data['bid_size']}")
+            print(f"Ask: ${quote_data['ask_price']} x {quote_data['ask_size']}")
+            print(f"Spread: ${spread:.2f}")
+        ```
         """
         params = {"symbol": symbol, "format": format_type}
         return await self._make_request("/stock/snapshot/quote", params)
@@ -500,42 +550,52 @@ class ThetaDataV3Client:
         in UTC timezone. This endpoint is ideal for longer-term analysis, daily charting, and fundamental
         strategy backtesting where intraday granularity is not required.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
-                (S&P 500 ETF), "JPM" (JPMorgan Chase). Must be a valid symbol in the ThetaData database.
-                Use stock_list_symbols() to discover available symbols.
-            start_date (str): The start date for the historical data range, inclusive. Format must be
-                "YYYY-MM-DD" (e.g., "2024-01-01"). All dates are interpreted in UTC timezone. This is
-                the first date for which data will be returned.
-            end_date (str): The end date for the historical data range, inclusive. Format must be
-                "YYYY-MM-DD" (e.g., "2024-12-31"). All dates are interpreted in UTC timezone. This is
-                the last date for which data will be returned.
-            format_type (str, optional): The desired response format. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON array of daily records, ideal for programmatic processing
-                - "csv": Returns data as comma-separated values, suitable for spreadsheet import
-                - "ndjson": Returns data as newline-delimited JSON, useful for streaming processing
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "JPM" (JPMorgan Chase). Must be a valid symbol in the ThetaData database.
+            Use stock_list_symbols() to discover available symbols.
+        start_date : str
+            The start date for the historical data range, inclusive. Format must be
+            "YYYY-MM-DD" (e.g., "2024-01-01"). All dates are interpreted in UTC timezone. This is
+            the first date for which data will be returned.
+        end_date : str
+            The end date for the historical data range, inclusive. Format must be
+            "YYYY-MM-DD" (e.g., "2024-12-31"). All dates are interpreted in UTC timezone. This is
+            the last date for which data will be returned.
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The historical EOD data. For JSON format, this is a list of dictionaries
-                  where each dictionary represents one trading day with fields: date, open, high, low,
-                  close, volume, adjusted_close. For CSV/NDJSON, this is a formatted string.
-                - Second element: The complete request URL including all query parameters.
+            The desired response format.
+            - "json": Returns data as a JSON array of daily records, ideal for programmatic processing
+            - "csv": Returns data as comma-separated values, suitable for spreadsheet import
+            - "ndjson": Returns data as newline-delimited JSON, useful for streaming processing
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get EOD data for Apple for all of 2024
-                eod_data, url = await client.stock_history_eod(
-                    "AAPL",
-                    "2024-01-01",
-                    "2024-12-31"
-                )
-                print(f"Retrieved {len(eod_data)} trading days")
-                for day in eod_data[:5]:
-                    print(f"{day['date']}: Close ${day['close']:.2f}, Volume {day['volume']}")
-            ```
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The historical EOD data. For JSON format, this is a list of dictionaries
+              where each dictionary represents one trading day with fields: date, open, high, low,
+              close, volume, adjusted_close. For CSV/NDJSON, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get EOD data for Apple for all of 2024
+            eod_data, url = await client.stock_history_eod(
+                "AAPL",
+                "2024-01-01",
+                "2024-12-31"
+            )
+            print(f"Retrieved {len(eod_data)} trading days")
+            for day in eod_data[:5]:
+                print(f"{day['date']}: Close ${day['close']:.2f}, Volume {day['volume']}")
+        ```
         """
         params = {
             "symbol": symbol,
@@ -565,64 +625,79 @@ class ThetaDataV3Client:
         for technical analysis, intraday charting, high-frequency strategy backtesting, and understanding
         price movements throughout a trading session.
 
-        Parameters:
-            symbol (str): The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
-                (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol in the ThetaData database.
-                Use stock_list_symbols() to discover available symbols.
-            date (str): The specific trading date for which to retrieve data. Acceptable formats are
-                "YYYY-MM-DD" (e.g., "2024-01-15") or "YYYYMMDD" (e.g., "20240115"). Only data from this
-                single trading date will be returned.
-            interval (Interval): The time interval for each OHLC bar. This determines the granularity
-                of the data. Possible values include:
-                - "tick": Tick-by-tick data (every trade)
-                - Time intervals: "10ms", "100ms", "500ms" (millisecond bars)
-                - Second intervals: "1s", "5s", "10s", "15s", "30s"
-                - Minute intervals: "1m", "5m", "10m", "15m", "30m"
-                - Hour intervals: "1h"
-                - Daily: "1d"
-                Smaller intervals provide more granularity but result in more data points.
-            start_time (str, optional): The start time within the trading day for data retrieval.
-                Format is "HH:MM:SS" (e.g., "09:30:00" for market open, "10:00:00" for 10 AM).
-                Defaults to None, which uses the server default of 09:30:00 (regular market open).
-                Times are in America/New_York (Eastern Time) timezone.
-            end_time (str, optional): The end time within the trading day for data retrieval.
-                Format is "HH:MM:SS" (e.g., "16:00:00" for market close, "12:00:00" for noon).
-                Defaults to None, which uses the server default of 16:00:00 (regular market close).
-                Times are in America/New_York (Eastern Time) timezone.
-            format_type (str, optional): The desired response format. Defaults to "csv".
-                Possible values:
-                - "json": Returns data as a JSON array of bar objects
-                - "csv": Returns data as comma-separated values
-                - "ndjson": Returns data as newline-delimited JSON
+        Parameters
+        ----------
+        symbol : str
+            The stock ticker symbol to query. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol in the ThetaData database.
+            Use stock_list_symbols() to discover available symbols.
+        date : str
+            The specific trading date for which to retrieve data. Acceptable formats are
+            "YYYY-MM-DD" (e.g., "2024-01-15") or "YYYYMMDD" (e.g., "20240115"). Only data from this
+            single trading date will be returned.
+        interval : Interval
+            The time interval for each OHLC bar. This determines the granularity of the data.
+            Possible values include:
+            - "tick": Tick-by-tick data (every trade)
+            - Time intervals: "10ms", "100ms", "500ms" (millisecond bars)
+            - Second intervals: "1s", "5s", "10s", "15s", "30s"
+            - Minute intervals: "1m", "5m", "10m", "15m", "30m"
+            - Hour intervals: "1h"
+            - Daily: "1d"
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The OHLC bar data. For JSON format, this is a list of dictionaries
-                  where each dictionary represents one bar with fields: timestamp, open, high, low,
-                  close, volume, count. For CSV/NDJSON, this is a formatted string.
-                - Second element: The complete request URL including all query parameters.
+            Smaller intervals provide more granularity but result in more data points.
+        start_time : str, optional
+            Default: None (server default 09:30:00)
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get 5-minute bars for Apple on a specific date
-                bars, url = await client.stock_history_ohlc(
-                    symbol="AAPL",
-                    date="2024-01-15",
-                    interval="5m",
-                    format_type="json"
-                )
-                print(f"Retrieved {len(bars)} 5-minute bars")
+            The start time within the trading day for data retrieval.
+            Format is "HH:MM:SS" (e.g., "09:30:00" for market open, "10:00:00" for 10 AM).
+            Times are in America/New_York (Eastern Time) timezone.
+        end_time : str, optional
+            Default: None (server default 16:00:00)
 
-                # Get 1-minute bars for morning session only
-                morning_bars, url = await client.stock_history_ohlc(
-                    symbol="SPY",
-                    date="2024-01-15",
-                    interval="1m",
-                    start_time="09:30:00",
-                    end_time="12:00:00"
-                )
-            ```
+            The end time within the trading day for data retrieval.
+            Format is "HH:MM:SS" (e.g., "16:00:00" for market close, "12:00:00" for noon).
+            Times are in America/New_York (Eastern Time) timezone.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: ["json", "csv", "ndjson"]
+
+            The desired response format.
+            - "json": Returns data as a JSON array of bar objects
+            - "csv": Returns data as comma-separated values
+            - "ndjson": Returns data as newline-delimited JSON
+
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The OHLC bar data. For JSON format, this is a list of dictionaries
+              where each dictionary represents one bar with fields: timestamp, open, high, low,
+              close, volume, count. For CSV/NDJSON, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get 5-minute bars for Apple on a specific date
+            bars, url = await client.stock_history_ohlc(
+                symbol="AAPL",
+                date="2024-01-15",
+                interval="5m",
+                format_type="json"
+            )
+            print(f"Retrieved {len(bars)} 5-minute bars")
+
+            # Get 1-minute bars for morning session only
+            morning_bars, url = await client.stock_history_ohlc(
+                symbol="SPY",
+                date="2024-01-15",
+                interval="1m",
+                start_time="09:30:00",
+                end_time="12:00:00"
+            )
+        ```
         """
         params = {
             "symbol": symbol,
@@ -1247,34 +1322,40 @@ class ThetaDataV3Client:
         building option screening tools, constructing watch lists, and planning comprehensive option
         data downloads.
 
-        Parameters:
-            format_type (str, optional): The desired response format for the data. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON array of underlying symbols, ideal for programmatic parsing
-                - "csv": Returns data as comma-separated values, suitable for spreadsheet import
-                - "ndjson": Returns data as newline-delimited JSON, useful for streaming processing
+        Parameters
+        ----------
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-                The format choice should be based on your processing requirements and integration tooling.
+            The desired response format for the data. The format choice should be based on your
+            processing requirements and integration tooling.
+            - "json": Returns data as a JSON array of underlying symbols, ideal for programmatic parsing
+            - "csv": Returns data as comma-separated values, suitable for spreadsheet import
+            - "ndjson": Returns data as newline-delimited JSON, useful for streaming processing
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The list of underlying symbols with option data available. For JSON
-                  format, this is a list of strings or dictionaries with symbol information. For CSV/
-                  NDJSON formats, this is a formatted string.
-                - Second element: The complete request URL as a string, including all query parameters.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The list of underlying symbols with option data available. For JSON
+              format, this is a list of strings or dictionaries with symbol information. For CSV/
+              NDJSON formats, this is a formatted string.
+            - Second element: The complete request URL as a string, including all query parameters.
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get all symbols with options available
-                symbols, url = await client.option_list_symbols(format_type="json")
-                print(f"Found {len(symbols)} underlyings with option contracts")
-                print(f"Sample symbols: {symbols[:10]}")
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get all symbols with options available
+            symbols, url = await client.option_list_symbols(format_type="json")
+            print(f"Found {len(symbols)} underlyings with option contracts")
+            print(f"Sample symbols: {symbols[:10]}")
 
-                # Check if a specific symbol has options
-                if "AAPL" in symbols:
-                    print("Apple options are available")
-            ```
+            # Check if a specific symbol has options
+            if "AAPL" in symbols:
+                print("Apple options are available")
+        ```
         """
         params = {"format": format_type}
         return await self._make_request("/option/list/symbols", params)
@@ -2481,30 +2562,89 @@ class ThetaDataV3Client:
         end_time: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get every NBBO quote (or last quote per interval) for option contracts.
+        """Retrieve historical NBBO quote data for option contracts on a specific trading date.
 
-        Endpoint: GET /option/history/quote
-        Reference: https://http-docs.thetadata.us/operations/hist-option-quote.html
+        This method fetches National Best Bid and Offer (NBBO) quote data for option contracts,
+        returning either every tick-level quote or the last quote within each specified time interval.
+        Quote data includes bid price, ask price, bid size, ask size, exchange identifiers, and
+        timestamps. This data is essential for analyzing bid-ask spreads, market liquidity,
+        order book dynamics, and understanding the prevailing market conditions for options throughout
+        the trading day. Supports filtering by strike, expiration, and option type.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241104" or "2024-11-04".
-            interval (Interval): Tick or bar interval (required; default server is 1s).
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-04")
+            or "YYYYMMDD" (e.g., "20241104"). Only data from this single date will be returned.
+        interval : Interval
+            The aggregation interval for quotes. Possible values: "tick", "10ms", "100ms", "500ms",
+            "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m", "30m", "1h". Use "tick"
+            for every single quote. Other intervals return the last quote within each time window.
+            Server default is "1s" if not specified.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only quotes at or after this
+            time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only quotes before this time
+            will be included in the results.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of quote objects, "ndjson" returns newline-delimited JSON for streaming.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Quote ticks/bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The quote data. For JSON/NDJSON, this is a list of dictionaries with
+              fields: timestamp, bid_price, ask_price, bid_size, ask_size, bid_exchange, ask_exchange,
+              expiration, strike, right. For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Returns all NBBO quotes; if `interval` provided, returns the last quote
-            at each interval timestamp. Essential for understanding bid-ask spreads
-            and market liquidity for option contracts.
+        Example Usage
+        -------------
+        # Get all NBBO quotes for AAPL options at 1-second intervals
+        async with ThetaDataV3Client() as client:
+            quotes, url = await client.option_history_quote(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241104",
+                interval="1s",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(quotes)} quote snapshots")
+
+        # Get tick-level quotes for all strikes and expirations
+        quotes, url = await client.option_history_quote(
+            symbol="SPY",
+            expiration="*",
+            date="2024-11-04",
+            interval="tick",
+            strike="*",
+            right="both",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2534,30 +2674,88 @@ class ThetaDataV3Client:
         end_time: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get aggregated intraday OHLC bars for option contracts.
+        """Retrieve aggregated intraday OHLC (Open-High-Low-Close) bars for option contracts.
 
-        Endpoint: GET /option/history/ohlc
-        Reference: https://http-docs.thetadata.us/operations/hist-option-ohlc.html
+        This method fetches aggregated trade data for option contracts on a specific trading date,
+        returning OHLC bars at specified time intervals. The bars are constructed using Securities
+        Information Processor (SIP) rules where each bar's timestamp represents the bar's open time,
+        and trades are included if open_time <= trade_time < open_time + interval. This data is
+        critical for analyzing option price movements, identifying support and resistance levels,
+        backtesting trading strategies, and understanding intraday volatility patterns for options.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105" or "2024-11-05".
-            interval (Interval): Bar size (e.g., "1m", "5m", "1h", or "tick").
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS), default 09:30:00.
-            end_time (str, optional): Intraday end time (HH:MM:SS), default 16:00:00.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-05")
+            or "YYYYMMDD" (e.g., "20241105"). Only data from this single date will be returned.
+        interval : Interval
+            The aggregation interval for OHLC bars. Possible values: "tick", "10ms", "100ms", "500ms",
+            "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m", "30m", "1h". Common values
+            for option analysis include "1m" (1 minute), "5m" (5 minutes), and "1h" (1 hour).
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only bars starting at or after
+            this time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only bars starting before this
+            time will be included in the results.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of bar objects, "ndjson" returns newline-delimited JSON for streaming.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: OHLC bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The OHLC data. For JSON/NDJSON, this is a list of dictionaries with
+              fields: timestamp, open, high, low, close, volume, count, expiration, strike, right.
+              For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Aggregates trades into bars using SIP rules; bar timestamp equals the bar's
-            open time; trades are included if open_time <= trade_time < open_time + interval.
-            Critical for option price movement analysis and backtesting strategies.
+        Example Usage
+        -------------
+        # Get 1-minute OHLC bars for AAPL call options
+        async with ThetaDataV3Client() as client:
+            bars, url = await client.option_history_ohlc(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241104",
+                interval="1m",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(bars)} 1-minute bars")
+
+        # Get 5-minute bars for all strikes and both calls/puts
+        bars, url = await client.option_history_ohlc(
+            symbol="SPY",
+            expiration="2024-11-15",
+            date="2024-11-04",
+            interval="5m",
+            strike="*",
+            right="both",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2584,26 +2782,74 @@ class ThetaDataV3Client:
         right: Literal["call", "put", "both"] = "both",
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get historical open interest for option contracts.
+        """Retrieve historical open interest data for option contracts.
 
-        Endpoint: GET /option/history/open_interest
-        Reference: https://http-docs.thetadata.us/operations/hist-option-open-interest.html
+        This method fetches open interest (OI) data for option contracts on a specific date.
+        Open interest represents the total number of outstanding option contracts that have
+        not been settled or closed. OPRA (Options Price Reporting Authority) typically reports
+        OI once per day, and the value reflects the prior-day end-of-day open interest. This
+        data is essential for understanding option liquidity, identifying high-activity strikes,
+        analyzing market maker positioning, and assessing overall market participation in
+        specific option contracts.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date for which OI is reported (represents prior-day OI).
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The trading date for which open interest is reported. Acceptable formats: "YYYY-MM-DD"
+            (e.g., "2024-11-04") or "YYYYMMDD" (e.g., "20241104"). Note that the reported OI
+            typically represents the prior-day end-of-day open interest.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of open interest records, "ndjson" returns newline-delimited JSON.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Open interest rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The open interest data. For JSON/NDJSON, this is a list of dictionaries
+              with fields: timestamp, open_interest, expiration, strike, right. For CSV, this is
+              a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            OPRA typically reports OI once per day; the value reflects prior-day EOD OI.
-            Essential for understanding option liquidity and market maker positioning.
+        Example Usage
+        -------------
+        # Get open interest for AAPL call options at a specific strike
+        async with ThetaDataV3Client() as client:
+            oi_data, url = await client.option_history_open_interest(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241104",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Open interest: {oi_data}")
+
+        # Get open interest for all strikes and both calls/puts
+        oi_data, url = await client.option_history_open_interest(
+            symbol="SPY",
+            expiration="2024-11-15",
+            date="2024-11-04",
+            strike="*",
+            right="both",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2626,28 +2872,84 @@ class ThetaDataV3Client:
         end_time: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get every trade for option contracts on a given date.
+        """Retrieve every trade (tick-level) for option contracts on a specific trading date.
 
-        Endpoint: GET /option/history/trade
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade.html
+        This method fetches all individual trade executions for option contracts on a given date,
+        returning every OPRA (Options Price Reporting Authority) trade message that matches the
+        specified filters. Each trade record includes timestamp, price, size, exchange, and option
+        identifiers. This tick-level data is essential for analyzing option trading activity,
+        understanding volume patterns, studying price discovery mechanisms, identifying large
+        block trades, and conducting high-frequency market microstructure analysis.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241104" or "2024-11-04".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS), default 09:30:00.
-            end_time (str, optional): Intraday end time (HH:MM:SS), default 16:00:00.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-04")
+            or "YYYYMMDD" (e.g., "20241104"). Only trades from this single date will be returned.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades at or after this
+            time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades before this time
+            will be included in the results.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of trade objects, "ndjson" returns newline-delimited JSON for streaming.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade ticks and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The trade data. For JSON/NDJSON, this is a list of dictionaries with
+              fields: timestamp, price, size, exchange, expiration, strike, right, conditions.
+              For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Returns every OPRA trade message for the specified filters. Essential for
-            analyzing option trading activity, volume, and price discovery mechanisms.
+        Example Usage
+        -------------
+        # Get all trades for AAPL call options at a specific strike
+        async with ThetaDataV3Client() as client:
+            trades, url = await client.option_history_trade(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241104",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(trades)} trade executions")
+
+        # Get all trades for all strikes and expirations during market hours
+        trades, url = await client.option_history_trade(
+            symbol="SPY",
+            expiration="*",
+            date="2024-11-04",
+            strike="*",
+            right="both",
+            start_time="09:30:00",
+            end_time="16:00:00",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2676,30 +2978,89 @@ class ThetaDataV3Client:
         end_time: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get every trade paired with the latest NBBO quote at the trade time.
+        """Retrieve every trade paired with the prevailing NBBO quote at the time of each trade.
 
-        Endpoint: GET /option/history/trade_quote
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade-quote.html
+        This method fetches all option trade executions along with the National Best Bid and Offer
+        (NBBO) quote that was in effect at the time of each trade. For each trade, the method returns
+        the most recent NBBO whose timestamp is <= (or < if exclusive=True) the trade timestamp. This
+        combined data enables critical market quality analysis including execution quality assessment,
+        market impact studies, price improvement analysis, and understanding whether trades occurred
+        at the bid, ask, or mid-price. Essential for regulatory compliance and best execution analysis.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241104" or "2024-11-04".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            exclusive (bool, optional): If True, match quotes with timestamp < trade time.
-                Default True (recommended).
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-04")
+            or "YYYYMMDD" (e.g., "20241104"). Only data from this single date will be returned.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        exclusive : bool, optional
+            Default: True
+            Controls the quote matching logic. If True, matches quotes with timestamp < trade time
+            (strictly before). If False, matches quotes with timestamp <= trade time. The default
+            of True is recommended to ensure the quote existed before the trade execution.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades at or after this
+            time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades before this time
+            will be included in the results.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of trade-quote objects, "ndjson" returns newline-delimited JSON.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade-quote rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The trade-quote data. For JSON/NDJSON, this is a list of dictionaries
+              with fields: trade_timestamp, trade_price, trade_size, trade_exchange, bid_price,
+              ask_price, bid_size, ask_size, bid_exchange, ask_exchange, expiration, strike, right.
+              For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            For each trade, returns the last NBBO whose timestamp is <= (or < if `exclusive`)
-            the trade timestamp. Critical for market impact analysis and execution quality studies.
+        Example Usage
+        -------------
+        # Get trades with NBBO for AAPL call options for execution quality analysis
+        async with ThetaDataV3Client() as client:
+            trade_quotes, url = await client.option_history_trade_quote(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241104",
+                strike=175.0,
+                right="call",
+                exclusive=True
+            )
+            print(f"Retrieved {len(trade_quotes)} trade-quote pairs")
+
+        # Analyze all trades with prevailing quotes for market impact study
+        trade_quotes, url = await client.option_history_trade_quote(
+            symbol="SPY",
+            expiration="2024-11-15",
+            date="2024-11-04",
+            strike="*",
+            right="both",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2738,32 +3099,106 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get implied volatility (bid/mid/ask) at fixed intervals.
+        """Retrieve implied volatility for option contracts at fixed time intervals.
 
-        Endpoint: GET /option/history/greeks/implied_volatility
-        Reference: https://http-docs.thetadata.us/operations/hist-option-iv.html
+        This method fetches implied volatility (IV) data calculated from option bid, mid, and ask
+        prices at specified time intervals throughout a trading day. Implied volatility represents
+        the market's expectation of future price volatility and is derived by solving the Black-Scholes
+        model backwards using observed option prices. The method returns IV values at regular intervals
+        (e.g., 1 minute, 5 minutes), making it essential for volatility trading strategies, monitoring
+        volatility term structure, analyzing volatility skew, and implementing risk management systems.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            interval (Interval): Bar size (required), e.g., "1m", "5m", "1h".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-05")
+            or "YYYYMMDD" (e.g., "20241105"). Only data from this single date will be returned.
+        interval : Interval
+            The aggregation interval for IV calculations. Possible values: "10ms", "100ms", "500ms",
+            "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m", "30m", "1h". Common values
+            for IV analysis include "1m" (1 minute), "5m" (5 minutes), and "1h" (1 hour).
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only IV bars starting at or after
+            this time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only IV bars starting before this
+            time will be included in the results.
+        annual_dividend : float, optional
+            Default: None (server uses default dividend data)
+            The annualized dividend amount to use in IV calculations. Overrides the default dividend
+            data when specified. Useful for sensitivity analysis or custom modeling assumptions.
+        rate_type : str, optional
+            Default: "sofr"
+            Possible values: "sofr", "treasury_m1", "treasury_m3", "treasury_m6", "treasury_y1",
+            "treasury_y2", "treasury_y3", "treasury_y5", "treasury_y7", "treasury_y10", "treasury_y20",
+            "treasury_y30"
+            The risk-free interest rate curve to use in IV calculations. SOFR (Secured Overnight
+            Financing Rate) is the recommended default. Treasury rates of various maturities can
+            be selected for specific modeling requirements.
+        rate_value : float, optional
+            Default: None (server uses current rate for rate_type)
+            A custom risk-free interest rate percentage (e.g., 5.25 for 5.25%) to override the
+            default rate. When specified, this takes precedence over the rate_type curve value.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of IV bar objects, "ndjson" returns newline-delimited JSON for streaming.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Implied volatility bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The implied volatility data. For JSON/NDJSON, this is a list of
+              dictionaries with fields: timestamp, iv_bid, iv_mid, iv_ask, expiration, strike, right.
+              For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Returns implied volatility calculated from option mid prices at specified intervals.
-            Essential for volatility trading and risk management strategies.
+        Example Usage
+        -------------
+        # Get 1-minute IV bars for AAPL call options
+        async with ThetaDataV3Client() as client:
+            iv_data, url = await client.option_history_implied_volatility(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                interval="1m",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(iv_data)} IV snapshots")
+
+        # Get IV data with custom rate for sensitivity analysis
+        iv_data, url = await client.option_history_implied_volatility(
+            symbol="SPY",
+            expiration="2024-11-15",
+            date="2024-11-05",
+            interval="5m",
+            strike="*",
+            right="both",
+            rate_type="treasury_y1",
+            rate_value=4.5,
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2804,33 +3239,97 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson", "html"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get End-of-Day Greeks for option contracts (v3).
-    
-        Endpoint:
-            GET /option/history/greeks/eod
-            Docs: https://docs.thetadata.us/operations/option_history_greeks_eod.html
-    
-        Args:
-            symbol (str): Underlying/root symbol (e.g., "AAPL").
-            expiration (str): Contract expiration "YYYY-MM-DD" or "YYYYMMDD", or "*" for all expirations.
-            start_date (str): Inclusive start date ("YYYY-MM-DD" or "YYYYMMDD").
-            end_date (str): Inclusive end date ("YYYY-MM-DD" or "YYYYMMDD").
-            strike (float | str, optional): Specific strike or "*" (default).
-            right ({"call","put","both"}): Option right filter (default "both").
-            annual_dividend (float, optional): Annualized dividend override for Greeks.
-            rate_type (Literal[…], optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate % override.
-            format_type ({"csv","json","ndjson","html"}): Output format. Default "csv".
-    
-        Returns:
-            Tuple[List[Dict] | str, str]: Payload (CSV/JSON) and the fully-qualified request URL.
-    
-        Notes:
-            - Uses Theta Data's EOD reports (generated at 17:15 ET) and closing prices.
-            - Join keys with daily OHLC typically include:
-              ["timestamp","symbol","expiration","strike","right"].
-            - When expiration="*", requests must be issued **day-by-day**.
+        """Retrieve end-of-day (EOD) Greeks for option contracts over a date range.
+
+        This method fetches daily end-of-day option Greeks data including Delta, Gamma, Theta, Vega,
+        and Rho for the specified date range. The Greeks are calculated using Theta Data's EOD reports
+        generated at 17:15 ET using closing prices from the trading session. EOD Greeks provide a
+        consistent daily snapshot of option risk metrics, making them ideal for daily risk assessment,
+        portfolio monitoring, backtesting strategies over longer periods, and joining with daily OHLC
+        data for comprehensive analysis. When expiration="*" (all expirations), requests must be issued
+        day-by-day to avoid excessive data volume.
+
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates,
+            but note that using "*" requires issuing requests day-by-day to avoid large data volumes.
+        start_date : str
+            The inclusive start date for the date range. Acceptable formats: "YYYY-MM-DD"
+            (e.g., "2024-11-01") or "YYYYMMDD" (e.g., "20241101").
+        end_date : str
+            The inclusive end date for the date range. Acceptable formats: "YYYY-MM-DD"
+            (e.g., "2024-11-30") or "YYYYMMDD" (e.g., "20241130").
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        annual_dividend : float, optional
+            Default: None (server uses default dividend data)
+            The annualized dividend amount to override default values in Greeks calculations.
+            Useful for custom modeling scenarios or sensitivity analysis.
+        rate_type : str, optional
+            Default: "sofr"
+            Possible values: "sofr", "treasury_m1", "treasury_m3", "treasury_m6", "treasury_y1",
+            "treasury_y2", "treasury_y3", "treasury_y5", "treasury_y7", "treasury_y10", "treasury_y20",
+            "treasury_y30"
+            The interest rate curve to use for Greeks calculations. SOFR (Secured Overnight Financing
+            Rate) is recommended. Treasury rates of various maturities can be selected for specific needs.
+        rate_value : float, optional
+            Default: None (server uses current rate for rate_type)
+            A custom risk-free interest rate percentage (e.g., 5.25 for 5.25%) to override the
+            default rate. When specified, this takes precedence over the rate_type curve value.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson", "html"
+            The desired response format. "csv" returns comma-separated values, "json" returns a
+            JSON array, "ndjson" returns newline-delimited JSON, "html" returns formatted HTML table.
+
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The EOD Greeks data. For JSON/NDJSON, this is a list of dictionaries
+              with fields: timestamp, delta, gamma, theta, vega, rho, expiration, strike, right.
+              Common join keys with daily OHLC: ["timestamp", "symbol", "expiration", "strike", "right"].
+              For CSV/HTML, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
+
+        Example Usage
+        -------------
+        # Get EOD Greeks for AAPL call options over a month
+        async with ThetaDataV3Client() as client:
+            greeks_eod, url = await client.option_history_greeks_eod(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                start_date="20241101",
+                end_date="20241130",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved EOD Greeks for {len(greeks_eod)} days")
+
+        # Get EOD Greeks with custom rate for all strikes
+        greeks_eod, url = await client.option_history_greeks_eod(
+            symbol="SPY",
+            expiration="2024-11-15",
+            start_date="2024-11-01",
+            end_date="2024-11-30",
+            strike="*",
+            right="both",
+            rate_type="treasury_y1",
+            rate_value=4.5,
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2869,31 +3368,98 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get first-order Greeks calculated at each trade (tick-based).
+        """Retrieve first-order Greeks calculated at each option trade (tick-based).
 
-        Endpoint: GET /option/history/trade_greeks/first_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade-greeks.html
+        This method fetches first-order option Greeks (Delta, Gamma, Theta, Vega, and Rho) computed
+        at every trade execution. Each trade record includes the Greeks calculated using the most
+        recent underlying price at the trade timestamp. This tick-level Greeks data provides the
+        highest granularity for risk analysis, enabling precise trade-by-trade risk assessment,
+        understanding how Greeks change with each transaction, and conducting high-frequency Greeks
+        analysis. No interval parameter is required as the data is inherently trade-based.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-05")
+            or "YYYYMMDD" (e.g., "20241105"). Only data from this single date will be returned.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+            When set to "*", returns data for all available strikes at the specified expiration.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query. "call" retrieves only call options, "put" retrieves
+            only put options, and "both" retrieves both calls and puts in a single request.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS" (e.g., "09:30:00", "10:00:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades at or after this
+            time will be included in the results.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS" (e.g., "16:00:00", "14:30:00").
+            Times are in America/New_York (Eastern Time) timezone. Only trades before this time
+            will be included in the results.
+        annual_dividend : float, optional
+            Default: None (server uses default dividend data)
+            The annualized dividend amount to use in Greeks calculations. Overrides default values
+            when specified. Useful for sensitivity analysis or custom modeling assumptions.
+        rate_type : str, optional
+            Default: "sofr"
+            Possible values: "sofr", "treasury_m1", "treasury_m3", "treasury_m6", "treasury_y1",
+            "treasury_y2", "treasury_y3", "treasury_y5", "treasury_y7", "treasury_y10", "treasury_y20",
+            "treasury_y30"
+            The risk-free interest rate curve to use in Greeks calculations. SOFR is recommended.
+        rate_value : float, optional
+            Default: None (server uses current rate for rate_type)
+            A custom risk-free interest rate percentage (e.g., 5.25 for 5.25%) to override the
+            default rate. When specified, this takes precedence over the rate_type curve value.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format. "csv" returns comma-separated values, "json" returns
+            a JSON array of trade Greeks objects, "ndjson" returns newline-delimited JSON.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade-based first-order Greeks rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The trade Greeks data. For JSON/NDJSON, this is a list of dictionaries
+              with fields: timestamp, trade_price, delta, gamma, theta, vega, rho, underlying_price,
+              expiration, strike, right. For CSV, this is a formatted string.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Returns Delta, Gamma, Theta, Vega, and Rho computed per-trade using the last 
-            underlying price at the row's timestamp. No interval parameter needed.
+        Example Usage
+        -------------
+        # Get tick-level first-order Greeks for AAPL call options
+        async with ThetaDataV3Client() as client:
+            trade_greeks, url = await client.option_history_trade_greeks(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(trade_greeks)} trade-level Greek calculations")
+
+        # Analyze Greeks changes for all strikes during market hours
+        trade_greeks, url = await client.option_history_trade_greeks(
+            symbol="SPY",
+            expiration="2024-11-15",
+            date="2024-11-05",
+            strike="*",
+            right="both",
+            start_time="09:30:00",
+            end_time="16:00:00",
+            format_type="json"
+        )
         """
         params = {
             "symbol": symbol,
@@ -2933,31 +3499,76 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get second-order Greeks calculated at each trade (tick-based).
+        """Retrieve second-order Greeks calculated at each option trade (tick-based).
 
-        Endpoint: GET /option/history/trade_greeks/second_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade-greeks-second.html
+        This method fetches second-order option Greeks (including Vomma, Veta, and other second
+        derivatives) computed at every trade execution. These advanced Greeks measure how first-order
+        Greeks change with respect to volatility and time, providing deeper insights into option
+        convexity and risk dynamics. Each trade record includes second-order Greeks calculated using
+        the most recent underlying price at the trade timestamp. Essential for sophisticated risk
+        management, volatility trading strategies, and understanding higher-order sensitivities.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL" (Apple Inc.), "SPY"
+            (S&P 500 ETF), "TSLA" (Tesla Inc.). Must be a valid symbol with option data available.
+        expiration : str
+            The option contract expiration date. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-12-20")
+            or "YYYYMMDD" (e.g., "20241220"). Use "*" to retrieve data for all expiration dates.
+        date : str
+            The specific trading date to query. Acceptable formats: "YYYY-MM-DD" (e.g., "2024-11-05")
+            or "YYYYMMDD" (e.g., "20241105"). Only data from this single date will be returned.
+        strike : float or str, optional
+            Default: "*"
+            The strike price of the option contract (e.g., 150.0, 175.5) or "*" for all strikes.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+            The option right/type to query.
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            The start time within the trading day. Format: "HH:MM:SS". Times are in Eastern Time.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            The end time within the trading day. Format: "HH:MM:SS". Times are in Eastern Time.
+        annual_dividend : float, optional
+            Default: None (server uses default dividend data)
+            The annualized dividend amount to use in Greeks calculations.
+        rate_type : str, optional
+            Default: "sofr"
+            Possible values: "sofr", "treasury_m1", "treasury_m3", "treasury_m6", "treasury_y1",
+            "treasury_y2", "treasury_y3", "treasury_y5", "treasury_y7", "treasury_y10", "treasury_y20",
+            "treasury_y30"
+            The risk-free interest rate curve to use in calculations.
+        rate_value : float, optional
+            Default: None (server uses current rate for rate_type)
+            A custom risk-free interest rate percentage to override the default rate.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
+            The desired response format.
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade-based second-order Greeks rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The trade second-order Greeks data with fields: timestamp, trade_price,
+              vomma, veta, and other second derivatives, underlying_price, expiration, strike, right.
+            - Second element: The complete request URL including all query parameters.
 
-        Description:
-            Returns Vomma, Veta, and other second derivatives computed per-trade using the 
-            last underlying price at the row's timestamp. No interval parameter needed.
+        Example Usage
+        -------------
+        # Get tick-level second-order Greeks for AAPL call options
+        async with ThetaDataV3Client() as client:
+            greeks_2nd, url = await client.option_history_trade_greeks_second_order(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                strike=175.0,
+                right="call"
+            )
+            print(f"Retrieved {len(greeks_2nd)} second-order Greek calculations")
         """
         params = {
             "symbol": symbol,
@@ -2997,31 +3608,65 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get third-order Greeks calculated at each trade (tick-based).
+        """Retrieve third-order Greeks calculated at each option trade (tick-based).
 
-        Endpoint: GET /option/history/trade_greeks/third_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade-greeks-third.html
+        This method fetches third-order option Greeks (including Speed, Color, and other third
+        derivatives) computed at every trade execution. These highly advanced Greeks measure the
+        rate of change of second-order Greeks, providing the deepest level of sensitivity analysis
+        for sophisticated option portfolios. Each trade record includes third-order Greeks calculated
+        using the most recent underlying price. Used for advanced portfolio risk management and
+        understanding extreme market sensitivities.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying stock or ETF ticker symbol. Examples: "AAPL", "SPY", "TSLA".
+        expiration : str
+            The option contract expiration date. Formats: "YYYY-MM-DD" or "YYYYMMDD", or "*" for all.
+        date : str
+            The specific trading date to query. Formats: "YYYY-MM-DD" or "YYYYMMDD".
+        strike : float or str, optional
+            Default: "*"
+            The strike price (e.g., 150.0, 175.5) or "*" for all strikes.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+        start_time : str, optional
+            Default: "09:30:00" (server default)
+            Format: "HH:MM:SS". Eastern Time.
+        end_time : str, optional
+            Default: "16:00:00" (server default)
+            Format: "HH:MM:SS". Eastern Time.
+        annual_dividend : float, optional
+            Default: None
+            The annualized dividend amount for calculations.
+        rate_type : str, optional
+            Default: "sofr"
+            The risk-free interest rate curve.
+        rate_value : float, optional
+            Default: None
+            A custom risk-free rate percentage.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade-based third-order Greeks rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (third-order Greeks data, request URL). Data includes: timestamp, trade_price,
+            speed, color, and other third derivatives, underlying_price, expiration, strike, right.
 
-        Description:
-            Returns Speed, Color, and other third derivatives computed per-trade using the 
-            last underlying price at the row's timestamp. No interval parameter needed.
+        Example Usage
+        -------------
+        # Get tick-level third-order Greeks for AAPL options
+        async with ThetaDataV3Client() as client:
+            greeks_3rd, url = await client.option_history_trade_greeks_third_order(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                strike=175.0,
+                right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3061,31 +3706,64 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get implied volatility calculated at each trade (tick-based).
+        """Retrieve implied volatility calculated at each option trade (tick-based).
 
-        Endpoint: GET /option/history/trade_greeks/implied_volatility
-        Reference: https://http-docs.thetadata.us/operations/hist-option-trade-iv.html
+        This method fetches implied volatility computed at every trade execution, using the trade
+        price and the most recent underlying price at each trade timestamp. This tick-level IV data
+        provides the highest granularity for volatility analysis, enabling trade-by-trade volatility
+        assessment, identifying volatility shifts at transaction level, and understanding how implied
+        volatility evolves with each trade throughout the trading session.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker symbol. Examples: "AAPL", "SPY", "TSLA".
+        expiration : str
+            Contract expiration date. Formats: "YYYY-MM-DD" or "YYYYMMDD", or "*" for all.
+        date : str
+            Trading date. Formats: "YYYY-MM-DD" or "YYYYMMDD".
+        strike : float or str, optional
+            Default: "*"
+            Strike price or "*" for all strikes.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+        start_time : str, optional
+            Default: "09:30:00"
+            Format: "HH:MM:SS". Eastern Time.
+        end_time : str, optional
+            Default: "16:00:00"
+            Format: "HH:MM:SS". Eastern Time.
+        annual_dividend : float, optional
+            Default: None
+            Annualized dividend for IV calculations.
+        rate_type : str, optional
+            Default: "sofr"
+            Interest rate curve for calculations.
+        rate_value : float, optional
+            Default: None
+            Custom risk-free rate percentage.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Trade-based implied volatility rows and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (trade IV data, request URL). Data includes: timestamp, trade_price, implied_vol,
+            underlying_price, expiration, strike, right.
 
-        Description:
-            Returns implied volatility computed per-trade using the last underlying price 
-            at the row's timestamp. No interval parameter needed since it's trade-based.
+        Example Usage
+        -------------
+        # Get tick-level IV for AAPL call options
+        async with ThetaDataV3Client() as client:
+            trade_iv, url = await client.option_history_trade_implied_volatility(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                strike=175.0,
+                right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3126,32 +3804,67 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get first-order Greeks at fixed intervals for option contracts.
+        """Retrieve first-order Greeks at fixed time intervals for option contracts.
 
-        Endpoint: GET /option/history/greeks/first_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-greeks.html
+        This method fetches first-order option Greeks (Delta, Gamma, Theta, Vega, and Rho) calculated
+        from option mid prices at specified time intervals throughout a trading day. These are the
+        fundamental risk metrics for option positions, essential for risk management, implementing
+        delta-neutral strategies, monitoring portfolio Greeks exposure, and understanding option
+        sensitivities to market changes at regular intervals.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            interval (Interval): Bar size (required), e.g., "1m", "5m", "1h".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            The underlying ticker symbol. Examples: "AAPL", "SPY", "TSLA".
+        expiration : str
+            Contract expiration date. Formats: "YYYY-MM-DD" or "YYYYMMDD", or "*" for all.
+        date : str
+            Trading date. Formats: "YYYY-MM-DD" or "YYYYMMDD".
+        interval : Interval
+            Aggregation interval. Examples: "1m", "5m", "1h". Common values for Greeks monitoring.
+        strike : float or str, optional
+            Default: "*"
+            Strike price or "*" for all strikes.
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+        start_time : str, optional
+            Default: "09:30:00"
+            Format: "HH:MM:SS". Eastern Time.
+        end_time : str, optional
+            Default: "16:00:00"
+            Format: "HH:MM:SS". Eastern Time.
+        annual_dividend : float, optional
+            Default: None
+            Annualized dividend for calculations.
+        rate_type : str, optional
+            Default: "sofr"
+            Interest rate curve.
+        rate_value : float, optional
+            Default: None
+            Custom rate percentage.
+        format_type : str, optional
+            Default: "csv"
+            Possible values: "csv", "json", "ndjson"
 
-        Returns:
-            Tuple[List[Dict] | str, str]: First-order Greeks bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (first-order Greeks data, request URL). Data includes: timestamp, delta, gamma,
+            theta, vega, rho, expiration, strike, right.
 
-        Description:
-            Returns Delta, Gamma, Theta, Vega, and Rho calculated from option mid prices.
-            Essential for option risk management and delta-neutral strategies.
+        Example Usage
+        -------------
+        # Get 1-minute first-order Greeks for AAPL options
+        async with ThetaDataV3Client() as client:
+            greeks, url = await client.option_history_greeks(
+                symbol="AAPL",
+                expiration="2024-12-20",
+                date="20241105",
+                interval="1m",
+                strike=175.0,
+                right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3193,32 +3906,53 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get second-order Greeks at fixed intervals for option contracts.
+        """Retrieve second-order Greeks at fixed time intervals for option contracts.
 
-        Endpoint: GET /option/history/greeks/second_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-greeks-second.html
+        This method fetches second-order option Greeks (Vomma, Veta, and other second derivatives)
+        calculated from option mid prices at specified intervals. Second-order Greeks measure how
+        first-order Greeks change, essential for advanced risk management and understanding option
+        convexity dynamics at regular time intervals.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            interval (Interval): Bar size (required), e.g., "1m", "5m", "1h".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            Underlying ticker symbol.
+        expiration : str
+            Contract expiration. Formats: "YYYY-MM-DD" or "YYYYMMDD", or "*".
+        date : str
+            Trading date. Formats: "YYYY-MM-DD" or "YYYYMMDD".
+        interval : Interval
+            Aggregation interval. Examples: "1m", "5m", "1h".
+        strike : float or str, optional
+            Default: "*"
+        right : str, optional
+            Default: "both"
+            Possible values: "call", "put", "both"
+        start_time : str, optional
+            Default: "09:30:00"
+        end_time : str, optional
+            Default: "16:00:00"
+        annual_dividend : float, optional
+            Default: None
+        rate_type : str, optional
+            Default: "sofr"
+        rate_value : float, optional
+            Default: None
+        format_type : str, optional
+            Default: "csv"
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Second-order Greeks bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (second-order Greeks data, request URL).
 
-        Description:
-            Returns Vomma, Veta, and other second derivatives calculated from option mid prices.
-            Used for advanced option risk management and convexity analysis.
+        Example Usage
+        -------------
+        async with ThetaDataV3Client() as client:
+            greeks_2nd, url = await client.option_history_greeks_second_order(
+                symbol="AAPL", expiration="2024-12-20", date="20241105",
+                interval="1m", strike=175.0, right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3260,32 +3994,32 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get third-order Greeks at fixed intervals for option contracts.
+        """Retrieve third-order Greeks at fixed time intervals for option contracts.
 
-        Endpoint: GET /option/history/greeks/third_order
-        Reference: https://http-docs.thetadata.us/operations/hist-option-greeks-third.html
+        This method fetches third-order option Greeks (Speed, Color, and other third derivatives)
+        calculated from option mid prices at specified intervals. Third-order Greeks measure the
+        rate of change of second-order Greeks, used for sophisticated portfolio management and
+        higher-order risk analysis at regular time intervals.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            interval (Interval): Bar size (required), e.g., "1m", "5m", "1h".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            Underlying ticker symbol.
+        expiration, date, interval, strike, right, start_time, end_time, annual_dividend, rate_type, rate_value, format_type
+            Standard option parameters (see other Greeks methods for details).
 
-        Returns:
-            Tuple[List[Dict] | str, str]: Third-order Greeks bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (third-order Greeks data, request URL).
 
-        Description:
-            Returns Speed, Color, and other third derivatives calculated from option mid prices.
-            Used for sophisticated option portfolio management and higher-order risk analysis.
+        Example Usage
+        -------------
+        async with ThetaDataV3Client() as client:
+            greeks_3rd, url = await client.option_history_greeks_third_order(
+                symbol="AAPL", expiration="2024-12-20", date="20241105",
+                interval="1m", strike=175.0, right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3327,32 +4061,33 @@ class ThetaDataV3Client:
         rate_value: Optional[float] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-        """
-        Get all-order Greeks at fixed intervals for option contracts.
+        """Retrieve all-order Greeks (first, second, and third order) at fixed intervals.
 
-        Endpoint: GET /option/history/greeks/all
-        Reference: https://http-docs.thetadata.us/operations/hist-option-greeks-all.html
+        This method fetches comprehensive option Greeks including all first-order (Delta, Gamma,
+        Theta, Vega, Rho), second-order (Vomma, Veta, etc.), and third-order (Speed, Color, etc.)
+        Greeks calculated from option and underlying mid prices at specified intervals. This provides
+        the complete risk profile in a single request, ideal for comprehensive portfolio analysis
+        and complete risk management systems. Requires Terminal v3 for computation.
 
-        Args:
-            symbol (str): Underlying symbol (required), e.g., "AAPL".
-            expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-            date (str): Trading date, e.g., "20241105".
-            interval (Interval): Bar size (required), e.g., "1m", "5m", "1h".
-            strike (float | str, optional): Strike or "*". Default "*".
-            right (Literal["call","put","both"], optional): Option right. Default "both".
-            start_time (str, optional): Intraday start time (HH:MM:SS).
-            end_time (str, optional): Intraday end time (HH:MM:SS).
-            annual_dividend (float, optional): Annualized dividend for calculation.
-            rate_type (str, optional): Interest rate curve (default "sofr").
-            rate_value (float, optional): Interest rate percent for calculation.
-            format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
+        Parameters
+        ----------
+        symbol : str
+            Underlying ticker symbol.
+        expiration, date, interval, strike, right, start_time, end_time, annual_dividend, rate_type, rate_value, format_type
+            Standard parameters (see other Greeks methods).
 
-        Returns:
-            Tuple[List[Dict] | str, str]: All Greeks bars and request URL.
+        Returns
+        -------
+        Tuple[Any, str]
+            Tuple of (comprehensive Greeks data with all orders, request URL).
 
-        Description:
-            Returns comprehensive Greeks (first, second, and third order) calculated from 
-            option/underlying mid prices. Terminal v3 required for computation.
+        Example Usage
+        -------------
+        async with ThetaDataV3Client() as client:
+            all_greeks, url = await client.option_history_all_greeks(
+                symbol="AAPL", expiration="2024-12-20", date="20241105",
+                interval="1m", strike=175.0, right="call"
+            )
         """
         params = {
             "symbol": symbol,
@@ -3393,31 +4128,33 @@ class ThetaDataV3Client:
        rate_value: Optional[float] = None,
        format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
-       """
-       Get all-order Greeks calculated at each trade (tick-based).
-    
-       Endpoint: GET /option/history/trade_greeks/all
-       Reference: https://http-docs.thetadata.us/operations/hist-option-trade-greeks-all.html
-    
-       Args:
-           symbol (str): Underlying symbol (required), e.g., "AAPL".
-           expiration (str): Expiration in YYYY-MM-DD or YYYYMMDD, or "*" for all.
-           date (str): Trading date, e.g., "20241105".
-           strike (float | str, optional): Strike or "*". Default "*".
-           right (Literal["call","put","both"], optional): Option right. Default "both".
-           start_time (str, optional): Intraday start time (HH:MM:SS).
-           end_time (str, optional): Intraday end time (HH:MM:SS).
-           annual_dividend (float, optional): Annualized dividend for calculation.
-           rate_type (str, optional): Interest rate curve (default "sofr").
-           rate_value (float, optional): Interest rate percent for calculation.
-           format_type (Literal["csv","json","ndjson"], optional): Response format. Default "csv".
-    
-       Returns:
-           Tuple[List[Dict] | str, str]: Trade-based all Greeks rows and request URL.
-    
-       Description:
-           Returns comprehensive Greeks computed per-trade using the last underlying 
-           price at the row's timestamp. No interval parameter needed.
+       """Retrieve all-order Greeks (first, second, third) calculated at each trade (tick-based).
+
+       This method fetches comprehensive option Greeks including all orders computed at every trade
+       execution, using the most recent underlying price at each trade timestamp. This provides the
+       complete risk profile at tick-level granularity, ideal for high-frequency risk analysis and
+       understanding complete risk dynamics at each trade. No interval parameter needed as data is
+       inherently trade-based.
+
+       Parameters
+       ----------
+       symbol : str
+           Underlying ticker symbol.
+       expiration, date, strike, right, start_time, end_time, annual_dividend, rate_type, rate_value, format_type
+           Standard parameters (see other trade Greeks methods).
+
+       Returns
+       -------
+       Tuple[Any, str]
+           Tuple of (comprehensive trade-level Greeks data with all orders, request URL).
+
+       Example Usage
+       -------------
+       async with ThetaDataV3Client() as client:
+           all_trade_greeks, url = await client.option_history_all_trade_greeks(
+               symbol="AAPL", expiration="2024-12-20", date="20241105",
+               strike=175.0, right="call"
+           )
        """
        params = {
            "symbol": symbol,
@@ -3638,42 +4375,48 @@ class ThetaDataV3Client:
         tracking market volatility, and understanding broad market movements. The indices available
         typically include equity indices, volatility indices, sector indices, and other market benchmarks.
 
-        Parameters:
-            format_type (str, optional): The desired response format for the data. Defaults to "json".
-                Possible values:
-                - "json": Returns data as a JSON array of index symbols with metadata, ideal for
-                  programmatic parsing and integration
-                - "csv": Returns data as comma-separated values, suitable for spreadsheet applications
-                  and data analysis tools
-                - "ndjson": Returns data as newline-delimited JSON, useful for streaming and large-scale
-                  data processing
+        Parameters
+        ----------
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
 
-                Choose the format based on your downstream processing requirements and tooling ecosystem.
+            The desired response format for the data. Choose the format based on your downstream
+            processing requirements and tooling ecosystem.
+            - "json": Returns data as a JSON array of index symbols with metadata, ideal for
+              programmatic parsing and integration
+            - "csv": Returns data as comma-separated values, suitable for spreadsheet applications
+              and data analysis tools
+            - "ndjson": Returns data as newline-delimited JSON, useful for streaming and large-scale
+              data processing
 
-        Returns:
-            Tuple[Any, str]: A tuple containing two elements:
-                - First element: The list of index symbols. For JSON format, this is typically a list
-                  of strings or dictionaries containing symbol names and possibly additional metadata
-                  like full names or descriptions. For CSV/NDJSON formats, this is a formatted string.
-                - Second element: The complete request URL as a string, including all query parameters,
-                  useful for logging, debugging, and audit trails.
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: The list of index symbols. For JSON format, this is typically a list
+              of strings or dictionaries containing symbol names and possibly additional metadata
+              like full names or descriptions. For CSV/NDJSON formats, this is a formatted string.
+            - Second element: The complete request URL as a string, including all query parameters,
+              useful for logging, debugging, and audit trails.
 
-        Example Usage:
-            ```python
-            async with ThetaDataV3Client() as client:
-                # Get all available index symbols
-                indices, url = await client.index_list_symbols(format_type="json")
-                print(f"Found {len(indices)} available indices")
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Get all available index symbols
+            indices, url = await client.index_list_symbols(format_type="json")
+            print(f"Found {len(indices)} available indices")
 
-                # Display some major indices
-                major_indices = ["SPX", "VIX", "NDX", "RUT", "DJX"]
-                for idx in indices:
-                    if idx in major_indices:
-                        print(f"Available: {idx}")
+            # Display some major indices
+            major_indices = ["SPX", "VIX", "NDX", "RUT", "DJX"]
+            for idx in indices:
+                if idx in major_indices:
+                    print(f"Available: {idx}")
 
-                # Get indices in CSV format for export
-                indices_csv, url = await client.index_list_symbols(format_type="csv")
-            ```
+            # Get indices in CSV format for export
+            indices_csv, url = await client.index_list_symbols(format_type="csv")
+        ```
         """
         params = {"format": format_type}
         return await self._make_request("/index/list/symbols", params)
@@ -3884,32 +4627,74 @@ class ThetaDataV3Client:
             symbol: str,
             start_date: str,
             end_date: str,
-            interval: Interval = "1s",  # v3 default; usa l'alias globale
+            interval: Interval = "1s",
             start_time: Optional[str] = None,
             end_time: Optional[str] = None,
             format_type: Optional[Literal["csv", "json", "ndjson", "html"]] = "csv",
         ) -> Tuple[Any, str]:
-            """
-            Get historical OHLC bars for an index with customizable interval (v3).
-        
-            Endpoint: GET /index/history/ohlc     (NB: base_url include già /v3)
-            Reference: https://docs.thetadata.us/operations/index_history_ohlc.html
-        
-            Args:
-                symbol (str): Index symbol (es. "SPX").
-                start_date (str): Data inizio inclusiva, consigliato YYYYMMDD.
-                end_date (str): Data fine inclusiva, consigliato YYYYMMDD.
-                interval (Interval): Dimensione barra (tick, 1s, 5s, 1m, ...).
-                start_time (str, optional): HH:MM:SS (default server 09:30:00).
-                end_time (str, optional): HH:MM:SS (default server 16:00:00).
-                format_type (str, optional): csv/json/ndjson/html (default "csv").
-        
-            Returns:
-                Tuple[List[Dict] | str, str]: OHLC bars e URL.
-        
-            Note:
-                Ogni record include: timestamp (YYYY-MM-DDTHH:mm:ss.SSS), open, high,
-                low, close, volume, count, vwap.
+            """Retrieve historical OHLC (Open-High-Low-Close) bars for a market index.
+
+            This method fetches aggregated OHLC data for market indices over a specified date range
+            with customizable time intervals. Indices include major benchmarks like SPX (S&P 500),
+            VIX (volatility index), NDX (NASDAQ-100), and RUT (Russell 2000). The data provides
+            comprehensive price information including timestamp, open, high, low, close, volume,
+            count, and VWAP (Volume-Weighted Average Price). Essential for analyzing index movements,
+            backtesting strategies against benchmarks, and understanding broader market dynamics.
+
+            Parameters
+            ----------
+            symbol : str
+                The index ticker symbol. Examples: "SPX" (S&P 500), "VIX" (CBOE Volatility Index),
+                "NDX" (NASDAQ-100), "RUT" (Russell 2000).
+            start_date : str
+                Inclusive start date for the date range. Recommended format: "YYYYMMDD" (e.g., "20241101").
+                Also accepts "YYYY-MM-DD" format.
+            end_date : str
+                Inclusive end date for the date range. Recommended format: "YYYYMMDD" (e.g., "20241130").
+                Also accepts "YYYY-MM-DD" format.
+            interval : Interval, optional
+                Default: "1s"
+                Possible values: "tick", "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m",
+                "30m", "1h", "1d"
+                The aggregation interval for OHLC bars.
+            start_time : str, optional
+                Default: "09:30:00" (server default)
+                Intraday start time in HH:MM:SS format (e.g., "09:30:00"). Eastern Time timezone.
+            end_time : str, optional
+                Default: "16:00:00" (server default)
+                Intraday end time in HH:MM:SS format (e.g., "16:00:00"). Eastern Time timezone.
+            format_type : str, optional
+                Default: "csv"
+                Possible values: "csv", "json", "ndjson", "html"
+                The desired response format.
+
+            Returns
+            -------
+            Tuple[Any, str]
+                Tuple of (OHLC data, request URL). Each record includes: timestamp (YYYY-MM-DDTHH:mm:ss.SSS),
+                open, high, low, close, volume, count, vwap.
+
+            Example Usage
+            -------------
+            # Get daily OHLC bars for SPX over a month
+            async with ThetaDataV3Client() as client:
+                spx_bars, url = await client.index_history_ohlc(
+                    symbol="SPX",
+                    start_date="20241101",
+                    end_date="20241130",
+                    interval="1d"
+                )
+
+            # Get 1-minute bars for VIX during market hours
+            vix_bars, url = await client.index_history_ohlc(
+                symbol="VIX",
+                start_date="2024-11-01",
+                end_date="2024-11-30",
+                interval="1m",
+                start_time="09:30:00",
+                end_time="16:00:00",
+                format_type="json"
+            )
             """
             params = {
                 "symbol": symbol,
