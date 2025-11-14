@@ -1,18 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)",
-      "Bash(move /Y:*)",
-      "Bash(dir:*)",
-      "Bash(findstr:*)",
-      "Bash(copy /Y:*)",
-      "Bash(copy /Y manager_reorganized_final.py manager.py:*)",
-      "Bash(find:*)",
-      "Bash(cat:*)",
-      "Bash(for method in \"__init__\" \"_make_request\" \"stock_list_symbols\" \"stock_snapshot_ohlc\" \"option_list_symbols\" \"option_snapshot_all_greeks\" \"index_list_symbols\" \"_list_day_files\")",
-      "Bash(do grep -q \"def $method\" client_reorganized.py)",
-      "Bash(echo:*)",
-      "Bash(done)"
+      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" -c \"\nimport re\n\nwith open(r''src\\tdSynchManager\\manager.py'', ''r'', encoding=''utf-8'') as f:\n    lines = f.readlines()\n\n# Track some sample methods\nmethods_to_check = [''__init__'', ''run'', ''_spawn_sync'', ''screen_option_oi_concentration'', ''generate_duplicate_report'', ''check_duplicates_multi_day'', ''clear_first_date_cache'', ''_validate_interval'']\n\ncurrent_group = None\nmethod_groups = {}\n\nfor i, line in enumerate(lines):\n    # Detect BEGIN\n    if ''# (BEGIN)'' in line and i + 1 < len(lines):\n        next_line = lines[i + 1]\n        match = re.search(r''# ([A-Z][A-Z\\s]+)$'', next_line)\n        if match:\n            current_group = match.group(1).strip()\n    \n    # Detect END\n    elif ''# (END)'' in line:\n        current_group = None\n    \n    # Check for methods\n    elif current_group:\n        for method in methods_to_check:\n            if f''def {method}('' in line and method not in method_groups:\n                method_groups[method] = current_group\n\nprint(''Sample methods verification:'')\nprint(''='' * 70)\nfor method in methods_to_check:\n    group = method_groups.get(method, ''NOT FOUND'')\n    print(f''{method:40} -> {group}'')\nprint(''='' * 70)\n\")"
     ],
     "deny": [],
     "ask": []
