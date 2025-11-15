@@ -4637,6 +4637,51 @@ class ThetaSyncManager:
         self.influx_client = self._influx  # Assegna anche a influx_client per check_duplicates
         return self._influx
 
+    def _list_influx_tables(self) -> List[str]:
+        """
+        Retrieve list of measurement tables from InfluxDB v3.
+
+        Executes 'SHOW TABLES' query and filters only tables from the 'iox' schema,
+        excluding system and information_schema tables.
+
+        Returns
+        -------
+        List[str]
+            List of measurement/table names available in InfluxDB.
+            Returns empty list if InfluxDB is not configured or query fails.
+
+        Examples
+        --------
+        >>> tables = manager._list_influx_tables()
+        >>> print(tables)
+        ['SPY-option-tick', 'SPY-option-5m', 'TLRY-option-tick']
+        """
+        try:
+            cli = self._ensure_influx_client()
+            query = "SHOW TABLES"
+            result = cli.query(query)
+
+            # Convert result to pandas DataFrame
+            if hasattr(result, "to_pandas"):
+                df = result.to_pandas()
+            else:
+                df = result
+
+            # Filter only 'iox' schema tables
+            if df is not None and not df.empty:
+                if 'table_schema' in df.columns and 'table_name' in df.columns:
+                    # Filter iox schema and extract table names
+                    iox_tables = df[df['table_schema'] == 'iox']['table_name'].tolist()
+                    return iox_tables
+                elif 'table_name' in df.columns:
+                    # Fallback: return all table names if schema column not present
+                    return df['table_name'].tolist()
+
+            return []
+
+        except Exception as e:
+            print(f"[DEBUG] _list_influx_tables error: {type(e).__name__}: {e}")
+            return []
 
     def _influx_measurement_from_base(self, base_path: str) -> str:
         """
@@ -6607,76 +6652,62 @@ class ThetaSyncManager:
         # Scan InfluxDB sink (if configured and requested)
         if "influxdb" in sinks_to_scan:
             try:
-                cli = self._ensure_influx_client()
+                # Get list of InfluxDB tables using helper method
+                table_names = self._list_influx_tables()
 
-                # Query to get all table names (measurements in v3)
-                # Use SHOW TABLES which works with read tokens
-                query = "SHOW TABLES"
+                if table_names:
+                    cli = self._ensure_influx_client()
+                    for table_name in table_names:
+                        # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
+                        # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
+                        name = str(table_name)
 
-                try:
-                    table_result = cli.query(query)
-                    tables_df = table_result.to_pandas() if hasattr(table_result, "to_pandas") else table_result
+                        # Remove prefix if present
+                        if self.cfg.influx_measurement_prefix:
+                            name = name.replace(self.cfg.influx_measurement_prefix, "", 1)
 
-                    # Filter only 'iox' schema tables (exclude system/information_schema)
-                    if tables_df is not None and not tables_df.empty:
-                        if 'table_schema' in tables_df.columns:
-                            tables_df = tables_df[tables_df['table_schema'] == 'iox']
+                        # Parse: SYMBOL-asset-interval
+                        parts = name.split("-")
+                        if len(parts) >= 3:
+                            symbol_part = parts[0]
+                            asset_part = parts[1]
+                            interval_part = "-".join(parts[2:])  # Handle intervals like "1d"
 
-                        if 'table_name' in tables_df.columns and not tables_df.empty:
-                            for table_name in tables_df['table_name']:
-                                # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
-                                # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
-                                name = str(table_name)
+                            # Filter by criteria if specified
+                            if asset and asset_part.lower() != asset.lower():
+                                continue
+                            if symbol and symbol_part.upper() != symbol.upper():
+                                continue
+                            if interval and interval_part.lower() != interval.lower():
+                                continue
 
-                                # Remove prefix if present
-                                if self.cfg.influx_measurement_prefix:
-                                    name = name.replace(self.cfg.influx_measurement_prefix, "", 1)
+                            # Get min/max timestamps
+                            ts_query = f'SELECT MIN(time) as first_ts, MAX(time) as last_ts FROM "{table_name}"'
+                            try:
+                                ts_result = cli.query(ts_query)
+                                ts_df = ts_result.to_pandas() if hasattr(ts_result, "to_pandas") else ts_result
 
-                                # Parse: SYMBOL-asset-interval
-                                parts = name.split("-")
-                                if len(parts) >= 3:
-                                    symbol_part = parts[0]
-                                    asset_part = parts[1]
-                                    interval_part = "-".join(parts[2:])  # Handle intervals like "1d"
+                                first_ts = None
+                                last_ts = None
 
-                                    # Filter by criteria if specified
-                                    if asset and asset_part.lower() != asset.lower():
-                                        continue
-                                    if symbol and symbol_part.upper() != symbol.upper():
-                                        continue
-                                    if interval and interval_part.lower() != interval.lower():
-                                        continue
+                                if ts_df is not None and not ts_df.empty:
+                                    if 'first_ts' in ts_df.columns:
+                                        first_ts = pd.to_datetime(ts_df['first_ts'].iloc[0], utc=True).isoformat()
+                                    if 'last_ts' in ts_df.columns:
+                                        last_ts = pd.to_datetime(ts_df['last_ts'].iloc[0], utc=True).isoformat()
 
-                                    # Get min/max timestamps
-                                    ts_query = f'SELECT MIN(time) as first_ts, MAX(time) as last_ts FROM "{table_name}"'
-                                    try:
-                                        ts_result = cli.query(ts_query)
-                                        ts_df = ts_result.to_pandas() if hasattr(ts_result, "to_pandas") else ts_result
-
-                                        first_ts = None
-                                        last_ts = None
-
-                                        if ts_df is not None and not ts_df.empty:
-                                            if 'first_ts' in ts_df.columns:
-                                                first_ts = pd.to_datetime(ts_df['first_ts'].iloc[0], utc=True).isoformat()
-                                            if 'last_ts' in ts_df.columns:
-                                                last_ts = pd.to_datetime(ts_df['last_ts'].iloc[0], utc=True).isoformat()
-
-                                        results.append({
-                                            "asset": asset_part,
-                                            "symbol": symbol_part,
-                                            "interval": interval_part,
-                                            "sink": "influxdb",
-                                            "first_datetime": first_ts,
-                                            "last_datetime": last_ts,
-                                            "file_count": 0,
-                                            "total_size_mb": 0
-                                        })
-                                    except Exception as e:
-                                        print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
-
-                except Exception as e:
-                    print(f"[WARNING] Error querying InfluxDB tables: {e}")
+                                results.append({
+                                    "asset": asset_part,
+                                    "symbol": symbol_part,
+                                    "interval": interval_part,
+                                    "sink": "influxdb",
+                                    "first_datetime": first_ts,
+                                    "last_datetime": last_ts,
+                                    "file_count": 0,
+                                    "total_size_mb": 0
+                                })
+                            except Exception as e:
+                                print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
 
             except Exception as e:
                 # InfluxDB not configured or connection error - silently skip
