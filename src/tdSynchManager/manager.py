@@ -6933,8 +6933,8 @@ class ThetaSyncManager:
 
             # Build measurement name
             measurement = f"{symbol.upper()}-{asset.lower()}-{interval.lower()}"
-            if self.cfg.influx_measurement_prefix:
-                measurement = f"{self.cfg.influx_measurement_prefix}{measurement}"
+            if self.cfg.influx_measure_prefix:
+                measurement = f"{self.cfg.influx_measure_prefix}{measurement}"
 
             # Build query
             where_clauses = []
