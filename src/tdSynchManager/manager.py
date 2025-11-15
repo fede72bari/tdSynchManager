@@ -7046,7 +7046,8 @@ class ThetaSyncManager:
                     # Normalize timestamp column
                     time_col = self._detect_time_col(df_chunk.columns)
                     if time_col:
-                        df_chunk[time_col] = pd.to_datetime(df_chunk[time_col], utc=True).dt.tz_localize(None)
+                        # Parse with mixed format support (handles ISO8601 and other formats)
+                        df_chunk[time_col] = pd.to_datetime(df_chunk[time_col], format='mixed', utc=True, errors='coerce').dt.tz_localize(None)
 
                         # Filter by timestamp range
                         if start_ts:
@@ -7109,25 +7110,101 @@ class ThetaSyncManager:
     ) -> Optional[pd.DataFrame]:
         """Apply get_* filters and smart ordering to query results.
 
-        For options: orders by expiration, strike, timestamp DESC (most recent first)
-        For non-options: orders by timestamp DESC (most recent first)
+        LOGIC:
+        1. First apply chronological filtering (get_last_* means most recent, get_first_* means oldest)
+        2. Then apply smart ordering based on asset type
 
-        Then applies get_first/last filters for rows, days, or minutes.
+        For options: orders by expiration ASC, strike ASC, timestamp DESC
+        For non-options: orders by timestamp DESC (most recent first)
         """
         if df is None or df.empty:
             return df
 
         # Detect time column
         time_col = self._detect_time_col(df.columns)
-        if not time_col and any([get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes]):
+        if not time_col and any([get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes, get_first_n_rows, get_last_n_rows]):
             warnings.append("NO_TIMESTAMP_COLUMN: Cannot apply time-based filters without timestamp column")
             return None
 
-        # Smart ordering based on asset type
+        # Convert timestamp column to datetime
+        if time_col:
+            df[time_col] = pd.to_datetime(df[time_col], format='mixed', errors='coerce')
+
+        # Normalize start_ts and end_ts to tz-naive for comparison
+        if start_ts and hasattr(start_ts, 'tz') and start_ts.tz is not None:
+            start_ts = start_ts.tz_localize(None)
+        if end_ts and hasattr(end_ts, 'tz') and end_ts.tz is not None:
+            end_ts = end_ts.tz_localize(None)
+
+        # STEP 1: Apply chronological filtering FIRST
+        if get_first_n_days:
+            # Get first N days from start (oldest data)
+            if time_col:
+                if start_ts:
+                    cutoff = start_ts + pd.Timedelta(days=get_first_n_days)
+                else:
+                    # From beginning of data
+                    min_ts = df[time_col].min()
+                    cutoff = min_ts + pd.Timedelta(days=get_first_n_days)
+                df = df[df[time_col] <= cutoff]
+
+        elif get_last_n_days:
+            # Get last N days before end (most recent data)
+            if time_col:
+                if end_ts:
+                    cutoff = end_ts - pd.Timedelta(days=get_last_n_days)
+                else:
+                    # From end of data
+                    max_ts = df[time_col].max()
+                    cutoff = max_ts - pd.Timedelta(days=get_last_n_days)
+                df = df[df[time_col] >= cutoff]
+
+        elif get_first_n_minutes:
+            # Get first N minutes from start (oldest data)
+            if time_col:
+                if start_ts:
+                    cutoff = start_ts + pd.Timedelta(minutes=get_first_n_minutes)
+                else:
+                    # From beginning of data
+                    min_ts = df[time_col].min()
+                    cutoff = min_ts + pd.Timedelta(minutes=get_first_n_minutes)
+                df = df[df[time_col] <= cutoff]
+
+        elif get_last_n_minutes:
+            # Get last N minutes before end (most recent data)
+            if time_col:
+                if end_ts:
+                    cutoff = end_ts - pd.Timedelta(minutes=get_last_n_minutes)
+                else:
+                    # From end of data
+                    max_ts = df[time_col].max()
+                    cutoff = max_ts - pd.Timedelta(minutes=get_last_n_minutes)
+                df = df[df[time_col] >= cutoff]
+
+        elif get_first_n_rows:
+            # Get first N rows by timestamp (oldest)
+            if time_col:
+                df = df.nsmallest(get_first_n_rows, time_col)
+            else:
+                df = df.head(get_first_n_rows)
+
+        elif get_last_n_rows:
+            # Get last N rows by timestamp (most recent)
+            if time_col:
+                df = df.nlargest(get_last_n_rows, time_col)
+            else:
+                df = df.tail(get_last_n_rows)
+
+        if df.empty:
+            return None
+
+        # STEP 2: Apply smart ordering based on asset type
         if asset.lower() == "option":
-            # Options: order by expiration, strike, timestamp DESC
+            # Options: order by expiration ASC, strike ASC, timestamp DESC
             sort_cols = []
             if "expiration" in df.columns:
+                # Convert expiration to datetime
+                df["expiration"] = pd.to_datetime(df["expiration"], format='mixed', errors='coerce')
                 sort_cols.append("expiration")
             if "strike" in df.columns:
                 sort_cols.append("strike")
@@ -7135,71 +7212,13 @@ class ThetaSyncManager:
                 sort_cols.append(time_col)
 
             if sort_cols:
-                # Create ascending list (True for all except timestamp which should be descending)
+                # Create ascending list (True for exp/strike, False for timestamp)
                 ascending_list = [True] * (len(sort_cols) - 1) + [False] if time_col in sort_cols else [True] * len(sort_cols)
                 df = df.sort_values(sort_cols, ascending=ascending_list).reset_index(drop=True)
         else:
             # Non-options: order by timestamp DESC (most recent first)
             if time_col:
                 df = df.sort_values(time_col, ascending=False).reset_index(drop=True)
-
-        # Apply get_* filters
-        if get_first_n_days or get_last_n_days:
-            # Days-based filtering
-            if time_col:
-                df[time_col] = pd.to_datetime(df[time_col])
-
-                if get_first_n_days:
-                    # Get first N days from start
-                    if start_ts:
-                        cutoff = start_ts + pd.Timedelta(days=get_first_n_days)
-                    else:
-                        # From beginning of data
-                        min_ts = df[time_col].min()
-                        cutoff = min_ts + pd.Timedelta(days=get_first_n_days)
-                    df = df[df[time_col] <= cutoff]
-
-                elif get_last_n_days:
-                    # Get last N days before end
-                    if end_ts:
-                        cutoff = end_ts - pd.Timedelta(days=get_last_n_days)
-                    else:
-                        # From end of data
-                        max_ts = df[time_col].max()
-                        cutoff = max_ts - pd.Timedelta(days=get_last_n_days)
-                    df = df[df[time_col] >= cutoff]
-
-        elif get_first_n_minutes or get_last_n_minutes:
-            # Minutes-based filtering
-            if time_col:
-                df[time_col] = pd.to_datetime(df[time_col])
-
-                if get_first_n_minutes:
-                    # Get first N minutes from start
-                    if start_ts:
-                        cutoff = start_ts + pd.Timedelta(minutes=get_first_n_minutes)
-                    else:
-                        # From beginning of data
-                        min_ts = df[time_col].min()
-                        cutoff = min_ts + pd.Timedelta(minutes=get_first_n_minutes)
-                    df = df[df[time_col] <= cutoff]
-
-                elif get_last_n_minutes:
-                    # Get last N minutes before end
-                    if end_ts:
-                        cutoff = end_ts - pd.Timedelta(minutes=get_last_n_minutes)
-                    else:
-                        # From end of data
-                        max_ts = df[time_col].max()
-                        cutoff = max_ts - pd.Timedelta(minutes=get_last_n_minutes)
-                    df = df[df[time_col] >= cutoff]
-
-        elif get_first_n_rows or get_last_n_rows:
-            # Row-based filtering
-            if get_first_n_rows:
-                df = df.head(get_first_n_rows)
-            elif get_last_n_rows:
-                df = df.tail(get_last_n_rows)
 
         return df if not df.empty else None
 
