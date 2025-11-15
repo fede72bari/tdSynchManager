@@ -6890,6 +6890,14 @@ class ThetaSyncManager:
             )
             return None, warnings
 
+        # Validate that get_*_n_minutes is not used with 1d interval
+        if (get_first_n_minutes or get_last_n_minutes) and interval == '1d':
+            warnings.append(
+                "INVALID_MINUTES_PARAM: get_first_n_minutes and get_last_n_minutes cannot be used with interval='1d'. "
+                "Use get_first_n_days or get_last_n_days instead."
+            )
+            return None, warnings
+
         # Validate inputs
         self._validate_sink(sink)
         self._validate_interval(interval)
@@ -7161,24 +7169,18 @@ class ThetaSyncManager:
 
         elif get_first_n_minutes:
             # Get first N minutes from start (oldest data)
+            # Always use actual min timestamp from data (already filtered by start_date)
             if time_col:
-                if start_ts:
-                    cutoff = start_ts + pd.Timedelta(minutes=get_first_n_minutes)
-                else:
-                    # From beginning of data
-                    min_ts = df[time_col].min()
-                    cutoff = min_ts + pd.Timedelta(minutes=get_first_n_minutes)
+                min_ts = df[time_col].min()
+                cutoff = min_ts + pd.Timedelta(minutes=get_first_n_minutes)
                 df = df[df[time_col] <= cutoff]
 
         elif get_last_n_minutes:
             # Get last N minutes before end (most recent data)
+            # Always use actual max timestamp from data (already filtered by end_date)
             if time_col:
-                if end_ts:
-                    cutoff = end_ts - pd.Timedelta(minutes=get_last_n_minutes)
-                else:
-                    # From end of data
-                    max_ts = df[time_col].max()
-                    cutoff = max_ts - pd.Timedelta(minutes=get_last_n_minutes)
+                max_ts = df[time_col].max()
+                cutoff = max_ts - pd.Timedelta(minutes=get_last_n_minutes)
                 df = df[df[time_col] >= cutoff]
 
         elif get_first_n_rows:
@@ -7199,12 +7201,15 @@ class ThetaSyncManager:
             return None
 
         # STEP 2: Apply smart ordering based on asset type
+        # Make a copy to avoid SettingWithCopyWarning when modifying
+        df = df.copy()
+
         if asset.lower() == "option":
             # Options: order by expiration ASC, strike ASC, timestamp DESC
             sort_cols = []
             if "expiration" in df.columns:
-                # Convert expiration to datetime
-                df["expiration"] = pd.to_datetime(df["expiration"], format='mixed', errors='coerce')
+                # Convert expiration to datetime using .loc[] to avoid SettingWithCopyWarning
+                df.loc[:, "expiration"] = pd.to_datetime(df["expiration"], format='mixed', errors='coerce')
                 sort_cols.append("expiration")
             if "strike" in df.columns:
                 sort_cols.append("strike")
