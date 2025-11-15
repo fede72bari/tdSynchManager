@@ -6777,7 +6777,13 @@ class ThetaSyncManager:
         start_datetime: Optional[str] = None,
         end_date: Optional[str] = None,
         end_datetime: Optional[str] = None,
-        max_rows: Optional[int] = None
+        max_rows: Optional[int] = None,
+        get_first_n_rows: Optional[int] = None,
+        get_last_n_rows: Optional[int] = None,
+        get_first_n_days: Optional[int] = None,
+        get_last_n_days: Optional[int] = None,
+        get_first_n_minutes: Optional[int] = None,
+        get_last_n_minutes: Optional[int] = None
     ) -> Tuple[Optional[pd.DataFrame], List[str]]:
         """Query and extract data from local sinks within a date/time range.
 
@@ -6809,6 +6815,25 @@ class ThetaSyncManager:
         max_rows : int, optional
             Maximum number of rows to return. If the result exceeds this limit, returns
             only the first max_rows and adds a warning.
+        get_first_n_rows : int, optional
+            Return only the first N rows from the filtered data.
+        get_last_n_rows : int, optional
+            Return only the last N rows from the filtered data.
+        get_first_n_days : int, optional
+            Return data from the first N days. If start_date specified, returns N days from start.
+            Otherwise, returns first N days from beginning of data.
+        get_last_n_days : int, optional
+            Return data from the last N days. If end_date specified, returns N days before end.
+            Otherwise, returns last N days from end of data.
+        get_first_n_minutes : int, optional
+            Return data from the first N minutes. Applied after date filtering.
+        get_last_n_minutes : int, optional
+            Return data from the last N minutes. Applied after date filtering.
+
+        Notes
+        -----
+        Only ONE get_* parameter can be specified at a time. If multiple are provided,
+        the function will stop with a warning.
 
         Returns
         -------
@@ -6851,6 +6876,20 @@ class ThetaSyncManager:
         """
         warnings = []
 
+        # Validate that only one get_* parameter is specified
+        get_params = [
+            get_first_n_rows, get_last_n_rows,
+            get_first_n_days, get_last_n_days,
+            get_first_n_minutes, get_last_n_minutes
+        ]
+        active_gets = [p for p in get_params if p is not None]
+        if len(active_gets) > 1:
+            warnings.append(
+                "MULTIPLE_GET_PARAMS: Only one get_* parameter can be specified at a time. "
+                f"Found {len(active_gets)} active parameters."
+            )
+            return None, warnings
+
         # Validate inputs
         self._validate_sink(sink)
         self._validate_interval(interval)
@@ -6871,8 +6910,9 @@ class ThetaSyncManager:
             except Exception as e:
                 warnings.append(f"INVALID_START_DATE: {e}")
                 return None, warnings
-        else:
-            warnings.append("NO_START: Either start_date or start_datetime is required")
+        elif not any([get_first_n_rows, get_last_n_rows, get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes]):
+            # Start date is required only if no get_* parameter is specified
+            warnings.append("NO_START: Either start_date, start_datetime, or a get_* parameter is required")
             return None, warnings
 
         # Parse end datetime
@@ -6925,15 +6965,28 @@ class ThetaSyncManager:
                     warnings.append("NO_DATA: No data found in InfluxDB for specified range")
                     return None, warnings
 
-                # Check if max_rows was reached
-                if max_rows and len(df) >= max_rows:
-                    warnings.append(f"MAX_ROWS_REACHED: Result limited to {max_rows} rows")
-
                 # Normalize timestamp column
                 if "time" in df.columns:
                     df = df.rename(columns={"time": "timestamp"})
                 if "timestamp" in df.columns:
                     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
+
+                # Apply get_* filtering and smart ordering
+                df = self._apply_get_filters_and_ordering(
+                    df, asset, warnings,
+                    get_first_n_rows, get_last_n_rows,
+                    get_first_n_days, get_last_n_days,
+                    get_first_n_minutes, get_last_n_minutes,
+                    start_ts, end_ts
+                )
+
+                if df is None:
+                    return None, warnings
+
+                # Apply max_rows limit
+                if max_rows and len(df) > max_rows:
+                    df = df.head(max_rows)
+                    warnings.append(f"MAX_ROWS_REACHED: Result limited to {max_rows} rows")
 
                 return df, warnings
 
@@ -7017,20 +7070,138 @@ class ThetaSyncManager:
                 # Concatenate all chunks
                 result_df = pd.concat(dfs, ignore_index=True)
 
+                # Apply get_* filtering and smart ordering
+                result_df = self._apply_get_filters_and_ordering(
+                    result_df, asset, warnings,
+                    get_first_n_rows, get_last_n_rows,
+                    get_first_n_days, get_last_n_days,
+                    get_first_n_minutes, get_last_n_minutes,
+                    start_ts, end_ts
+                )
+
+                if result_df is None:
+                    return None, warnings
+
                 # Apply max_rows limit
                 if max_rows and len(result_df) > max_rows:
                     result_df = result_df.head(max_rows)
-
-                # Sort by timestamp
-                time_col = self._detect_time_col(result_df.columns)
-                if time_col:
-                    result_df = result_df.sort_values(time_col).reset_index(drop=True)
+                    warnings.append(f"MAX_ROWS_REACHED: Result limited to {max_rows} rows (more data available)")
 
                 return result_df, warnings
 
             except Exception as e:
                 warnings.append(f"READ_ERROR: {e}")
                 return None, warnings
+
+    def _apply_get_filters_and_ordering(
+        self,
+        df: pd.DataFrame,
+        asset: str,
+        warnings: List[str],
+        get_first_n_rows: Optional[int],
+        get_last_n_rows: Optional[int],
+        get_first_n_days: Optional[int],
+        get_last_n_days: Optional[int],
+        get_first_n_minutes: Optional[int],
+        get_last_n_minutes: Optional[int],
+        start_ts: Optional[pd.Timestamp],
+        end_ts: Optional[pd.Timestamp]
+    ) -> Optional[pd.DataFrame]:
+        """Apply get_* filters and smart ordering to query results.
+
+        For options: orders by expiration, strike, timestamp DESC (most recent first)
+        For non-options: orders by timestamp DESC (most recent first)
+
+        Then applies get_first/last filters for rows, days, or minutes.
+        """
+        if df is None or df.empty:
+            return df
+
+        # Detect time column
+        time_col = self._detect_time_col(df.columns)
+        if not time_col and any([get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes]):
+            warnings.append("NO_TIMESTAMP_COLUMN: Cannot apply time-based filters without timestamp column")
+            return None
+
+        # Smart ordering based on asset type
+        if asset.lower() == "option":
+            # Options: order by expiration, strike, timestamp DESC
+            sort_cols = []
+            if "expiration" in df.columns:
+                sort_cols.append("expiration")
+            if "strike" in df.columns:
+                sort_cols.append("strike")
+            if time_col:
+                sort_cols.append(time_col)
+
+            if sort_cols:
+                # Create ascending list (True for all except timestamp which should be descending)
+                ascending_list = [True] * (len(sort_cols) - 1) + [False] if time_col in sort_cols else [True] * len(sort_cols)
+                df = df.sort_values(sort_cols, ascending=ascending_list).reset_index(drop=True)
+        else:
+            # Non-options: order by timestamp DESC (most recent first)
+            if time_col:
+                df = df.sort_values(time_col, ascending=False).reset_index(drop=True)
+
+        # Apply get_* filters
+        if get_first_n_days or get_last_n_days:
+            # Days-based filtering
+            if time_col:
+                df[time_col] = pd.to_datetime(df[time_col])
+
+                if get_first_n_days:
+                    # Get first N days from start
+                    if start_ts:
+                        cutoff = start_ts + pd.Timedelta(days=get_first_n_days)
+                    else:
+                        # From beginning of data
+                        min_ts = df[time_col].min()
+                        cutoff = min_ts + pd.Timedelta(days=get_first_n_days)
+                    df = df[df[time_col] <= cutoff]
+
+                elif get_last_n_days:
+                    # Get last N days before end
+                    if end_ts:
+                        cutoff = end_ts - pd.Timedelta(days=get_last_n_days)
+                    else:
+                        # From end of data
+                        max_ts = df[time_col].max()
+                        cutoff = max_ts - pd.Timedelta(days=get_last_n_days)
+                    df = df[df[time_col] >= cutoff]
+
+        elif get_first_n_minutes or get_last_n_minutes:
+            # Minutes-based filtering
+            if time_col:
+                df[time_col] = pd.to_datetime(df[time_col])
+
+                if get_first_n_minutes:
+                    # Get first N minutes from start
+                    if start_ts:
+                        cutoff = start_ts + pd.Timedelta(minutes=get_first_n_minutes)
+                    else:
+                        # From beginning of data
+                        min_ts = df[time_col].min()
+                        cutoff = min_ts + pd.Timedelta(minutes=get_first_n_minutes)
+                    df = df[df[time_col] <= cutoff]
+
+                elif get_last_n_minutes:
+                    # Get last N minutes before end
+                    if end_ts:
+                        cutoff = end_ts - pd.Timedelta(minutes=get_last_n_minutes)
+                    else:
+                        # From end of data
+                        max_ts = df[time_col].max()
+                        cutoff = max_ts - pd.Timedelta(minutes=get_last_n_minutes)
+                    df = df[df[time_col] >= cutoff]
+
+        elif get_first_n_rows or get_last_n_rows:
+            # Row-based filtering
+            if get_first_n_rows:
+                df = df.head(get_first_n_rows)
+            elif get_last_n_rows:
+                df = df.tail(get_last_n_rows)
+
+        return df if not df.empty else None
 
     # =========================================================================
     # (END)
