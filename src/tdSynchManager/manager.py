@@ -6703,8 +6703,8 @@ class ThetaSyncManager:
                         name = str(table_name)
 
                         # Remove prefix if present
-                        if self.cfg.influx_measurement_prefix:
-                            name = name.replace(self.cfg.influx_measurement_prefix, "", 1)
+                        if self.cfg.influx_measure_prefix:
+                            name = name.replace(self.cfg.influx_measure_prefix, "", 1)
 
                         # Parse: SYMBOL-asset-interval
                         parts = name.split("-")
