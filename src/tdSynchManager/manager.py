@@ -6486,10 +6486,16 @@ class ThetaSyncManager:
             - symbol: Ticker symbol
             - interval: Time interval
             - sink: Storage format
-            - first_datetime: Earliest available timestamp (UTC)
-            - last_datetime: Latest available timestamp (UTC)
+            - first_datetime: Earliest available timestamp (UTC, ISO format)
+            - last_datetime: Latest available timestamp (UTC, ISO format)
             - file_count: Number of files (for CSV/Parquet) or 0 for InfluxDB
-            - total_size_mb: Total size in MB (for CSV/Parquet) or None for InfluxDB
+            - total_size_mb: Total size in MB (for CSV/Parquet) or 0 for InfluxDB
+
+            Results are sorted by:
+            1. sink (csv, influxdb, parquet - alphabetical)
+            2. asset (option, stock, index - logical order)
+            3. symbol (alphabetical)
+            4. interval (tick, 1s, 5s, ... 1m, 5m, ... 1h, ... 1d - smallest to largest)
 
         Example Usage
         -------------
@@ -6601,11 +6607,78 @@ class ThetaSyncManager:
         # Scan InfluxDB sink (if configured and requested)
         if "influxdb" in sinks_to_scan:
             try:
-                # For now, InfluxDB listing is not implemented as it requires different approach
-                # We would need to query SHOW MEASUREMENTS and then get min/max timestamps
-                # This is left as TODO for future enhancement
-                pass
-            except Exception:
+                cli = self._ensure_influx_client()
+
+                # Query to get all table names (measurements in v3)
+                # In InfluxDB v3, we query the system tables
+                query = """
+                SELECT DISTINCT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'iox'
+                """
+
+                try:
+                    table_result = cli.query(query)
+                    tables_df = table_result.to_pandas() if hasattr(table_result, "to_pandas") else table_result
+
+                    if tables_df is not None and not tables_df.empty and 'table_name' in tables_df.columns:
+                        for table_name in tables_df['table_name']:
+                            # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
+                            # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
+                            name = str(table_name)
+
+                            # Remove prefix if present
+                            if self.cfg.influx_measurement_prefix:
+                                name = name.replace(self.cfg.influx_measurement_prefix, "", 1)
+
+                            # Parse: SYMBOL-asset-interval
+                            parts = name.split("-")
+                            if len(parts) >= 3:
+                                symbol_part = parts[0]
+                                asset_part = parts[1]
+                                interval_part = "-".join(parts[2:])  # Handle intervals like "1d"
+
+                                # Filter by criteria if specified
+                                if asset and asset_part.lower() != asset.lower():
+                                    continue
+                                if symbol and symbol_part.upper() != symbol.upper():
+                                    continue
+                                if interval and interval_part.lower() != interval.lower():
+                                    continue
+
+                                # Get min/max timestamps
+                                ts_query = f'SELECT MIN(time) as first_ts, MAX(time) as last_ts FROM "{table_name}"'
+                                try:
+                                    ts_result = cli.query(ts_query)
+                                    ts_df = ts_result.to_pandas() if hasattr(ts_result, "to_pandas") else ts_result
+
+                                    first_ts = None
+                                    last_ts = None
+
+                                    if ts_df is not None and not ts_df.empty:
+                                        if 'first_ts' in ts_df.columns:
+                                            first_ts = pd.to_datetime(ts_df['first_ts'].iloc[0], utc=True).isoformat()
+                                        if 'last_ts' in ts_df.columns:
+                                            last_ts = pd.to_datetime(ts_df['last_ts'].iloc[0], utc=True).isoformat()
+
+                                    results.append({
+                                        "asset": asset_part,
+                                        "symbol": symbol_part,
+                                        "interval": interval_part,
+                                        "sink": "influxdb",
+                                        "first_datetime": first_ts,
+                                        "last_datetime": last_ts,
+                                        "file_count": 0,
+                                        "total_size_mb": 0
+                                    })
+                                except Exception as e:
+                                    print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
+
+                except Exception as e:
+                    print(f"[WARNING] Error querying InfluxDB tables: {e}")
+
+            except Exception as e:
+                # InfluxDB not configured or connection error - silently skip
                 pass
 
         df = pd.DataFrame(results)
@@ -6615,7 +6688,32 @@ class ThetaSyncManager:
                 "last_datetime", "file_count", "total_size_mb"
             ])
 
-        return df.sort_values(["asset", "symbol", "interval", "sink"]).reset_index(drop=True)
+        # Custom sort order for intervals (tick -> 1s -> 5s -> ... -> 1d)
+        interval_order = {
+            "tick": 0,
+            "1s": 1, "5s": 2, "10s": 3, "15s": 4, "30s": 5,
+            "1m": 10, "5m": 11, "10m": 12, "15m": 13, "30m": 14,
+            "1h": 20, "2h": 21, "4h": 22,
+            "1d": 30, "1w": 40, "1mo": 50
+        }
+
+        # Custom sort order for assets
+        asset_order = {"option": 0, "stock": 1, "index": 2}
+
+        # Add sorting columns
+        df["_interval_sort"] = df["interval"].map(lambda x: interval_order.get(x.lower(), 999))
+        df["_asset_sort"] = df["asset"].map(lambda x: asset_order.get(x.lower(), 999))
+
+        # Sort: sink → asset → symbol → interval
+        df = df.sort_values(
+            ["sink", "_asset_sort", "symbol", "_interval_sort"],
+            ascending=[True, True, True, True]
+        ).reset_index(drop=True)
+
+        # Remove sorting columns
+        df = df.drop(columns=["_interval_sort", "_asset_sort"])
+
+        return df
 
 
     def query_local_data(
