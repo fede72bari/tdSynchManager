@@ -4666,17 +4666,12 @@ class ThetaSyncManager:
             influx_bucket = self.cfg.influx_bucket
             influx_token = self.cfg.influx_token
 
-            print(f"[DEBUG] _list_influx_tables: url={influx_url}, bucket={influx_bucket}, token={'***' + influx_token[-4:] if influx_token else None}")
-
             if not (influx_url and influx_bucket and influx_token):
-                print(f"[DEBUG] _list_influx_tables: Missing configuration, returning empty list")
                 return []
 
             # Use HTTP API directly for SHOW TABLES (more reliable than client)
             url = f"{influx_url}/api/v3/query_sql"
             params = {"db": influx_bucket, "q": "SHOW TABLES", "format": "json"}
-
-            print(f"[DEBUG] _list_influx_tables: Requesting {url} with params={params}")
 
             response = requests.get(
                 url,
@@ -4685,19 +4680,11 @@ class ThetaSyncManager:
                 timeout=10
             )
 
-            print(f"[DEBUG] _list_influx_tables: Response status={response.status_code}")
-
             if response.status_code != 200:
-                print(f"[DEBUG] _list_influx_tables HTTP error: {response.status_code}")
-                print(f"[DEBUG] Response text: {response.text[:200]}")
                 return []
 
             # Parse JSON response
             data = response.json()
-            print(f"[DEBUG] _list_influx_tables: Received {len(data)} rows from InfluxDB")
-
-            if data:
-                print(f"[DEBUG] First row example: {data[0]}")
 
             # Extract table names from iox schema only
             iox_tables = []
@@ -4710,13 +4697,9 @@ class ThetaSyncManager:
                     if table_schema == 'iox' and table_name:
                         iox_tables.append(table_name)
 
-            print(f"[DEBUG] _list_influx_tables: Found {len(iox_tables)} iox tables: {iox_tables[:5]}")
             return iox_tables
 
         except Exception as e:
-            print(f"[DEBUG] _list_influx_tables error: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
             return []
 
     def _influx_measurement_from_base(self, base_path: str) -> str:
@@ -6686,18 +6669,14 @@ class ThetaSyncManager:
                         })
 
         # Scan InfluxDB sink (if configured and requested)
-        print(f"[DEBUG] list_available_data: sinks_to_scan={sinks_to_scan}")
         if "influxdb" in sinks_to_scan:
-            print(f"[DEBUG] list_available_data: Scanning InfluxDB...")
             try:
                 # Get list of InfluxDB tables using helper method
                 table_names = self._list_influx_tables()
-                print(f"[DEBUG] list_available_data: Got {len(table_names)} table names from InfluxDB")
 
                 if table_names:
                     cli = self._ensure_influx_client()
                     for table_name in table_names:
-                        print(f"[DEBUG] list_available_data: Processing table {table_name}")
                         # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
                         # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
                         name = str(table_name)
@@ -6747,23 +6726,13 @@ class ThetaSyncManager:
                                     "total_size_mb": 0
                                 }
                                 results.append(entry)
-                                print(f"[DEBUG] list_available_data: Added InfluxDB entry: {entry}")
                             except Exception as e:
                                 print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
-                else:
-                    print(f"[DEBUG] list_available_data: No tables returned from InfluxDB")
 
             except Exception as e:
                 print(f"[WARNING] Error scanning InfluxDB: {e}")
-                import traceback
-                traceback.print_exc()
-
-        print(f"[DEBUG] list_available_data: Total results collected: {len(results)}")
-        if results:
-            print(f"[DEBUG] list_available_data: Sample result: {results[0]}")
 
         df = pd.DataFrame(results)
-        print(f"[DEBUG] list_available_data: DataFrame shape: {df.shape}")
         if df.empty:
             return pd.DataFrame(columns=[
                 "asset", "symbol", "interval", "sink", "first_datetime",
