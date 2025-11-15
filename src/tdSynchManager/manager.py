@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import requests
 import tempfile
 import uuid
 from datetime import datetime as dt, timedelta, timezone
@@ -4641,8 +4642,11 @@ class ThetaSyncManager:
         """
         Retrieve list of measurement tables from InfluxDB v3.
 
-        Executes 'SHOW TABLES' query and filters only tables from the 'iox' schema,
-        excluding system and information_schema tables.
+        Executes 'SHOW TABLES' query via HTTP API and filters only tables from
+        the 'iox' schema, excluding system and information_schema tables.
+
+        Uses direct HTTP request to /api/v3/query_sql endpoint as it's more
+        reliable than the Python client for metadata queries.
 
         Returns
         -------
@@ -4657,27 +4661,41 @@ class ThetaSyncManager:
         ['SPY-option-tick', 'SPY-option-5m', 'TLRY-option-tick']
         """
         try:
-            cli = self._ensure_influx_client()
-            query = "SHOW TABLES"
-            result = cli.query(query)
+            # Get InfluxDB configuration
+            influx_url = self.cfg.influx_url or "http://localhost:8181"
+            influx_bucket = self.cfg.influx_bucket
+            influx_token = self.cfg.influx_token
 
-            # Convert result to pandas DataFrame
-            if hasattr(result, "to_pandas"):
-                df = result.to_pandas()
-            else:
-                df = result
+            if not (influx_url and influx_bucket and influx_token):
+                return []
 
-            # Filter only 'iox' schema tables
-            if df is not None and not df.empty:
-                if 'table_schema' in df.columns and 'table_name' in df.columns:
-                    # Filter iox schema and extract table names
-                    iox_tables = df[df['table_schema'] == 'iox']['table_name'].tolist()
-                    return iox_tables
-                elif 'table_name' in df.columns:
-                    # Fallback: return all table names if schema column not present
-                    return df['table_name'].tolist()
+            # Use HTTP API directly for SHOW TABLES (more reliable than client)
+            response = requests.get(
+                f"{influx_url}/api/v3/query_sql",
+                params={"db": influx_bucket, "q": "SHOW TABLES", "format": "json"},
+                headers={"Authorization": f"Bearer {influx_token}"},
+                timeout=10
+            )
 
-            return []
+            if response.status_code != 200:
+                print(f"[DEBUG] _list_influx_tables HTTP error: {response.status_code}")
+                return []
+
+            # Parse JSON response
+            data = response.json()
+
+            # Extract table names from iox schema only
+            iox_tables = []
+            for row in data:
+                if isinstance(row, dict):
+                    table_schema = row.get('table_schema', '')
+                    table_name = row.get('table_name', '')
+
+                    # Filter only iox schema tables
+                    if table_schema == 'iox' and table_name:
+                        iox_tables.append(table_name)
+
+            return iox_tables
 
         except Exception as e:
             print(f"[DEBUG] _list_influx_tables error: {type(e).__name__}: {e}")
