@@ -4666,23 +4666,38 @@ class ThetaSyncManager:
             influx_bucket = self.cfg.influx_bucket
             influx_token = self.cfg.influx_token
 
+            print(f"[DEBUG] _list_influx_tables: url={influx_url}, bucket={influx_bucket}, token={'***' + influx_token[-4:] if influx_token else None}")
+
             if not (influx_url and influx_bucket and influx_token):
+                print(f"[DEBUG] _list_influx_tables: Missing configuration, returning empty list")
                 return []
 
             # Use HTTP API directly for SHOW TABLES (more reliable than client)
+            url = f"{influx_url}/api/v3/query_sql"
+            params = {"db": influx_bucket, "q": "SHOW TABLES", "format": "json"}
+
+            print(f"[DEBUG] _list_influx_tables: Requesting {url} with params={params}")
+
             response = requests.get(
-                f"{influx_url}/api/v3/query_sql",
-                params={"db": influx_bucket, "q": "SHOW TABLES", "format": "json"},
+                url,
+                params=params,
                 headers={"Authorization": f"Bearer {influx_token}"},
                 timeout=10
             )
 
+            print(f"[DEBUG] _list_influx_tables: Response status={response.status_code}")
+
             if response.status_code != 200:
                 print(f"[DEBUG] _list_influx_tables HTTP error: {response.status_code}")
+                print(f"[DEBUG] Response text: {response.text[:200]}")
                 return []
 
             # Parse JSON response
             data = response.json()
+            print(f"[DEBUG] _list_influx_tables: Received {len(data)} rows from InfluxDB")
+
+            if data:
+                print(f"[DEBUG] First row example: {data[0]}")
 
             # Extract table names from iox schema only
             iox_tables = []
@@ -4695,10 +4710,13 @@ class ThetaSyncManager:
                     if table_schema == 'iox' and table_name:
                         iox_tables.append(table_name)
 
+            print(f"[DEBUG] _list_influx_tables: Found {len(iox_tables)} iox tables: {iox_tables[:5]}")
             return iox_tables
 
         except Exception as e:
             print(f"[DEBUG] _list_influx_tables error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def _influx_measurement_from_base(self, base_path: str) -> str:
