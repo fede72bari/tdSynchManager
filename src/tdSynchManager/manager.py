@@ -6686,14 +6686,18 @@ class ThetaSyncManager:
                         })
 
         # Scan InfluxDB sink (if configured and requested)
+        print(f"[DEBUG] list_available_data: sinks_to_scan={sinks_to_scan}")
         if "influxdb" in sinks_to_scan:
+            print(f"[DEBUG] list_available_data: Scanning InfluxDB...")
             try:
                 # Get list of InfluxDB tables using helper method
                 table_names = self._list_influx_tables()
+                print(f"[DEBUG] list_available_data: Got {len(table_names)} table names from InfluxDB")
 
                 if table_names:
                     cli = self._ensure_influx_client()
                     for table_name in table_names:
+                        print(f"[DEBUG] list_available_data: Processing table {table_name}")
                         # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
                         # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
                         name = str(table_name)
@@ -6732,7 +6736,7 @@ class ThetaSyncManager:
                                     if 'last_ts' in ts_df.columns:
                                         last_ts = pd.to_datetime(ts_df['last_ts'].iloc[0], utc=True).isoformat()
 
-                                results.append({
+                                entry = {
                                     "asset": asset_part,
                                     "symbol": symbol_part,
                                     "interval": interval_part,
@@ -6741,15 +6745,25 @@ class ThetaSyncManager:
                                     "last_datetime": last_ts,
                                     "file_count": 0,
                                     "total_size_mb": 0
-                                })
+                                }
+                                results.append(entry)
+                                print(f"[DEBUG] list_available_data: Added InfluxDB entry: {entry}")
                             except Exception as e:
                                 print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
+                else:
+                    print(f"[DEBUG] list_available_data: No tables returned from InfluxDB")
 
             except Exception as e:
-                # InfluxDB not configured or connection error - silently skip
-                pass
+                print(f"[WARNING] Error scanning InfluxDB: {e}")
+                import traceback
+                traceback.print_exc()
+
+        print(f"[DEBUG] list_available_data: Total results collected: {len(results)}")
+        if results:
+            print(f"[DEBUG] list_available_data: Sample result: {results[0]}")
 
         df = pd.DataFrame(results)
+        print(f"[DEBUG] list_available_data: DataFrame shape: {df.shape}")
         if df.empty:
             return pd.DataFrame(columns=[
                 "asset", "symbol", "interval", "sink", "first_datetime",
