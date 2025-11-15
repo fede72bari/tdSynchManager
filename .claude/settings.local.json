@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" -m py_compile \"src/tdSynchManager/manager.py\")"
+      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" -m py_compile \"src/tdSynchManager/manager.py\")",
+      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" test_influx_debug.py)"
     ],
     "deny": [],
     "ask": []
