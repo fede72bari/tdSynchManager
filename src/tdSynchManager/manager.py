@@ -6783,7 +6783,8 @@ class ThetaSyncManager:
         get_first_n_days: Optional[int] = None,
         get_last_n_days: Optional[int] = None,
         get_first_n_minutes: Optional[int] = None,
-        get_last_n_minutes: Optional[int] = None
+        get_last_n_minutes: Optional[int] = None,
+        _allow_full_scan: bool = False
     ) -> Tuple[Optional[pd.DataFrame], List[str]]:
         """Query and extract data from local sinks within a date/time range.
 
@@ -6918,8 +6919,8 @@ class ThetaSyncManager:
             except Exception as e:
                 warnings.append(f"INVALID_START_DATE: {e}")
                 return None, warnings
-        elif not any([get_first_n_rows, get_last_n_rows, get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes]):
-            # Start date is required only if no get_* parameter is specified
+        elif not _allow_full_scan and not any([get_first_n_rows, get_last_n_rows, get_first_n_days, get_last_n_days, get_first_n_minutes, get_last_n_minutes]):
+            # Start date is required only if no get_* parameter is specified (unless full scan is explicitly allowed)
             warnings.append("NO_START: Either start_date, start_datetime, or a get_* parameter is required")
             return None, warnings
 
@@ -6933,8 +6934,9 @@ class ThetaSyncManager:
                 return None, warnings
         elif end_date:
             try:
-                # End of day
-                end_ts = pd.to_datetime(end_date, utc=True) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                # End date means "up to and including this entire day"
+                # So we set it to the start of the NEXT day (exclusive upper bound)
+                end_ts = pd.to_datetime(end_date, utc=True) + pd.Timedelta(days=1)
             except Exception as e:
                 warnings.append(f"INVALID_END_DATE: {e}")
                 return None, warnings
@@ -6958,7 +6960,7 @@ class ThetaSyncManager:
             if start_ts:
                 where_clauses.append(f"time >= TIMESTAMP '{start_ts.isoformat().replace('+00:00', 'Z')}'")
             if end_ts:
-                where_clauses.append(f"time <= TIMESTAMP '{end_ts.isoformat().replace('+00:00', 'Z')}'")
+                where_clauses.append(f"time < TIMESTAMP '{end_ts.isoformat().replace('+00:00', 'Z')}'")
 
             where_str = " AND ".join(where_clauses) if where_clauses else "1=1"
             limit_str = f"LIMIT {max_rows}" if max_rows else ""
@@ -7061,7 +7063,7 @@ class ThetaSyncManager:
                         if start_ts:
                             df_chunk = df_chunk[df_chunk[time_col] >= start_ts.tz_localize(None)]
                         if end_ts:
-                            df_chunk = df_chunk[df_chunk[time_col] <= end_ts.tz_localize(None)]
+                            df_chunk = df_chunk[df_chunk[time_col] < end_ts.tz_localize(None)]
 
                     if not df_chunk.empty:
                         dfs.append(df_chunk)
@@ -7169,7 +7171,9 @@ class ThetaSyncManager:
             if time_col:
                 # Get the ending date
                 if end_ts:
-                    end_date = end_ts.normalize() + pd.Timedelta(days=1)  # Next day at 00:00:00
+                    # end_ts is already set to start of next day (exclusive upper bound)
+                    # when coming from end_date parameter
+                    end_date = end_ts.normalize()
                 else:
                     # From end of data
                     max_ts = df[time_col].max()
@@ -7315,7 +7319,8 @@ class ThetaSyncManager:
             asset=asset,
             symbol=symbol,
             interval=interval,
-            sink=sink
+            sink=sink,
+            _allow_full_scan=True
         )
         warnings.extend(query_warnings)
 
@@ -7436,7 +7441,8 @@ class ThetaSyncManager:
             asset=asset,
             symbol=symbol,
             interval=interval,
-            sink=sink
+            sink=sink,
+            _allow_full_scan=True
         )
         warnings.extend(query_warnings)
 
