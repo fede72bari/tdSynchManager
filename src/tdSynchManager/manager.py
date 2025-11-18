@@ -846,12 +846,13 @@ class ThetaSyncManager:
             # Early skip per idempotenza "per-file"
             ext = "csv" if sink_lower == "csv" else "parquet"
             out_dir = os.path.join(self.cfg.root_dir, "data", "option", symbol, interval, sink_lower)
-            os.makedirs(out_dir, exist_ok=True)
+            if sink_lower != "influxdb":
+                os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, f"{day_iso}T00-00-00Z-{symbol}-option-{interval}.{ext}")
             if os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
                 return
 
-        
+
             # 1) EOD OHLC for ALL expirations in one call
             #    (avoids brittle discovery via /option/list/contracts)
             csv_txt, _ = await self.client.option_history_eod(
