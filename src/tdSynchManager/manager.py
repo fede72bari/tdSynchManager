@@ -7498,6 +7498,306 @@ class ThetaSyncManager:
 
         return result, warnings
 
+    def get_storage_stats(
+        self,
+        asset: Optional[str] = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        sink: Optional[str] = None
+    ) -> pd.DataFrame:
+        """
+        Get storage statistics for local databases.
+
+        Returns a DataFrame with columns:
+        - asset: stock/option
+        - symbol: ticker symbol
+        - interval: tick/5m/1d/etc
+        - sink: csv/parquet/influxdb
+        - num_files: number of files (CSV/Parquet only, N/A for InfluxDB)
+        - size_bytes: total size in bytes
+        - size_mb: total size in MB
+        - size_gb: total size in GB
+        - first_date: earliest data date
+        - last_date: latest data date
+        - days_span: number of days covered
+
+        Parameters:
+        -----------
+        asset : str, optional
+            Filter by asset type (stock/option)
+        symbol : str, optional
+            Filter by symbol
+        interval : str, optional
+            Filter by interval (tick/5m/1d/etc)
+        sink : str, optional
+            Filter by sink (csv/parquet/influxdb)
+
+        Returns:
+        --------
+        pd.DataFrame
+            Storage statistics grouped by (asset, symbol, interval, sink)
+        """
+        import os
+        from pathlib import Path
+
+        results = []
+
+        # Get available data first
+        available = self.list_available_data()
+
+        # Apply filters if provided
+        if asset:
+            available = available[available['asset'] == asset]
+        if symbol:
+            available = available[available['symbol'] == symbol]
+        if interval:
+            available = available[available['interval'] == interval]
+        if sink:
+            available = available[available['sink'] == sink]
+
+        # Group by (asset, symbol, interval, sink) and calculate sizes
+        for (grp_asset, grp_symbol, grp_interval, grp_sink), group in available.groupby(
+            ['asset', 'symbol', 'interval', 'sink']
+        ):
+            total_size = 0
+            num_files = 0
+            first_date = None
+            last_date = None
+
+            if grp_sink in ['csv', 'parquet']:
+                # For file-based sinks, sum up file sizes
+                for _, row in group.iterrows():
+                    file_path = row['file_path']
+                    if os.path.exists(file_path):
+                        try:
+                            total_size += os.path.getsize(file_path)
+                            num_files += 1
+                        except Exception:
+                            pass  # Skip files we can't read
+
+                # Get date range from metadata
+                if not group.empty:
+                    first_date = pd.to_datetime(group['first_datetime']).min()
+                    last_date = pd.to_datetime(group['last_datetime']).max()
+
+            elif grp_sink == 'influxdb':
+                # For InfluxDB v3: try to get real disk size from data directory
+                measurement = f"{grp_symbol}-{grp_asset}-{grp_interval}"
+
+                # Try real disk size first
+                real_size_found = False
+                if self.cfg.influx_data_dir:
+                    try:
+                        data_dir = Path(self.cfg.influx_data_dir)
+                        if data_dir.exists():
+                            bucket = self.cfg.influx_bucket or 'default'
+                            total_size = 0
+                            num_files = 0
+
+                            # Walk through data directory looking for Parquet files
+                            # Structure: {data_dir}/{node_id}/{bucket}/{measurement}/*.parquet
+                            for root, dirs, files in os.walk(data_dir):
+                                # Check if this directory path contains our bucket and measurement
+                                if bucket in root and measurement in root:
+                                    for file in files:
+                                        if file.endswith('.parquet'):
+                                            file_path = os.path.join(root, file)
+                                            try:
+                                                total_size += os.path.getsize(file_path)
+                                                num_files += 1
+                                            except Exception:
+                                                pass  # Skip files we can't read
+
+                            if num_files > 0:
+                                real_size_found = True
+                    except Exception:
+                        pass  # Fall back to estimation
+
+                # Fall back to estimation if real size not available
+                if not real_size_found:
+                    try:
+                        # Get first and last timestamp
+                        query_first = f'''
+                            SELECT * FROM "{measurement}"
+                            ORDER BY time ASC
+                            LIMIT 1
+                        '''
+                        query_last = f'''
+                            SELECT * FROM "{measurement}"
+                            ORDER BY time DESC
+                            LIMIT 1
+                        '''
+
+                        # Execute queries
+                        try:
+                            df_first = self.influx_client.query(query_first)
+                            df_last = self.influx_client.query(query_last)
+
+                            if not df_first.empty:
+                                first_date = df_first['time'].iloc[0]
+                            if not df_last.empty:
+                                last_date = df_last['time'].iloc[0]
+                        except Exception:
+                            pass  # If query fails, dates will be None
+
+                        # Count total points
+                        query_count = f'''
+                            SELECT COUNT(*) FROM "{measurement}"
+                        '''
+
+                        try:
+                            result = self.influx_client.query(query_count)
+                            if not result.empty and 'count' in result.columns:
+                                point_count = result['count'].iloc[0]
+
+                                # Estimate size: assume ~500 bytes per point (conservative estimate)
+                                # This includes timestamp, tags, fields, and overhead
+                                # For options: more fields → ~800 bytes
+                                # For stocks: fewer fields → ~300 bytes
+                                bytes_per_point = 800 if grp_asset == 'option' else 300
+                                total_size = point_count * bytes_per_point
+                                num_files = None  # N/A for InfluxDB when using estimation
+                        except Exception:
+                            total_size = 0  # If count fails
+
+                    except Exception:
+                        total_size = 0
+                        num_files = None
+
+            # Calculate days span
+            days_span = None
+            if first_date is not None and last_date is not None:
+                try:
+                    # Normalize timezones
+                    if hasattr(first_date, 'tz') and first_date.tz is not None:
+                        first_date = first_date.tz_localize(None)
+                    if hasattr(last_date, 'tz') and last_date.tz is not None:
+                        last_date = last_date.tz_localize(None)
+                    days_span = (last_date - first_date).days + 1
+                except Exception:
+                    days_span = None
+
+            # Convert to different units
+            size_mb = total_size / (1024 * 1024) if total_size > 0 else 0
+            size_gb = total_size / (1024 * 1024 * 1024) if total_size > 0 else 0
+
+            results.append({
+                'asset': grp_asset,
+                'symbol': grp_symbol,
+                'interval': grp_interval,
+                'sink': grp_sink,
+                'num_files': num_files if grp_sink in ['csv', 'parquet'] else 'N/A',
+                'size_bytes': total_size,
+                'size_mb': round(size_mb, 2),
+                'size_gb': round(size_gb, 3),
+                'first_date': first_date,
+                'last_date': last_date,
+                'days_span': days_span
+            })
+
+        # Create DataFrame
+        df = pd.DataFrame(results)
+
+        # Sort by size descending
+        if not df.empty:
+            df = df.sort_values('size_bytes', ascending=False).reset_index(drop=True)
+
+        return df
+
+    def get_storage_summary(self) -> dict:
+        """
+        Get aggregated storage summary statistics.
+
+        Returns a dictionary with:
+        - total: Total storage across all databases
+        - by_sink: Storage grouped by sink (csv/parquet/influxdb)
+        - by_asset: Storage grouped by asset (stock/option)
+        - by_interval: Storage grouped by interval (tick/5m/1d/etc)
+        - top_symbols: Top 10 symbols by storage size
+
+        Returns:
+        --------
+        dict
+            Nested dictionary with summary statistics
+        """
+        # Get detailed stats
+        stats = self.get_storage_stats()
+
+        if stats.empty:
+            return {
+                'total': {'size_bytes': 0, 'size_mb': 0, 'size_gb': 0, 'series_count': 0},
+                'by_sink': {},
+                'by_asset': {},
+                'by_interval': {},
+                'top_symbols': []
+            }
+
+        # Total storage
+        total_bytes = stats['size_bytes'].sum()
+        total_mb = round(total_bytes / (1024 * 1024), 2)
+        total_gb = round(total_bytes / (1024 * 1024 * 1024), 3)
+
+        # By sink
+        by_sink = {}
+        for sink, group in stats.groupby('sink'):
+            sink_bytes = group['size_bytes'].sum()
+            by_sink[sink] = {
+                'size_bytes': sink_bytes,
+                'size_mb': round(sink_bytes / (1024 * 1024), 2),
+                'size_gb': round(sink_bytes / (1024 * 1024 * 1024), 3),
+                'series_count': len(group),
+                'percentage': round(100 * sink_bytes / total_bytes, 1) if total_bytes > 0 else 0
+            }
+
+        # By asset
+        by_asset = {}
+        for asset, group in stats.groupby('asset'):
+            asset_bytes = group['size_bytes'].sum()
+            by_asset[asset] = {
+                'size_bytes': asset_bytes,
+                'size_mb': round(asset_bytes / (1024 * 1024), 2),
+                'size_gb': round(asset_bytes / (1024 * 1024 * 1024), 3),
+                'series_count': len(group),
+                'percentage': round(100 * asset_bytes / total_bytes, 1) if total_bytes > 0 else 0
+            }
+
+        # By interval
+        by_interval = {}
+        for interval, group in stats.groupby('interval'):
+            interval_bytes = group['size_bytes'].sum()
+            by_interval[interval] = {
+                'size_bytes': interval_bytes,
+                'size_mb': round(interval_bytes / (1024 * 1024), 2),
+                'size_gb': round(interval_bytes / (1024 * 1024 * 1024), 3),
+                'series_count': len(group),
+                'percentage': round(100 * interval_bytes / total_bytes, 1) if total_bytes > 0 else 0
+            }
+
+        # Top symbols by storage
+        symbol_totals = stats.groupby('symbol')['size_bytes'].sum().sort_values(ascending=False)
+        top_symbols = []
+        for symbol, size_bytes in symbol_totals.head(10).items():
+            top_symbols.append({
+                'symbol': symbol,
+                'size_bytes': size_bytes,
+                'size_mb': round(size_bytes / (1024 * 1024), 2),
+                'size_gb': round(size_bytes / (1024 * 1024 * 1024), 3),
+                'percentage': round(100 * size_bytes / total_bytes, 1) if total_bytes > 0 else 0
+            })
+
+        return {
+            'total': {
+                'size_bytes': total_bytes,
+                'size_mb': total_mb,
+                'size_gb': total_gb,
+                'series_count': len(stats)
+            },
+            'by_sink': by_sink,
+            'by_asset': by_asset,
+            'by_interval': by_interval,
+            'top_symbols': top_symbols
+        }
+
     # =========================================================================
     # (END)
     # LOCAL DB QUERY

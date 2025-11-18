@@ -51,6 +51,7 @@ class ManagerConfig:
     influx_precision: str = "ns"              # "ns","us","ms","s"
     influx_measure_prefix: str = ""           # optional, e.g., "td_"
     influx_write_batch: int = 5000            # batch size for writes
+    influx_data_dir: Optional[str] = None     # v3 Core: data directory (for real disk size calculation)
 
 
 @dataclass
