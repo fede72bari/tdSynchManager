@@ -7146,26 +7146,40 @@ class ThetaSyncManager:
 
         # STEP 1: Apply chronological filtering FIRST
         if get_first_n_days:
-            # Get first N days from start (oldest data)
+            # Get first N calendar days from start (oldest data)
+            # NOTE: Uses calendar days, not 24-hour periods
             if time_col:
+                # Get the starting date
                 if start_ts:
-                    cutoff = start_ts + pd.Timedelta(days=get_first_n_days)
+                    start_date = start_ts.normalize()
                 else:
                     # From beginning of data
                     min_ts = df[time_col].min()
-                    cutoff = min_ts + pd.Timedelta(days=get_first_n_days)
-                df = df[df[time_col] <= cutoff]
+                    start_date = min_ts.normalize()
+
+                # Calculate end of the Nth calendar day
+                end_of_nth_day = start_date + pd.Timedelta(days=get_first_n_days)
+
+                # Filter: from start_date (00:00:00) to end_of_nth_day (00:00:00 exclusive)
+                df = df[(df[time_col] >= start_date) & (df[time_col] < end_of_nth_day)]
 
         elif get_last_n_days:
-            # Get last N days before end (most recent data)
+            # Get last N calendar days before end (most recent data)
+            # NOTE: Uses calendar days, not 24-hour periods
             if time_col:
+                # Get the ending date
                 if end_ts:
-                    cutoff = end_ts - pd.Timedelta(days=get_last_n_days)
+                    end_date = end_ts.normalize() + pd.Timedelta(days=1)  # Next day at 00:00:00
                 else:
                     # From end of data
                     max_ts = df[time_col].max()
-                    cutoff = max_ts - pd.Timedelta(days=get_last_n_days)
-                df = df[df[time_col] >= cutoff]
+                    end_date = max_ts.normalize() + pd.Timedelta(days=1)  # Next day at 00:00:00
+
+                # Calculate start of the (N days back) calendar day
+                start_of_nth_day = end_date - pd.Timedelta(days=get_last_n_days)
+
+                # Filter: from start_of_nth_day (00:00:00 inclusive) to end_date (00:00:00 exclusive)
+                df = df[(df[time_col] >= start_of_nth_day) & (df[time_col] < end_date)]
 
         elif get_first_n_minutes:
             # Get first N minutes from start (oldest data)
@@ -7226,6 +7240,257 @@ class ThetaSyncManager:
                 df = df.sort_values(time_col, ascending=False).reset_index(drop=True)
 
         return df if not df.empty else None
+
+    def available_expiration_chains(
+        self,
+        symbol: str,
+        interval: str,
+        sink: str = "csv",
+        existing_chain: bool = True,
+        active_from_date: Optional[str] = None,
+        active_to_date: Optional[str] = None
+    ) -> Tuple[Optional[pd.DataFrame], List[str]]:
+        """Get available option expiration chains for a given symbol, interval, and sink.
+
+        This function queries local data storage (CSV, Parquet, or InfluxDB) to discover which
+        expiration dates are available in the historical data. Useful for options analysis to
+        understand which expiration chains exist in the dataset.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker symbol (e.g., 'SPY', 'AAPL').
+        interval : str
+            The time interval (e.g., 'tick', '5m', '1d').
+        sink : str, optional
+            The data sink to query ('csv', 'parquet', or 'influxdb'). Defaults to 'csv'.
+        existing_chain : bool, optional
+            If True (default), returns only expiration dates >= today (active/existing chains).
+            If False, returns all historical expiration dates.
+        active_from_date : str, optional
+            Filter expiration dates >= this date (format: 'YYYY-MM-DD').
+            If None, no lower bound filtering is applied.
+        active_to_date : str, optional
+            Filter expiration dates <= this date (format: 'YYYY-MM-DD').
+            If None, no upper bound filtering is applied.
+
+        Returns
+        -------
+        Tuple[Optional[pd.DataFrame], List[str]]
+            - DataFrame with columns: ['expiration', 'count'] where count is the number of records for each expiration
+            - List of warning messages
+
+        Example Usage
+        -------------
+        # Get all active (future) expiration chains for SPY 5m options
+        df, warnings = manager.available_expiration_chains(
+            symbol='SPY',
+            interval='5m',
+            sink='csv',
+            existing_chain=True
+        )
+
+        # Get expiration chains active in a specific date range
+        df, warnings = manager.available_expiration_chains(
+            symbol='TLRY',
+            interval='tick',
+            sink='influxdb',
+            existing_chain=False,
+            active_from_date='2025-09-01',
+            active_to_date='2025-10-31'
+        )
+        """
+        warnings = []
+        asset = 'option'  # This function is only for options
+
+        # Validate inputs
+        self._validate_sink(sink)
+        self._validate_interval(interval)
+
+        sink_lower = sink.lower()
+        today = pd.Timestamp.now().normalize()
+
+        # Query all data (no filtering by dates initially)
+        df, query_warnings = self.query_local_data(
+            asset=asset,
+            symbol=symbol,
+            interval=interval,
+            sink=sink
+        )
+        warnings.extend(query_warnings)
+
+        if df is None or df.empty:
+            warnings.append("NO_DATA: No data found for the specified symbol, interval, and sink")
+            return None, warnings
+
+        # Check if expiration column exists
+        if 'expiration' not in df.columns:
+            warnings.append("NO_EXPIRATION_COLUMN: Data does not contain 'expiration' column (not options data?)")
+            return None, warnings
+
+        # Convert expiration to datetime
+        df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce')
+
+        # Remove rows with invalid expiration dates
+        valid_exp = df['expiration'].notna()
+        if not valid_exp.all():
+            invalid_count = (~valid_exp).sum()
+            warnings.append(f"INVALID_EXPIRATIONS: Removed {invalid_count} rows with invalid expiration dates")
+            df = df[valid_exp]
+
+        if df.empty:
+            warnings.append("NO_VALID_EXPIRATIONS: No valid expiration dates found")
+            return None, warnings
+
+        # Apply filtering based on existing_chain and active_from_date/active_to_date
+        if existing_chain:
+            df = df[df['expiration'] >= today]
+            if df.empty:
+                warnings.append("NO_ACTIVE_CHAINS: No expiration chains exist from today onwards")
+                return None, warnings
+
+        if active_from_date:
+            try:
+                from_dt = pd.to_datetime(active_from_date).normalize()
+                df = df[df['expiration'] >= from_dt]
+            except Exception as e:
+                warnings.append(f"INVALID_FROM_DATE: Could not parse active_from_date '{active_from_date}': {e}")
+                return None, warnings
+
+        if active_to_date:
+            try:
+                to_dt = pd.to_datetime(active_to_date).normalize()
+                df = df[df['expiration'] <= to_dt]
+            except Exception as e:
+                warnings.append(f"INVALID_TO_DATE: Could not parse active_to_date '{active_to_date}': {e}")
+                return None, warnings
+
+        if df.empty:
+            warnings.append("NO_DATA_IN_RANGE: No expiration chains found in the specified date range")
+            return None, warnings
+
+        # Group by expiration and count
+        result = df.groupby('expiration').size().reset_index(name='count')
+        result = result.sort_values('expiration')
+
+        return result, warnings
+
+    def available_strikes_by_expiration(
+        self,
+        symbol: str,
+        interval: str,
+        sink: str = "csv",
+        expirations: Optional[List[str]] = None
+    ) -> Tuple[Optional[Dict[str, List[float]]], List[str]]:
+        """Get available strike prices for each expiration chain.
+
+        This function queries local data storage (CSV, Parquet, or InfluxDB) to discover which
+        strike prices are available for each expiration date. Returns a mapping of expiration → strikes.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker symbol (e.g., 'SPY', 'AAPL').
+        interval : str
+            The time interval (e.g., 'tick', '5m', '1d').
+        sink : str, optional
+            The data sink to query ('csv', 'parquet', or 'influxdb'). Defaults to 'csv'.
+        expirations : List[str], optional
+            List of specific expiration dates to query (format: 'YYYY-MM-DD').
+            If None, returns strikes for all available expirations.
+
+        Returns
+        -------
+        Tuple[Optional[Dict[str, List[float]]], List[str]]
+            - Dictionary mapping expiration dates (str) to sorted lists of strike prices (float)
+            - List of warning messages
+
+        Example Usage
+        -------------
+        # Get all strikes for all expirations
+        strikes_map, warnings = manager.available_strikes_by_expiration(
+            symbol='SPY',
+            interval='5m',
+            sink='csv'
+        )
+
+        # Get strikes for specific expirations
+        strikes_map, warnings = manager.available_strikes_by_expiration(
+            symbol='TLRY',
+            interval='tick',
+            sink='influxdb',
+            expirations=['2025-11-21', '2025-12-19']
+        )
+
+        # Result format: {'2025-11-21': [1.0, 1.5, 2.0, ...], '2025-12-19': [1.5, 2.0, 2.5, ...]}
+        """
+        warnings = []
+        asset = 'option'  # This function is only for options
+
+        # Validate inputs
+        self._validate_sink(sink)
+        self._validate_interval(interval)
+
+        # Query all data
+        df, query_warnings = self.query_local_data(
+            asset=asset,
+            symbol=symbol,
+            interval=interval,
+            sink=sink
+        )
+        warnings.extend(query_warnings)
+
+        if df is None or df.empty:
+            warnings.append("NO_DATA: No data found for the specified symbol, interval, and sink")
+            return None, warnings
+
+        # Check if required columns exist
+        if 'expiration' not in df.columns:
+            warnings.append("NO_EXPIRATION_COLUMN: Data does not contain 'expiration' column (not options data?)")
+            return None, warnings
+
+        if 'strike' not in df.columns:
+            warnings.append("NO_STRIKE_COLUMN: Data does not contain 'strike' column (not options data?)")
+            return None, warnings
+
+        # Convert expiration to datetime and strike to float
+        df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce')
+        df['strike'] = pd.to_numeric(df['strike'], errors='coerce')
+
+        # Remove rows with invalid data
+        valid_data = df['expiration'].notna() & df['strike'].notna()
+        if not valid_data.all():
+            invalid_count = (~valid_data).sum()
+            warnings.append(f"INVALID_DATA: Removed {invalid_count} rows with invalid expiration or strike values")
+            df = df[valid_data]
+
+        if df.empty:
+            warnings.append("NO_VALID_DATA: No valid expiration/strike data found")
+            return None, warnings
+
+        # Filter by specific expirations if provided
+        if expirations:
+            try:
+                exp_dates = [pd.to_datetime(exp).normalize() for exp in expirations]
+                df = df[df['expiration'].isin(exp_dates)]
+                if df.empty:
+                    warnings.append(f"NO_MATCHING_EXPIRATIONS: No data found for specified expirations: {expirations}")
+                    return None, warnings
+            except Exception as e:
+                warnings.append(f"INVALID_EXPIRATIONS: Could not parse expiration dates '{expirations}': {e}")
+                return None, warnings
+
+        # Group by expiration and get unique strikes
+        result = {}
+        for expiration, group in df.groupby('expiration'):
+            exp_str = expiration.strftime('%Y-%m-%d')
+            strikes = sorted(group['strike'].unique().tolist())
+            result[exp_str] = strikes
+
+        # Sort by expiration date
+        result = dict(sorted(result.items()))
+
+        return result, warnings
 
     # =========================================================================
     # (END)
