@@ -4627,16 +4627,53 @@ class ThetaSyncManager:
             raise RuntimeError(
                 "influxdb3-python è richiesto per sink='influxdb' (pip install influxdb3-python pyarrow)"
             )
-    
+
         host = self.cfg.influx_url or "http://localhost:8181"   # mappa url→host (v3)
         database = self.cfg.influx_bucket                       # mappa bucket→database (v3)
         token = self.cfg.influx_token
         if not (host and database and token):
             raise RuntimeError("Config v3 incompleta (influx_url/host, influx_bucket=database, influx_token).")
-    
+
         self._influx = InfluxDBClient3(host=host, token=token, database=database)
         self.influx_client = self._influx  # Assegna anche a influx_client per check_duplicates
         return self._influx
+
+    def _influx_query_dataframe(self, query: str) -> pd.DataFrame:
+        """Execute a FlightSQL query and always return a pandas DataFrame."""
+        try:
+            cli = self._ensure_influx_client()
+            result = cli.query(query)
+            if isinstance(result, pd.DataFrame):
+                return result
+            if hasattr(result, "to_pandas"):
+                return result.to_pandas()
+            if hasattr(result, "to_pylist"):
+                return pd.DataFrame(result.to_pylist())
+            if isinstance(result, list):
+                return pd.DataFrame(result)
+            if result is None:
+                return pd.DataFrame()
+            return pd.DataFrame(result)
+        except Exception:
+            return pd.DataFrame()
+
+    @staticmethod
+    def _extract_scalar_from_df(df: pd.DataFrame, preferred_names: Iterable[str]) -> Any:
+        """Extract the first available scalar value matching preferred column names."""
+        if df is None or df.empty:
+            return None
+        # Normalize lookup dict once
+        lower_map = {col.lower(): col for col in df.columns}
+        for name in preferred_names:
+            col = lower_map.get(name.lower())
+            if col and not df[col].empty:
+                return df[col].iloc[0]
+        # Fallback: first non-empty column
+        for col in df.columns:
+            series = df[col]
+            if not series.empty:
+                return series.iloc[0]
+        return None
 
     def _list_influx_tables(self) -> List[str]:
         """
@@ -6675,7 +6712,6 @@ class ThetaSyncManager:
                 table_names = self._list_influx_tables()
 
                 if table_names:
-                    cli = self._ensure_influx_client()
                     for table_name in table_names:
                         # Parse measurement name: {prefix}{SYMBOL}-{asset}-{interval}
                         # Example: "TLRY-option-tick" or with prefix: "td_TLRY-option-tick"
@@ -6703,17 +6739,18 @@ class ThetaSyncManager:
                             # Get min/max timestamps
                             ts_query = f'SELECT MIN(time) as first_ts, MAX(time) as last_ts FROM "{table_name}"'
                             try:
-                                ts_result = cli.query(ts_query)
-                                ts_df = ts_result.to_pandas() if hasattr(ts_result, "to_pandas") else ts_result
+                                ts_df = self._influx_query_dataframe(ts_query)
 
                                 first_ts = None
                                 last_ts = None
 
-                                if ts_df is not None and not ts_df.empty:
-                                    if 'first_ts' in ts_df.columns:
-                                        first_ts = pd.to_datetime(ts_df['first_ts'].iloc[0], utc=True).isoformat()
-                                    if 'last_ts' in ts_df.columns:
-                                        last_ts = pd.to_datetime(ts_df['last_ts'].iloc[0], utc=True).isoformat()
+                                if not ts_df.empty:
+                                    first_val = self._extract_scalar_from_df(ts_df, ["first_ts", "min"])
+                                    last_val = self._extract_scalar_from_df(ts_df, ["last_ts", "max"])
+                                    if first_val is not None:
+                                        first_ts = pd.to_datetime(first_val, utc=True).isoformat()
+                                    if last_val is not None:
+                                        last_ts = pd.to_datetime(last_val, utc=True).isoformat()
 
                                 entry = {
                                     "asset": asset_part,
@@ -7543,7 +7580,12 @@ class ThetaSyncManager:
         results = []
 
         # Get available data first
-        available = self.list_available_data()
+        available = self.list_available_data(
+            asset=asset,
+            symbol=symbol,
+            interval=interval,
+            sink=sink,
+        )
 
         # Apply filters if provided
         if asset:
@@ -7622,48 +7664,39 @@ class ThetaSyncManager:
                     try:
                         # Get first and last timestamp
                         query_first = f'''
-                            SELECT * FROM "{measurement}"
-                            ORDER BY time ASC
-                            LIMIT 1
+                            SELECT MIN(time) AS first_ts FROM "{measurement}"
                         '''
                         query_last = f'''
-                            SELECT * FROM "{measurement}"
-                            ORDER BY time DESC
-                            LIMIT 1
+                            SELECT MAX(time) AS last_ts FROM "{measurement}"
                         '''
 
-                        # Execute queries
-                        try:
-                            df_first = self.influx_client.query(query_first)
-                            df_last = self.influx_client.query(query_last)
+                        df_first = self._influx_query_dataframe(query_first)
+                        df_last = self._influx_query_dataframe(query_last)
 
-                            if not df_first.empty:
-                                first_date = df_first['time'].iloc[0]
-                            if not df_last.empty:
-                                last_date = df_last['time'].iloc[0]
-                        except Exception:
-                            pass  # If query fails, dates will be None
+                        first_val = self._extract_scalar_from_df(df_first, ["first_ts", "min"])
+                        last_val = self._extract_scalar_from_df(df_last, ["last_ts", "max"])
+
+                        if first_val is not None:
+                            first_date = pd.to_datetime(first_val, utc=True)
+                        if last_val is not None:
+                            last_date = pd.to_datetime(last_val, utc=True)
 
                         # Count total points
                         query_count = f'''
-                            SELECT COUNT(*) FROM "{measurement}"
+                            SELECT COUNT(*) AS point_count FROM "{measurement}"
                         '''
+                        count_df = self._influx_query_dataframe(query_count)
+                        point_val = self._extract_scalar_from_df(count_df, ["point_count", "count"])
+                        if point_val is not None:
+                            point_count = int(point_val)
 
-                        try:
-                            result = self.influx_client.query(query_count)
-                            if not result.empty and 'count' in result.columns:
-                                point_count = result['count'].iloc[0]
-
-                                # Estimate size: assume ~500 bytes per point (conservative estimate)
-                                # This includes timestamp, tags, fields, and overhead
-                                # For options: more fields → ~800 bytes
-                                # For stocks: fewer fields → ~300 bytes
-                                bytes_per_point = 800 if grp_asset == 'option' else 300
-                                total_size = point_count * bytes_per_point
-                                num_files = None  # N/A for InfluxDB when using estimation
-                        except Exception:
-                            total_size = 0  # If count fails
-
+                            # Estimate size: assume ~500 bytes per point (conservative estimate)
+                            # This includes timestamp, tags, fields, and overhead
+                            # For options: more fields → ~800 bytes
+                            # For stocks: fewer fields → ~300 bytes
+                            bytes_per_point = 800 if grp_asset == 'option' else 300
+                            total_size = point_count * bytes_per_point
+                            num_files = None  # N/A for InfluxDB when using estimation
                     except Exception:
                         total_size = 0
                         num_files = None
