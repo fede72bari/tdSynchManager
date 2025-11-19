@@ -4765,6 +4765,64 @@ class ThetaSyncManager:
 
         return first_ts, last_ts
 
+    def _iter_influx_parquet_files(self, measurement: str) -> Iterable[Path]:
+        """Yield real Parquet files for a measurement following the InfluxDB v3 folder layout."""
+        base_dir = self.cfg.influx_data_dir
+        if not base_dir:
+            return
+        base = Path(base_dir)
+        if not base.exists():
+            return
+
+        # Influx layout:
+        # {root}/{node}/dbs/{database-id}/{measurement-id}/{YYYY-MM-DD}/{HH-MM}/*.parquet
+        def candidate_roots(path: Path) -> List[Path]:
+            roots = []
+            if (path / "dbs").is_dir():
+                roots.append(path)
+            else:
+                for child in path.iterdir():
+                    if (child / "dbs").is_dir():
+                        roots.append(child)
+            return roots
+
+        bucket_lower = (self.cfg.influx_bucket or "").lower()
+
+        for node_root in candidate_roots(base):
+            dbs_dir = node_root / "dbs"
+            if not dbs_dir.is_dir():
+                continue
+            for db_dir in dbs_dir.iterdir():
+                if not db_dir.is_dir():
+                    continue
+                if bucket_lower and not db_dir.name.lower().startswith(bucket_lower):
+                    continue
+
+                # Locate measurement directory by exact or prefix match (measurement may have shard suffix)
+                measurement_dirs: List[Path] = []
+                direct = db_dir / measurement
+                if direct.is_dir():
+                    measurement_dirs.append(direct)
+                else:
+                    target_lower = measurement.lower()
+                    for child in db_dir.iterdir():
+                        if child.is_dir():
+                            name_lower = child.name.lower()
+                            if name_lower == target_lower or name_lower.startswith(target_lower + "-"):
+                                measurement_dirs.append(child)
+                if not measurement_dirs:
+                    continue
+
+                for meas_dir in measurement_dirs:
+                    for day_dir in meas_dir.iterdir():
+                        if not day_dir.is_dir():
+                            continue
+                        for hour_dir in day_dir.iterdir():
+                            if not hour_dir.is_dir():
+                                continue
+                            for file_path in hour_dir.glob("*.parquet"):
+                                yield file_path
+
     def _list_influx_tables(self) -> List[str]:
         """
         Retrieve list of measurement tables from InfluxDB v3.
@@ -7726,28 +7784,16 @@ class ThetaSyncManager:
                 real_size_found = False
                 if self.cfg.influx_data_dir:
                     try:
-                        data_dir = Path(self.cfg.influx_data_dir)
-                        if data_dir.exists():
-                            bucket = self.cfg.influx_bucket or 'default'
-                            total_size = 0
-                            num_files = 0
-
-                            # Walk through data directory looking for Parquet files
-                            # Structure: {data_dir}/{node_id}/{bucket}/{measurement}/*.parquet
-                            for root, dirs, files in os.walk(data_dir):
-                                # Check if this directory path contains our bucket and measurement
-                                if bucket in root and measurement in root:
-                                    for file in files:
-                                        if file.endswith('.parquet'):
-                                            file_path = os.path.join(root, file)
-                                            try:
-                                                total_size += os.path.getsize(file_path)
-                                                num_files += 1
-                                            except Exception:
-                                                pass  # Skip files we can't read
-
-                            if num_files > 0:
-                                real_size_found = True
+                        total_size = 0
+                        num_files = 0
+                        for file_path in self._iter_influx_parquet_files(measurement):
+                            try:
+                                total_size += os.path.getsize(file_path)
+                                num_files += 1
+                            except Exception:
+                                continue
+                        if num_files > 0:
+                            real_size_found = True
                     except Exception:
                         pass  # Fall back to estimation
 
