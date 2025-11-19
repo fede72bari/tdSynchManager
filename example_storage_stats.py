@@ -1,95 +1,130 @@
 #!/usr/bin/env python3
 """
-Example: Get storage statistics for local databases
+Example: Get storage statistics for local ThetaSync databases.
 
-For real InfluxDB disk size (not estimation), configure influx_data_dir:
-  - Set environment variable: TDSYNCH_INFLUX_DATA_DIR=/path/to/influxdb/data
-  - Or pass as parameter: config_from_env(influx_data_dir="/path/to/data")
-
-The data directory is where InfluxDB v3 stores Parquet files.
-Find it in your InfluxDB config or startup command (--data-dir option).
+This script demonstrates how to configure the manager from environment variables,
+instantiate it, and print detailed plus aggregated storage statistics. Adjust the
+paths in the "Local environment defaults" block or set/export the variables before
+running the script.
 """
 
+import os
 import sys
+
 sys.path.insert(0, 'src')
 
+try:  # Notebook-friendly display
+    from IPython.display import display as _ipython_display
+except Exception:  # pragma: no cover
+    _ipython_display = None
+
+from tdSynchManager.client import ThetaDataV3Client
 from tdSynchManager.config import config_from_env
 from tdSynchManager.manager import ThetaSyncManager
 
-# Create manager
-# For real InfluxDB disk size (not estimation), set TDSYNCH_INFLUX_DATA_DIR
-# or pass influx_data_dir parameter
+# ---------------------------------------------------------------------------
+# Local environment defaults (edit as needed for your workstation). These
+# are only applied when the corresponding environment variables are unset.
+# ---------------------------------------------------------------------------
+DEFAULT_ROOT_DIR = os.environ.get("TDSYNCH_ROOT_DIR") or r"C:\Users\Federico\Downloads"
+DEFAULT_INFLUX_DIR = os.environ.get("TDSYNCH_INFLUX_DATA_DIR") or r"C:\Users\Federico\Downloads\data\influxdb3"
+DEFAULT_CLIENT_BASE_URL = os.environ.get("THETADATA_BASE_URL") or "http://localhost:25503/v3"
+
+os.environ.setdefault("TDSYNCH_ROOT_DIR", DEFAULT_ROOT_DIR)
+if DEFAULT_INFLUX_DIR:
+    os.environ.setdefault("TDSYNCH_INFLUX_DATA_DIR", DEFAULT_INFLUX_DIR)
+
+# Optional InfluxDB API overrides (uncomment + edit if you want API queries)
+# os.environ.setdefault("TDSYNCH_INFLUX_URL", "http://localhost:8181")
+# os.environ.setdefault("TDSYNCH_INFLUX_BUCKET", "default")
+# os.environ.setdefault("TDSYNCH_INFLUX_TOKEN", "replace-with-your-token")
+
+# Create configuration and manager
 cfg = config_from_env()
-manager = ThetaSyncManager(cfg)
+theta_client = ThetaDataV3Client(base_url=DEFAULT_CLIENT_BASE_URL)
+manager = ThetaSyncManager(cfg, client=theta_client)
+
+
+def _show_df(df):
+    """Display a DataFrame using IPython.display when available."""
+    if _ipython_display:
+        _ipython_display(df)
+    else:
+        print(df.to_string())
+
+
+def _print_view(title: str, df, columns=None) -> None:
+    """Pretty-print a filtered DataFrame, handling empty frames and missing columns."""
+    print(f"\n{title}")
+    if df.empty:
+        print("   (no data)")
+        return
+    view = df
+    if columns:
+        cols = [col for col in columns if col in df.columns]
+        if cols:
+            view = df[cols]
+    _show_df(view)
+
 
 print("=" * 80)
 print("STORAGE STATISTICS - DETAILED VIEW")
 print("=" * 80)
 
-# Get detailed statistics
 stats = manager.get_storage_stats()
-
-def _print_view(title: str, df, columns=None):
-    """Print filtered view safely even if DataFrame is empty or missing columns."""
-    print(f"\n{title}")
-    if df.empty:
-        print("   (no data)")
-        return
-    if columns:
-        cols = [c for c in columns if c in df.columns]
-        if cols:
-            print(df[cols].to_string())
-            return
-    print(df.to_string())
-
 print(f"\nFound {len(stats)} data series")
 print("\nDetailed statistics (sorted by size):")
 _print_view("All series:", stats)
 
-# Filter examples
 print("\n" + "=" * 80)
 print("FILTERED VIEWS")
 print("=" * 80)
 
-_print_view("1. Options only:", manager.get_storage_stats(asset='option'),
-            ['symbol', 'interval', 'sink', 'size_mb', 'days_span'])
-_print_view("2. InfluxDB only:", manager.get_storage_stats(sink='influxdb'),
-            ['symbol', 'asset', 'interval', 'size_mb'])
-_print_view("3. TLRY only:", manager.get_storage_stats(symbol='TLRY'),
-            ['interval', 'sink', 'size_mb', 'days_span'])
-_print_view("4. Tick data only:", manager.get_storage_stats(interval='tick'),
-            ['symbol', 'asset', 'sink', 'size_mb'])
+_print_view(
+    "1. Options only:",
+    manager.get_storage_stats(asset='option'),
+    ['symbol', 'interval', 'sink', 'size_mb', 'days_span'],
+)
+_print_view(
+    "2. InfluxDB only:",
+    manager.get_storage_stats(sink='influxdb'),
+    ['symbol', 'asset', 'interval', 'size_mb'],
+)
+_print_view(
+    "3. TLRY only:",
+    manager.get_storage_stats(symbol='TLRY'),
+    ['interval', 'sink', 'size_mb', 'days_span'],
+)
+_print_view(
+    "4. Tick data only:",
+    manager.get_storage_stats(interval='tick'),
+    ['symbol', 'asset', 'sink', 'size_mb'],
+)
 
 print("\n" + "=" * 80)
 print("STORAGE SUMMARY - AGGREGATED VIEW")
 print("=" * 80)
 
-# Get aggregated summary
 summary = manager.get_storage_summary()
 
-# Total storage
-print("\n📊 TOTAL STORAGE:")
+print("\nTOTAL STORAGE:")
 total = summary['total']
 print(f"   Size: {total['size_gb']:.3f} GB ({total['size_mb']:.2f} MB)")
 print(f"   Series: {total['series_count']}")
 
-# By sink
-print("\n💾 BY SINK:")
+print("\nBY SINK:")
 for sink, data in summary['by_sink'].items():
     print(f"   {sink:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  [{data['series_count']} series]")
 
-# By asset
-print("\n📈 BY ASSET:")
+print("\nBY ASSET:")
 for asset, data in summary['by_asset'].items():
     print(f"   {asset:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  [{data['series_count']} series]")
 
-# By interval
-print("\n⏱️  BY INTERVAL:")
+print("\nBY INTERVAL:")
 for interval, data in summary['by_interval'].items():
     print(f"   {interval:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  [{data['series_count']} series]")
 
-# Top symbols
-print("\n🏆 TOP 10 SYMBOLS BY SIZE:")
+print("\nTOP 10 SYMBOLS BY SIZE:")
 for i, symbol_data in enumerate(summary['top_symbols'], 1):
     symbol = symbol_data['symbol']
     size_gb = symbol_data['size_gb']
