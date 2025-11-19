@@ -57,6 +57,7 @@ manager = ThetaSyncManager(cfg, client=None)  # Client not needed for local stat
 
 # Toggle Influx scan (set False to focus on CSV/Parquet only).
 SCAN_INFLUX = True
+DEBUG_INFLUX_SIZE = True  # Print per-folder size breakdown for Influx sinks
 # Optional symbol filters for Influx; set to [] or None to scan all measurements.
 INFLUX_SYMBOL_FILTERS: Optional[Iterable[str]] = ["TLRY"]
 
@@ -98,7 +99,23 @@ def _collect_stats() -> pd.DataFrame:
         for sym in symbol_filters:
             label = sym or "tutti i simboli"
             print(f"[INFO] Scansione InfluxDB ({label})... potrebbe richiedere tempo.")
-            frames.append(manager.get_storage_stats(sink="influxdb", symbol=sym))
+            stats_df = manager.get_storage_stats(sink="influxdb", symbol=sym)
+            if DEBUG_INFLUX_SIZE and not stats_df.empty:
+                for _, row in stats_df.iterrows():
+                    symbol = row["symbol"]
+                    asset = row["asset"]
+                    interval = row["interval"]
+                    measurement = f"{symbol}-{asset}-{interval}"
+                    print(f"[DEBUG] Misura {measurement}")
+                    total_size = 0
+                    file_count = 0
+                    for file_path in manager._iter_influx_parquet_files(measurement):
+                        file_size = os.path.getsize(file_path)
+                        total_size += file_size
+                        file_count += 1
+                        print(f"    {file_path}: {file_size} bytes")
+                    print(f"    -> totale {file_count} file, {total_size} bytes\n")
+            frames.append(stats_df)
     else:
         print("[INFO] Scansione InfluxDB disattivata (imposta SCAN_INFLUX=True per abilitarla).")
 
