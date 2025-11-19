@@ -4676,6 +4676,96 @@ class ThetaSyncManager:
                 return series.iloc[0]
         return None
 
+    @staticmethod
+    def _coerce_timestamp(value: Any) -> Optional[pd.Timestamp]:
+        """Convert various scalar types (pyarrow, numpy, str) to pandas Timestamp UTC."""
+        if value is None:
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.tz_convert("UTC") if value.tz is not None else value.tz_localize("UTC")
+        try:
+            ts = pd.to_datetime(value, utc=True, errors="coerce")
+            if pd.isna(ts):
+                return None
+            return ts
+        except Exception:
+            try:
+                return pd.Timestamp(str(value), tz="UTC")
+            except Exception:
+                return None
+
+    def _pick_timestamp_from_dataframe(self, df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+        """Heuristic to extract a timestamp column from a dataframe row."""
+        if df is None or df.empty:
+            return None
+        candidate_cols = (
+            "time",
+            "timestamp",
+            "datetime",
+            "date",
+            "QUOTE_DATETIME",
+            "TRADE_DATETIME",
+            "QUOTE_UNIXTIME",
+            "TRADE_UNIXTIME",
+        )
+        for col in candidate_cols:
+            if col in df.columns:
+                try:
+                    val = df[col].iloc[0]
+                    ts = self._coerce_timestamp(val)
+                    if ts is not None:
+                        return ts
+                except Exception:
+                    continue
+        # Fall back to first column if it looks like a datetime
+        for col in df.columns:
+            try:
+                val = df[col].iloc[0]
+                ts = self._coerce_timestamp(val)
+                if ts is not None:
+                    return ts
+            except Exception:
+                continue
+        return None
+
+    def _infer_first_last_from_sink(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str,
+    ) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+        """Use query_local_data to fetch first and last timestamps from any sink."""
+        first_ts = None
+        last_ts = None
+        try:
+            df_first, _ = self.query_local_data(
+                asset=asset,
+                symbol=symbol,
+                interval=interval,
+                sink=sink,
+                get_first_n_rows=1,
+                _allow_full_scan=True,
+            )
+            first_ts = self._pick_timestamp_from_dataframe(df_first)
+        except Exception:
+            first_ts = None
+
+        try:
+            df_last, _ = self.query_local_data(
+                asset=asset,
+                symbol=symbol,
+                interval=interval,
+                sink=sink,
+                get_last_n_rows=1,
+                _allow_full_scan=True,
+            )
+            last_ts = self._pick_timestamp_from_dataframe(df_last)
+        except Exception:
+            last_ts = None
+
+        return first_ts, last_ts
+
     def _list_influx_tables(self) -> List[str]:
         """
         Retrieve list of measurement tables from InfluxDB v3.
@@ -6748,10 +6838,12 @@ class ThetaSyncManager:
                                 if not ts_df.empty:
                                     first_val = self._extract_scalar_from_df(ts_df, ["first_ts", "min"])
                                     last_val = self._extract_scalar_from_df(ts_df, ["last_ts", "max"])
-                                    if first_val is not None:
-                                        first_ts = pd.to_datetime(first_val, utc=True).isoformat()
-                                    if last_val is not None:
-                                        last_ts = pd.to_datetime(last_val, utc=True).isoformat()
+                                    co_first = self._coerce_timestamp(first_val)
+                                    co_last = self._coerce_timestamp(last_val)
+                                    if co_first is not None:
+                                        first_ts = co_first.isoformat()
+                                    if co_last is not None:
+                                        last_ts = co_last.isoformat()
 
                                 entry = {
                                     "asset": asset_part,
@@ -7677,10 +7769,13 @@ class ThetaSyncManager:
                         first_val = self._extract_scalar_from_df(df_first, ["first_ts", "min"])
                         last_val = self._extract_scalar_from_df(df_last, ["last_ts", "max"])
 
-                        if first_val is not None:
-                            first_date = pd.to_datetime(first_val, utc=True)
-                        if last_val is not None:
-                            last_date = pd.to_datetime(last_val, utc=True)
+                        co_first = self._coerce_timestamp(first_val)
+                        co_last = self._coerce_timestamp(last_val)
+
+                        if co_first is not None:
+                            first_date = co_first
+                        if co_last is not None:
+                            last_date = co_last
 
                         # Count total points
                         query_count = f'''
@@ -7701,6 +7796,18 @@ class ThetaSyncManager:
                     except Exception:
                         total_size = 0
                         num_files = None
+
+                if first_date is None or last_date is None:
+                    inferred_first, inferred_last = self._infer_first_last_from_sink(
+                        grp_asset,
+                        grp_symbol,
+                        grp_interval,
+                        "influxdb",
+                    )
+                    if first_date is None and inferred_first is not None:
+                        first_date = inferred_first
+                    if last_date is None and inferred_last is not None:
+                        last_date = inferred_last
 
             # Calculate days span
             days_span = None
