@@ -7565,13 +7565,17 @@ class ThetaSyncManager:
             last_date = None
 
             if grp_sink in ['csv', 'parquet']:
-                # For file-based sinks, sum up file sizes
-                for _, row in group.iterrows():
-                    file_path = row['file_path']
+                # For file-based sinks, sum up file sizes by scanning the series directory
+                try:
+                    file_paths = self._list_series_files(grp_asset, grp_symbol, grp_interval, grp_sink)
+                except Exception:
+                    file_paths = []
+
+                num_files = len(file_paths)
+                for file_path in file_paths:
                     if os.path.exists(file_path):
                         try:
                             total_size += os.path.getsize(file_path)
-                            num_files += 1
                         except Exception:
                             pass  # Skip files we can't read
 
