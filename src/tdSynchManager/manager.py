@@ -4693,6 +4693,78 @@ class ThetaSyncManager:
             except Exception:
                 return None
 
+    def _pick_timestamp_from_dataframe(self, df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+        """Heuristic to extract a timestamp column from a dataframe row."""
+        if df is None or df.empty:
+            return None
+        candidate_cols = (
+            "time",
+            "timestamp",
+            "datetime",
+            "date",
+            "QUOTE_DATETIME",
+            "TRADE_DATETIME",
+            "QUOTE_UNIXTIME",
+            "TRADE_UNIXTIME",
+        )
+        for col in candidate_cols:
+            if col in df.columns:
+                try:
+                    val = df[col].iloc[0]
+                    ts = self._coerce_timestamp(val)
+                    if ts is not None:
+                        return ts
+                except Exception:
+                    continue
+        # Fall back to first column if it looks like a datetime
+        for col in df.columns:
+            try:
+                val = df[col].iloc[0]
+                ts = self._coerce_timestamp(val)
+                if ts is not None:
+                    return ts
+            except Exception:
+                continue
+        return None
+
+    def _infer_first_last_from_sink(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink: str,
+    ) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+        """Use query_local_data to fetch first and last timestamps from any sink."""
+        first_ts = None
+        last_ts = None
+        try:
+            df_first, _ = self.query_local_data(
+                asset=asset,
+                symbol=symbol,
+                interval=interval,
+                sink=sink,
+                get_first_n_rows=1,
+                _allow_full_scan=True,
+            )
+            first_ts = self._pick_timestamp_from_dataframe(df_first)
+        except Exception:
+            first_ts = None
+
+        try:
+            df_last, _ = self.query_local_data(
+                asset=asset,
+                symbol=symbol,
+                interval=interval,
+                sink=sink,
+                get_last_n_rows=1,
+                _allow_full_scan=True,
+            )
+            last_ts = self._pick_timestamp_from_dataframe(df_last)
+        except Exception:
+            last_ts = None
+
+        return first_ts, last_ts
+
     def _list_influx_tables(self) -> List[str]:
         """
         Retrieve list of measurement tables from InfluxDB v3.
@@ -7723,6 +7795,18 @@ class ThetaSyncManager:
                     except Exception:
                         total_size = 0
                         num_files = None
+
+                if first_date is None or last_date is None:
+                    inferred_first, inferred_last = self._infer_first_last_from_sink(
+                        grp_asset,
+                        grp_symbol,
+                        grp_interval,
+                        "influxdb",
+                    )
+                    if first_date is None and inferred_first is not None:
+                        first_date = inferred_first
+                    if last_date is None and inferred_last is not None:
+                        last_date = inferred_last
 
             # Calculate days span
             days_span = None
