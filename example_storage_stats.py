@@ -29,34 +29,36 @@ print("=" * 80)
 # Get detailed statistics
 stats = manager.get_storage_stats()
 
+def _print_view(title: str, df, columns=None):
+    """Print filtered view safely even if DataFrame is empty or missing columns."""
+    print(f"\n{title}")
+    if df.empty:
+        print("   (no data)")
+        return
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            print(df[cols].to_string())
+            return
+    print(df.to_string())
+
 print(f"\nFound {len(stats)} data series")
 print("\nDetailed statistics (sorted by size):")
-print(stats.to_string())
+_print_view("All series:", stats)
 
 # Filter examples
 print("\n" + "=" * 80)
 print("FILTERED VIEWS")
 print("=" * 80)
 
-# Only options
-print("\n1. Options only:")
-options_stats = manager.get_storage_stats(asset='option')
-print(options_stats[['symbol', 'interval', 'sink', 'size_mb', 'days_span']].to_string())
-
-# Only InfluxDB
-print("\n2. InfluxDB only:")
-influx_stats = manager.get_storage_stats(sink='influxdb')
-print(influx_stats[['symbol', 'asset', 'interval', 'size_mb']].to_string())
-
-# Only TLRY
-print("\n3. TLRY only:")
-tlry_stats = manager.get_storage_stats(symbol='TLRY')
-print(tlry_stats[['interval', 'sink', 'size_mb', 'days_span']].to_string())
-
-# Only tick data
-print("\n4. Tick data only:")
-tick_stats = manager.get_storage_stats(interval='tick')
-print(tick_stats[['symbol', 'asset', 'sink', 'size_mb']].to_string())
+_print_view("1. Options only:", manager.get_storage_stats(asset='option'),
+            ['symbol', 'interval', 'sink', 'size_mb', 'days_span'])
+_print_view("2. InfluxDB only:", manager.get_storage_stats(sink='influxdb'),
+            ['symbol', 'asset', 'interval', 'size_mb'])
+_print_view("3. TLRY only:", manager.get_storage_stats(symbol='TLRY'),
+            ['interval', 'sink', 'size_mb', 'days_span'])
+_print_view("4. Tick data only:", manager.get_storage_stats(interval='tick'),
+            ['symbol', 'asset', 'sink', 'size_mb'])
 
 print("\n" + "=" * 80)
 print("STORAGE SUMMARY - AGGREGATED VIEW")
