@@ -25,8 +25,11 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .client import Interval, ThetaDataV3Client
+from .client import Interval, ThetaDataV3Client, ResilientThetaClient
 from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
+from .logger import DataConsistencyLogger
+from .validator import DataValidator, ValidationResult
+from .retry import retry_with_policy
 
 try:  # optional at runtime
     ipy_display = importlib.import_module("IPython.display").display
@@ -182,7 +185,20 @@ class ThetaSyncManager:
             manager = ThetaSyncManager(cfg, client)
         """
         self.cfg = cfg
-        self.client = client
+
+        # Initialize logger for data consistency tracking
+        self.logger = DataConsistencyLogger(
+            root_dir=cfg.root_dir,
+            verbose_console=cfg.log_verbose_console
+        )
+
+        # Wrap client with resilient layer for session recovery
+        self.client = ResilientThetaClient(
+            base_client=client,
+            logger=self.logger,
+            max_reconnect_attempts=cfg.retry_policy.session_closed_max_attempts
+        )
+
         self._sem = asyncio.Semaphore(cfg.max_concurrency)
 
         self._exp_cache: Dict[str, List[str]] = {}
@@ -8533,4 +8549,138 @@ class ThetaSyncManager:
     # =========================================================================
     # (END)
     # COMMON UTILITIES
+    # =========================================================================
+
+    # =========================================================================
+    # (BEGIN)
+    # DATA COHERENCE & POST-HOC VALIDATION
+    # =========================================================================
+
+    async def check_and_recover_coherence(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        sink: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        auto_recover: bool = True,
+        enrich_greeks: bool = False
+    ):
+        """Check data coherence and optionally recover missing data.
+
+        This method performs post-hoc validation to identify missing data,
+        gaps in coverage, and inconsistencies. It can be called after initial
+        downloads to verify completeness, or periodically to check for data integrity.
+
+        Parameters
+        ----------
+        symbol : str
+            Symbol to check (e.g., "AAPL", "SPY").
+        asset : str
+            Asset type ("stock", "option", "index").
+        interval : str
+            Time interval ("1d", "5m", "1h", "tick", etc.).
+        sink : str
+            Storage sink ("csv", "parquet", "influx").
+        start_date : Optional[str], optional
+            Start date for check (YYYY-MM-DD). If None, uses earliest available locally.
+        end_date : Optional[str], optional
+            End date for check (YYYY-MM-DD). If None, uses latest available locally.
+        auto_recover : bool, optional
+            If True, automatically attempt to recover missing data (default True).
+        enrich_greeks : bool, optional
+            For options, whether to enrich with Greeks during recovery (default False).
+
+        Returns
+        -------
+        CoherenceReport
+            Report containing all issues found and recovery status.
+
+        Example Usage
+        -------------
+        # Check EOD data for AAPL
+        report = await manager.check_and_recover_coherence(
+            symbol="AAPL",
+            asset="stock",
+            interval="1d",
+            sink="parquet",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            auto_recover=True
+        )
+
+        if report.is_coherent:
+            print("Data is complete and coherent!")
+        else:
+            print(f"Found {len(report.issues)} issues:")
+            for issue in report.issues:
+                print(f"  - {issue.description}")
+        """
+        from .coherence import CoherenceChecker, IncoherenceRecovery
+
+        # Initialize checker
+        checker = CoherenceChecker(self)
+
+        # Perform coherence check
+        report = await checker.check(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            sink=sink,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        # Auto-recover if enabled and issues found
+        if not report.is_coherent and auto_recover:
+            recovery = IncoherenceRecovery(self)
+
+            recovery_result = await recovery.recover(
+                report=report,
+                enrich_greeks=enrich_greeks
+            )
+
+            # Log recovery summary
+            if recovery_result.total_issues > 0:
+                success_rate = recovery_result.successful / recovery_result.total_issues
+                message = (
+                    f"Recovery completed: {recovery_result.successful}/{recovery_result.total_issues} "
+                    f"issues resolved ({success_rate:.1%})"
+                )
+
+                if recovery_result.failed > 0:
+                    self.logger.log_failure(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(start_date or "", end_date or ""),
+                        message=message,
+                        details={'recovery_details': recovery_result.details}
+                    )
+                else:
+                    self.logger.log_resolution(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(start_date or "", end_date or ""),
+                        message=message,
+                        details={'recovery_details': recovery_result.details}
+                    )
+
+            # Re-check after recovery
+            report = await checker.check(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                sink=sink,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+        return report
+
+    # =========================================================================
+    # (END)
+    # DATA COHERENCE & POST-HOC VALIDATION
     # =========================================================================

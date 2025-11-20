@@ -6593,3 +6593,249 @@ async def run_comprehensive_tests():
     # (END)
     # INDEX ENDPOINTS
     # =========================================================================
+
+
+# =========================================================================
+# RESILIENT CLIENT WRAPPER (Session Recovery)
+# =========================================================================
+
+
+class ResilientThetaClient:
+    """Wrapper around ThetaDataV3Client with automatic session recovery.
+
+    This class wraps the ThetaDataV3Client and adds automatic reconnection
+    logic when the session is closed. It intercepts "session closed" errors
+    and attempts to reconnect a configurable number of times before failing.
+
+    Parameters
+    ----------
+    base_client : ThetaDataV3Client
+        The underlying ThetaDataV3Client instance to wrap.
+    logger : DataConsistencyLogger
+        Logger instance for recording session closed events.
+    max_reconnect_attempts : int, optional
+        Maximum number of reconnection attempts (default 1).
+
+    Examples
+    --------
+    >>> from .logger import DataConsistencyLogger
+    >>> logger = DataConsistencyLogger("/path/to/root")
+    >>> base_client = ThetaDataV3Client(api_key="your_key")
+    >>> resilient_client = ResilientThetaClient(base_client, logger, max_reconnect_attempts=1)
+    >>> data, url = await resilient_client.stock_history_eod("AAPL", "2024-01-01", "2024-01-31")
+    """
+
+    def __init__(
+        self,
+        base_client: ThetaDataV3Client,
+        logger: 'DataConsistencyLogger',
+        max_reconnect_attempts: int = 1
+    ):
+        """Initialize resilient client wrapper.
+
+        Parameters
+        ----------
+        base_client : ThetaDataV3Client
+            The underlying client to wrap.
+        logger : DataConsistencyLogger
+            Logger for session events.
+        max_reconnect_attempts : int
+            Maximum reconnection attempts.
+        """
+        self._client = base_client
+        self._logger = logger
+        self._max_reconnect = max_reconnect_attempts
+
+    async def _execute_with_reconnect(self, method_name: str, *args, **kwargs):
+        """Execute client method with session closed recovery.
+
+        Parameters
+        ----------
+        method_name : str
+            Name of the method to call on the base client.
+        *args
+            Positional arguments to pass to the method.
+        **kwargs
+            Keyword arguments to pass to the method.
+
+        Returns
+        -------
+        Any
+            Result from the method call.
+
+        Raises
+        ------
+        SystemExit
+            If session closed and reconnection fails after max attempts.
+        Exception
+            Any other exception from the underlying method.
+        """
+        method = getattr(self._client, method_name)
+
+        for attempt in range(self._max_reconnect + 1):
+            try:
+                return await method(*args, **kwargs)
+
+            except Exception as e:
+                error_str = str(e).lower()
+
+                # Check if this is a session closed error
+                if "session closed" in error_str or "session is closed" in error_str:
+                    if attempt < self._max_reconnect:
+                        # Log and attempt reconnection
+                        self._logger.log_session_closed(
+                            symbol="SYSTEM",
+                            asset="SYSTEM",
+                            interval="SYSTEM",
+                            attempt=attempt + 1,
+                            fatal=False,
+                            details={'method': method_name}
+                        )
+
+                        # Attempt reconnection (close and re-initialize)
+                        await self._reconnect()
+                    else:
+                        # Final failure
+                        self._logger.log_session_closed(
+                            symbol="SYSTEM",
+                            asset="SYSTEM",
+                            interval="SYSTEM",
+                            attempt=attempt + 1,
+                            fatal=True,
+                            details={'method': method_name}
+                        )
+                        raise SystemExit(
+                            f"Session closed - failed reconnection after {self._max_reconnect + 1} attempts"
+                        )
+                else:
+                    # Not a session error, re-raise immediately
+                    raise
+
+    async def _reconnect(self):
+        """Reconnect to ThetaData server.
+
+        This method closes the current session and attempts to re-establish
+        the connection. The implementation depends on the client's architecture.
+        """
+        # Close existing session
+        try:
+            await self._client.close()
+        except Exception:
+            pass  # Ignore errors during close
+
+        # Wait a moment before reconnecting
+        await asyncio.sleep(1.0)
+
+        # The client should automatically reconnect on next request
+        # If the client has explicit connect method, call it here
+
+    # Delegate all client methods to _execute_with_reconnect
+    # Stock methods
+    async def stock_list_symbols(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_list_symbols', *args, **kwargs)
+
+    async def stock_list_dates(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_list_dates', *args, **kwargs)
+
+    async def stock_history_eod(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_history_eod', *args, **kwargs)
+
+    async def stock_history_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_history_ohlc', *args, **kwargs)
+
+    async def stock_history_trade_quote(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_history_trade_quote', *args, **kwargs)
+
+    async def stock_snapshot_trade_quote(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_snapshot_trade_quote', *args, **kwargs)
+
+    async def stock_snapshot_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_snapshot_ohlc', *args, **kwargs)
+
+    async def stock_snapshot_quote(self, *args, **kwargs):
+        return await self._execute_with_reconnect('stock_snapshot_quote', *args, **kwargs)
+
+    # Option methods
+    async def option_list_symbols(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_list_symbols', *args, **kwargs)
+
+    async def option_list_dates(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_list_dates', *args, **kwargs)
+
+    async def option_list_expirations(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_list_expirations', *args, **kwargs)
+
+    async def option_list_strikes(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_list_strikes', *args, **kwargs)
+
+    async def option_list_contracts(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_list_contracts', *args, **kwargs)
+
+    async def option_history_eod(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_eod', *args, **kwargs)
+
+    async def option_history_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_ohlc', *args, **kwargs)
+
+    async def option_history_greeks_eod(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_greeks_eod', *args, **kwargs)
+
+    async def option_history_greeks_all(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_greeks_all', *args, **kwargs)
+
+    async def option_history_greeks_implied_volatility(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_greeks_implied_volatility', *args, **kwargs)
+
+    async def option_history_open_interest(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_open_interest', *args, **kwargs)
+
+    async def option_snapshot_greeks_all(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_snapshot_greeks_all', *args, **kwargs)
+
+    async def option_snapshot_trade_quote(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_snapshot_trade_quote', *args, **kwargs)
+
+    async def option_snapshot_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_snapshot_ohlc', *args, **kwargs)
+
+    async def option_snapshot_quote(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_snapshot_quote', *args, **kwargs)
+
+    # Index methods
+    async def index_list_dates(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_list_dates', *args, **kwargs)
+
+    async def index_history_eod(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_history_eod', *args, **kwargs)
+
+    async def index_history_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_history_ohlc', *args, **kwargs)
+
+    async def index_history_price(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_history_price', *args, **kwargs)
+
+    async def index_snapshot_ohlc(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_snapshot_ohlc', *args, **kwargs)
+
+    async def index_snapshot_price(self, *args, **kwargs):
+        return await self._execute_with_reconnect('index_snapshot_price', *args, **kwargs)
+
+    # Passthrough properties
+    @property
+    def base_url(self):
+        return self._client.base_url
+
+    @property
+    def api_key(self):
+        return self._client.api_key
+
+    # Context manager support
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._client.__aexit__(exc_type, exc_val, exc_tb)
+
+    async def close(self):
+        """Close the underlying client session."""
+        await self._client.close()

@@ -4,7 +4,31 @@ import os
 from dataclasses import dataclass, field, fields
 from typing import Any, List, Mapping, Optional, Union, get_args, get_origin
 
-__all__ = ["ManagerConfig", "DiscoverPolicy", "Task", "config_from_env"]
+__all__ = ["ManagerConfig", "DiscoverPolicy", "Task", "RetryPolicy", "config_from_env"]
+
+
+@dataclass
+class RetryPolicy:
+    """Retry policy configuration for data download and consistency recovery.
+
+    Attributes
+    ----------
+    max_attempts : int
+        Maximum number of retry attempts for failed downloads (default 3).
+    delay_seconds : float
+        Delay in seconds between retry attempts (default 15.0).
+    truncated_response_delay : float
+        Specific delay for truncated/incomplete responses (default 60.0).
+    truncated_max_attempts : int
+        Maximum retries specifically for truncated responses (default 2).
+    session_closed_max_attempts : int
+        Maximum reconnection attempts when session is closed (default 1).
+    """
+    max_attempts: int = 3
+    delay_seconds: float = 15.0
+    truncated_response_delay: float = 60.0
+    truncated_max_attempts: int = 2
+    session_closed_max_attempts: int = 1
 
 
 @dataclass
@@ -52,6 +76,14 @@ class ManagerConfig:
     influx_measure_prefix: str = ""           # optional, e.g., "td_"
     influx_write_batch: int = 5000            # batch size for writes
     influx_data_dir: Optional[str] = None     # v3 Core: data directory (for real disk size calculation)
+
+    # --- Data Consistency & Validation ---
+    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
+    enable_data_validation: bool = True       # Enable validation before saving
+    validation_strict_mode: bool = True       # True = "all or nothing", False = save partial with log
+    log_verbose_console: bool = True          # Print logs to console in addition to log tables
+    eod_check_max_attempts: int = 1           # Additional retry attempts for EOD tick data check
+    tick_eod_volume_tolerance: float = 0.01   # Tolerance for tick vs EOD volume comparison (1%)
 
 
 @dataclass
