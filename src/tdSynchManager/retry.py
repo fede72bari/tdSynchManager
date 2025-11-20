@@ -18,43 +18,70 @@ async def retry_with_policy(
     context: Dict[str, Any],
     error_types: Tuple[Type[Exception], ...] = (Exception,)
 ) -> Tuple[T | None, bool]:
-    """Execute coroutine with retry policy and automatic logging.
+    """Execute an asynchronous operation with configurable retry logic and automatic logging.
+
+    This function wraps any async operation with retry capabilities, automatically logging
+    each attempt, failure, and resolution. It respects the configured retry policy including
+    maximum attempts and delays between retries. On success after retries, it logs the
+    resolution. On final failure, it logs the permanent failure. This provides a consistent
+    retry pattern across all data operations.
 
     Parameters
     ----------
     coro_func : Callable[[], Awaitable[T]]
-        Async function to execute (should be a lambda or callable that returns a coroutine).
+        An async callable (typically a lambda) that returns a coroutine to execute. Should
+        take no arguments and return the result of the async operation. Example:
+        lambda: client.stock_history_eod("AAPL", "2024-01-01", "2024-01-31", "csv")
     policy : RetryPolicy
-        Retry policy configuration.
+        Retry policy configuration specifying max_attempts, delay_seconds, and other retry
+        parameters. Controls how many times to retry and how long to wait between attempts.
     logger : DataConsistencyLogger
-        Logger instance for recording retry attempts.
+        Logger instance for recording retry attempts, resolutions, and failures. All retry
+        activity is automatically logged with appropriate context.
     context : Dict[str, Any]
-        Context dictionary with keys: symbol, asset, interval, date_range (tuple).
+        Context dictionary containing operation details for logging. Must include keys:
+        'symbol' (str), 'asset' (str), 'interval' (str), and 'date_range' (tuple of two strings).
+        Used to provide context in log entries.
     error_types : Tuple[Type[Exception], ...], optional
-        Tuple of exception types to catch and retry (default: Exception).
+        Default: (Exception,)
+
+        Tuple of exception types to catch and retry. Only exceptions matching these types
+        will trigger retry logic. Other exceptions will be re-raised immediately. Use this
+        to specify which errors are considered retryable.
 
     Returns
     -------
     Tuple[T | None, bool]
-        Tuple of (result, success). Returns (result, True) on success,
-        (None, False) on failure after all retries exhausted.
+        A tuple of (result, success_flag):
+        - If successful: (operation_result, True) where operation_result is the return
+          value from coro_func.
+        - If failed after all retries: (None, False) indicating permanent failure.
 
-    Examples
-    --------
-    >>> result, success = await retry_with_policy(
-    ...     coro_func=lambda: client.stock_history_eod("AAPL", "2024-01-01", "2024-01-31", "csv"),
-    ...     policy=config.retry_policy,
-    ...     logger=logger,
-    ...     context={
-    ...         'symbol': 'AAPL',
-    ...         'asset': 'stock',
-    ...         'interval': '1d',
-    ...         'date_range': ('2024-01-01', '2024-01-31')
-    ...     }
-    ... )
-    >>> if success:
-    ...     # Process result
-    ...     pass
+    Example Usage
+    -------------
+    ```python
+    # Retry a ThetaData API call with automatic logging
+    result, success = await retry_with_policy(
+        coro_func=lambda: client.stock_history_eod(
+            "AAPL", "2024-01-01", "2024-01-31", "csv"
+        ),
+        policy=config.retry_policy,
+        logger=logger,
+        context={
+            'symbol': 'AAPL',
+            'asset': 'stock',
+            'interval': '1d',
+            'date_range': ('2024-01-01', '2024-01-31')
+        }
+    )
+
+    if success:
+        csv_data, url = result
+        # Process successful result
+    else:
+        # Handle permanent failure
+        print("Failed to retrieve data after all retries")
+    ```
     """
     last_error: Exception | None = None
     symbol = context.get('symbol', 'UNKNOWN')

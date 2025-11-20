@@ -34,14 +34,25 @@ class DataConsistencyLogger:
     """
 
     def __init__(self, root_dir: str, verbose_console: bool = True):
-        """Initialize logger.
+        """Initialize the DataConsistencyLogger with storage configuration and console output settings.
+
+        This constructor sets up the logger's storage paths and configures whether log messages
+        should be echoed to the console in addition to being persisted to Parquet files. The logger
+        creates a dedicated logs directory structure under the data directory for each symbol/asset/interval
+        combination, ensuring organized and queryable log storage.
 
         Parameters
         ----------
         root_dir : str
-            Root directory for data storage.
+            Root directory for data storage. Log files will be created under
+            {root_dir}/data/{asset}/{symbol}/{interval}/logs/ following the project's
+            standard directory structure.
         verbose_console : bool, optional
-            If True, also print logs to console (default True).
+            Default: True
+
+            Controls whether log messages are printed to console in addition to being saved
+            to Parquet files. When True, all log events are printed to stdout with formatted
+            output showing severity, event type, and details. Set to False for silent operation.
         """
         self.root_dir = Path(root_dir)
         self.verbose = verbose_console
@@ -56,22 +67,37 @@ class DataConsistencyLogger:
         error_msg: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log missing data detection.
+        """Record the detection of missing or incomplete data in the storage system.
+
+        This method logs when data validation identifies missing data points, incomplete time ranges,
+        or gaps in expected coverage. The log entry is persisted to Parquet with ERROR severity and
+        marked as PENDING resolution status. This creates an audit trail for data quality issues and
+        enables post-hoc analysis of data completeness problems.
 
         Parameters
         ----------
         symbol : str
-            Symbol name (e.g., "AAPL").
+            The ticker or symbol identifier for which data is missing. Examples include "AAPL"
+            for Apple stock, "SPY" for SPDR S&P 500 ETF, or "ES" for E-mini S&P 500 futures.
         asset : str
-            Asset type ("stock", "option", "index").
+            The type of financial instrument. Must be one of "stock", "option", or "index".
+            This categorization helps organize logs by asset class.
         interval : str
-            Time interval (e.g., "1d", "5m", "tick").
+            The time interval or granularity of the missing data. Common values include "1d"
+            for daily data, "5m" for 5-minute bars, "1h" for hourly data, or "tick" for
+            tick-by-tick data.
         date_range : Tuple[str, str]
-            Date range (start, end) where data is missing.
+            A tuple of (start_date, end_date) in ISO format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+            indicating the time range where data is missing. Both elements should be strings.
         error_msg : str
-            Description of the missing data issue.
+            Human-readable description of the missing data issue. Should clearly explain what
+            data is missing and how it was detected (e.g., "Missing 15 trading days in range").
         details : Dict[str, Any], optional
-            Additional details to store as JSON.
+            Default: None
+
+            Additional contextual information to include in the log entry. This dictionary
+            will be serialized to JSON and stored in the details_json column. Useful for
+            storing specific missing dates, gap counts, or other diagnostic information.
         """
         self._log_event(
             event_type="MISSING_DATA",
@@ -96,24 +122,35 @@ class DataConsistencyLogger:
         error_msg: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log a retry attempt.
+        """Record a retry attempt for a previously failed data operation.
+
+        This method logs when the system automatically retries a failed download or validation
+        operation. It tracks the retry attempt number and the error that triggered the retry,
+        creating visibility into the system's recovery efforts. Logged with WARNING severity
+        and PENDING status to indicate ongoing resolution attempts.
 
         Parameters
         ----------
         symbol : str
-            Symbol name.
+            The ticker or symbol identifier being retried.
         asset : str
-            Asset type.
+            The asset type ("stock", "option", "index").
         interval : str
-            Time interval.
+            The time interval for the data being retried.
         date_range : Tuple[str, str]
-            Date range being retried.
+            Date range (start, end) being retried in ISO format.
         attempt : int
-            Retry attempt number (1 for first retry, 2 for second, etc.).
+            The retry attempt number. Value of 1 indicates the first retry (second overall attempt),
+            2 indicates the second retry (third overall attempt), and so on. This helps track
+            how many retry cycles have been exhausted.
         error_msg : str
-            Error that triggered the retry.
+            The error message that triggered this retry attempt. Should clearly describe what
+            failed and why the retry is being attempted.
         details : Dict[str, Any], optional
-            Additional details.
+            Default: None
+
+            Additional diagnostic information about the retry, such as error types, stack traces,
+            or operation-specific context. Serialized to JSON in the log entry.
         """
         self._log_event(
             event_type="RETRY_ATTEMPT",
@@ -137,22 +174,31 @@ class DataConsistencyLogger:
         message: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log successful resolution of a data issue.
+        """Record the successful resolution of a previously identified data issue.
+
+        This method logs when a data consistency problem has been successfully resolved through
+        automatic retry, recovery, or manual intervention. It marks the issue as RESOLVED with
+        INFO severity, completing the audit trail for the problem. This helps track system
+        effectiveness in recovering from failures and maintaining data quality.
 
         Parameters
         ----------
         symbol : str
-            Symbol name.
+            The ticker or symbol identifier for which the issue was resolved.
         asset : str
-            Asset type.
+            The asset type ("stock", "option", "index").
         interval : str
-            Time interval.
+            The time interval of the resolved data.
         date_range : Tuple[str, str]
-            Date range that was resolved.
+            Date range (start, end) in ISO format that was successfully recovered or validated.
         message : str
-            Resolution description.
+            Human-readable description of the resolution. Should explain how the issue was
+            resolved (e.g., "Resolved after 2 retry attempts", "Data successfully recovered").
         details : Dict[str, Any], optional
-            Additional details.
+            Default: None
+
+            Additional information about the resolution process, such as number of attempts,
+            recovery method used, or data integrity verification results. Serialized to JSON.
         """
         self._log_event(
             event_type="RESOLUTION",
@@ -176,22 +222,32 @@ class DataConsistencyLogger:
         message: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log permanent failure after all retries exhausted.
+        """Record a permanent failure after all retry attempts have been exhausted.
+
+        This method logs when a data operation has failed definitively after all configured
+        retry attempts. It marks the issue as FAILED with CRITICAL severity, indicating that
+        manual intervention may be required. This creates a clear record of unrecoverable
+        data quality issues that need attention.
 
         Parameters
         ----------
         symbol : str
-            Symbol name.
+            The ticker or symbol identifier for which the operation failed.
         asset : str
-            Asset type.
+            The asset type ("stock", "option", "index").
         interval : str
-            Time interval.
+            The time interval of the failed operation.
         date_range : Tuple[str, str]
-            Date range that failed.
+            Date range (start, end) in ISO format for which the operation failed permanently.
         message : str
-            Failure description.
+            Human-readable description of the failure. Should include information about how
+            many retry attempts were made and the final error encountered.
         details : Dict[str, Any], optional
-            Additional details.
+            Default: None
+
+            Additional diagnostic information such as error types, total attempts made,
+            or specific failure conditions. This helps in troubleshooting and determining
+            whether manual intervention is needed.
         """
         self._log_event(
             event_type="FAILURE",
@@ -216,24 +272,39 @@ class DataConsistencyLogger:
         fatal: bool = False,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log InfluxDB-specific failures.
+        """Record InfluxDB-specific failures during data persistence operations.
+
+        This method logs errors specific to InfluxDB operations such as authentication failures,
+        connection issues, truncated responses, or write errors. The fatal flag determines whether
+        the issue is recoverable (ERROR) or requires immediate attention and process termination
+        (CRITICAL).
 
         Parameters
         ----------
         symbol : str
-            Symbol name.
+            The ticker or symbol identifier involved in the failed InfluxDB operation.
         asset : str
-            Asset type.
+            The asset type ("stock", "option", "index").
         interval : str
-            Time interval.
+            The time interval of the data being written to InfluxDB.
         failure_type : str
-            Type of failure (e.g., "UNAUTHORIZED", "TRUNCATED_RESPONSE").
+            Specific type of InfluxDB failure. Common values include "UNAUTHORIZED" for
+            authentication failures, "TRUNCATED_RESPONSE" for incomplete server responses,
+            "CONNECTION_ERROR" for network issues, or "WRITE_ERROR" for data persistence problems.
         message : str
-            Failure description.
+            Human-readable description of the InfluxDB failure, including any error codes or
+            messages returned by the InfluxDB server.
         fatal : bool, optional
-            If True, marks as CRITICAL (default False).
+            Default: False
+
+            If True, the failure is logged as CRITICAL and marked as FAILED, indicating the
+            process should terminate. If False, logged as ERROR with PENDING status, allowing
+            for potential retry or recovery.
         details : Dict[str, Any], optional
-            Additional details.
+            Default: None
+
+            Additional diagnostic information such as HTTP status codes, server responses,
+            connection parameters (excluding sensitive auth tokens), or retry context.
         """
         self._log_event(
             event_type=f"INFLUX_{failure_type}",
@@ -257,22 +328,37 @@ class DataConsistencyLogger:
         fatal: bool = False,
         details: Optional[Dict[str, Any]] = None
     ):
-        """Log session closed event.
+        """Record ThetaData API session closure events and reconnection attempts.
+
+        This method logs when the ThetaData API session is unexpectedly closed and tracks
+        automatic reconnection attempts. The fatal flag indicates whether reconnection was
+        successful or if the session closure resulted in process termination.
 
         Parameters
         ----------
         symbol : str
-            Symbol name.
+            The ticker or symbol identifier being processed when the session closed. For
+            system-level session closures not tied to a specific symbol, use "SYSTEM".
         asset : str
-            Asset type.
+            The asset type ("stock", "option", "index", or "SYSTEM" for general failures).
         interval : str
-            Time interval.
+            The time interval being processed when the session closed, or "SYSTEM" for
+            general failures.
         attempt : int
-            Reconnection attempt number.
+            The reconnection attempt number. Value of 1 indicates the first reconnection
+            attempt, 2 indicates the second, and so on. Used to track how many reconnection
+            cycles were attempted before success or failure.
         fatal : bool, optional
-            If True, reconnection failed (default False).
+            Default: False
+
+            If True, the session closure was unrecoverable after all reconnection attempts,
+            logged as CRITICAL with FAILED status. If False, indicates a reconnection is
+            being attempted, logged as WARNING with PENDING status.
         details : Dict[str, Any], optional
-            Additional details.
+            Default: None
+
+            Additional context such as the method that triggered the session closure,
+            error messages from the ThetaData client, or connection parameters.
         """
         self._log_event(
             event_type="SESSION_CLOSED",

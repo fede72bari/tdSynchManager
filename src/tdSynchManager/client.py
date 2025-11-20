@@ -6601,28 +6601,57 @@ async def run_comprehensive_tests():
 
 
 class ResilientThetaClient:
-    """Wrapper around ThetaDataV3Client with automatic session recovery.
+    """Provide automatic session recovery and reconnection for ThetaDataV3Client operations.
 
-    This class wraps the ThetaDataV3Client and adds automatic reconnection
-    logic when the session is closed. It intercepts "session closed" errors
-    and attempts to reconnect a configurable number of times before failing.
+    This wrapper class enhances the ThetaDataV3Client with intelligent session management by
+    automatically detecting "session closed" errors and attempting reconnection before failing.
+    It delegates all method calls to the underlying client while intercepting and recovering
+    from transient connection failures. This ensures robust operation even when the ThetaData
+    server closes connections unexpectedly, improving reliability for long-running data
+    synchronization processes.
+
+    All public methods of ThetaDataV3Client are available through this wrapper with identical
+    signatures, ensuring drop-in compatibility.
 
     Parameters
     ----------
     base_client : ThetaDataV3Client
-        The underlying ThetaDataV3Client instance to wrap.
+        The underlying ThetaDataV3Client instance to wrap. Should be a properly initialized
+        client with valid connection parameters. This wrapper will manage its lifecycle and
+        handle reconnection when necessary.
     logger : DataConsistencyLogger
-        Logger instance for recording session closed events.
+        Logger instance for recording session closed events and reconnection attempts. Every
+        session closure and reconnection attempt is automatically logged with appropriate
+        context and severity.
     max_reconnect_attempts : int, optional
-        Maximum number of reconnection attempts (default 1).
+        Default: 1
 
-    Examples
-    --------
-    >>> from .logger import DataConsistencyLogger
-    >>> logger = DataConsistencyLogger("/path/to/root")
-    >>> base_client = ThetaDataV3Client(api_key="your_key")
-    >>> resilient_client = ResilientThetaClient(base_client, logger, max_reconnect_attempts=1)
-    >>> data, url = await resilient_client.stock_history_eod("AAPL", "2024-01-01", "2024-01-31")
+        Maximum number of reconnection attempts after a session closed error. After this many
+        failed reconnection attempts, the wrapper will raise SystemExit. Set to 0 to disable
+        automatic reconnection (fail immediately on session closed).
+
+    Example Usage
+    -------------
+    ```python
+    from tdSynchManager.client import ThetaDataV3Client, ResilientThetaClient
+    from tdSynchManager.logger import DataConsistencyLogger
+
+    # Initialize logger and base client
+    logger = DataConsistencyLogger("/data/root")
+    base_client = ThetaDataV3Client(base_url="http://localhost:25503/v3")
+
+    # Wrap with resilient layer
+    resilient_client = ResilientThetaClient(
+        base_client=base_client,
+        logger=logger,
+        max_reconnect_attempts=1
+    )
+
+    # Use exactly like ThetaDataV3Client - reconnection is automatic
+    data, url = await resilient_client.stock_history_eod(
+        "AAPL", "2024-01-01", "2024-01-31", "csv"
+    )
+    ```
     """
 
     def __init__(
