@@ -167,27 +167,48 @@ class DataValidator:
         eod_volume: float,
         date_iso: str,
         asset: str,
-        tolerance: float = 0.01
+        tolerance: float = 0.01,
+        eod_volume_call: Optional[float] = None,
+        eod_volume_put: Optional[float] = None
     ) -> ValidationResult:
         """Verify tick data volume sum matches EOD volume.
+
+        For options, volumes should be validated separately for calls and puts when the
+        EOD data provides separate volumes. If separate call/put volumes are not provided,
+        the method falls back to comparing against the total volume.
 
         Parameters
         ----------
         tick_df : pd.DataFrame
-            DataFrame with tick data (must have 'volume' column).
+            DataFrame with tick data (must have 'volume' column). For options, should
+            also have 'right' column indicating 'C' (call) or 'P' (put).
         eod_volume : float
-            Expected EOD volume.
+            Expected total EOD volume. For options without separate call/put volumes,
+            this is the combined volume. For stocks/indices, this is the only volume.
         date_iso : str
             Date being validated (YYYY-MM-DD).
         asset : str
             Asset type ("stock", "option", "index").
         tolerance : float, optional
+            Default: 0.01
+
             Allowed tolerance as fraction (default 0.01 = 1%).
+        eod_volume_call : Optional[float], optional
+            Default: None
+
+            Expected EOD volume for call options only. If provided along with
+            eod_volume_put, enables separate call/put validation for options.
+        eod_volume_put : Optional[float], optional
+            Default: None
+
+            Expected EOD volume for put options only. If provided along with
+            eod_volume_call, enables separate call/put validation for options.
 
         Returns
         -------
         ValidationResult
-            Validation result with volume comparison details.
+            Validation result with volume comparison details. For options with separate
+            call/put validation, details include breakdowns by option type.
         """
         if tick_df.empty:
             return ValidationResult(
@@ -197,11 +218,8 @@ class DataValidator:
                 details={'tick_volume': 0, 'eod_volume': eod_volume}
             )
 
-        # Sum tick volumes
-        # For options: sum across call/put, buy/sell
-        if 'volume' in tick_df.columns:
-            tick_volume = tick_df['volume'].sum()
-        else:
+        # Check for volume column
+        if 'volume' not in tick_df.columns:
             return ValidationResult(
                 valid=False,
                 missing_ranges=[],
@@ -209,25 +227,76 @@ class DataValidator:
                 details={}
             )
 
-        # Calculate difference
-        if eod_volume == 0:
-            diff_pct = 1.0 if tick_volume > 0 else 0.0
+        # For options with separate call/put volumes
+        if asset == "option" and eod_volume_call is not None and eod_volume_put is not None:
+            if 'right' not in tick_df.columns:
+                return ValidationResult(
+                    valid=False,
+                    missing_ranges=[],
+                    error_message="Options data missing 'right' column for call/put separation",
+                    details={}
+                )
+
+            # Sum volumes separately for calls and puts
+            tick_call_volume = tick_df[tick_df['right'] == 'C']['volume'].sum()
+            tick_put_volume = tick_df[tick_df['right'] == 'P']['volume'].sum()
+
+            # Calculate differences
+            if eod_volume_call == 0:
+                diff_call_pct = 1.0 if tick_call_volume > 0 else 0.0
+            else:
+                diff_call_pct = abs(tick_call_volume - eod_volume_call) / eod_volume_call
+
+            if eod_volume_put == 0:
+                diff_put_pct = 1.0 if tick_put_volume > 0 else 0.0
+            else:
+                diff_put_pct = abs(tick_put_volume - eod_volume_put) / eod_volume_put
+
+            # Both must be within tolerance
+            is_valid = diff_call_pct <= tolerance and diff_put_pct <= tolerance
+
+            return ValidationResult(
+                valid=is_valid,
+                missing_ranges=[] if is_valid else [(date_iso, date_iso)],
+                error_message=None if is_valid else (
+                    f"Volume mismatch - Call: {diff_call_pct:.2%}, Put: {diff_put_pct:.2%} difference"
+                ),
+                details={
+                    'tick_call_volume': float(tick_call_volume),
+                    'tick_put_volume': float(tick_put_volume),
+                    'tick_total_volume': float(tick_call_volume + tick_put_volume),
+                    'eod_call_volume': float(eod_volume_call),
+                    'eod_put_volume': float(eod_volume_put),
+                    'eod_total_volume': float(eod_volume_call + eod_volume_put),
+                    'diff_call_pct': float(diff_call_pct),
+                    'diff_put_pct': float(diff_put_pct),
+                    'diff_call_absolute': float(abs(tick_call_volume - eod_volume_call)),
+                    'diff_put_absolute': float(abs(tick_put_volume - eod_volume_put))
+                }
+            )
         else:
-            diff_pct = abs(tick_volume - eod_volume) / eod_volume
+            # Standard validation for stocks/indices or options without separate call/put volumes
+            tick_volume = tick_df['volume'].sum()
 
-        is_valid = diff_pct <= tolerance
+            # Calculate difference
+            if eod_volume == 0:
+                diff_pct = 1.0 if tick_volume > 0 else 0.0
+            else:
+                diff_pct = abs(tick_volume - eod_volume) / eod_volume
 
-        return ValidationResult(
-            valid=is_valid,
-            missing_ranges=[] if is_valid else [(date_iso, date_iso)],
-            error_message=None if is_valid else f"Volume mismatch: {diff_pct:.2%} difference",
-            details={
-                'tick_volume': float(tick_volume),
-                'eod_volume': float(eod_volume),
-                'diff_pct': float(diff_pct),
-                'diff_absolute': float(abs(tick_volume - eod_volume))
-            }
-        )
+            is_valid = diff_pct <= tolerance
+
+            return ValidationResult(
+                valid=is_valid,
+                missing_ranges=[] if is_valid else [(date_iso, date_iso)],
+                error_message=None if is_valid else f"Volume mismatch: {diff_pct:.2%} difference",
+                details={
+                    'tick_volume': float(tick_volume),
+                    'eod_volume': float(eod_volume),
+                    'diff_pct': float(diff_pct),
+                    'diff_absolute': float(abs(tick_volume - eod_volume))
+                }
+            )
 
     @staticmethod
     def validate_required_columns(

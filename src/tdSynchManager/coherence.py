@@ -187,11 +187,12 @@ class CoherenceChecker:
         )
 
         # Get local date range
-        local_range = self.manager._series_earliest_and_latest_day(
+        # _series_earliest_and_latest_day returns (earliest_day, latest_day, files)
+        local_range_result = self.manager._series_earliest_and_latest_day(
             asset, symbol, interval, sink.lower()
         )
 
-        if not local_range:
+        if not local_range_result or not local_range_result[0]:
             report.is_coherent = False
             report.issues.append(CoherenceIssue(
                 issue_type="NO_LOCAL_DATA",
@@ -202,6 +203,8 @@ class CoherenceChecker:
             ))
             return report
 
+        # Extract only the date range (first two elements)
+        local_range = (local_range_result[0], local_range_result[1])
         report.local_date_range = local_range
 
         # Use provided date range or default to local range
@@ -434,6 +437,10 @@ class IncoherenceRecovery:
     ) -> bool:
         """Recover a single missing EOD day.
 
+        This method first checks if local storage already contains data for the specified date.
+        If data exists, it skips the download and returns success immediately. Otherwise, it
+        downloads the data from ThetaData API with retry logic and saves it to the configured sink.
+
         Parameters
         ----------
         symbol : str
@@ -452,8 +459,41 @@ class IncoherenceRecovery:
         Returns
         -------
         bool
-            True if recovery successful, False otherwise.
+            True if recovery successful or data already exists, False otherwise.
         """
+        # First, check if local storage already has data for this date
+        # This avoids unnecessary API calls when data exists but wasn't detected during initial check
+        # _series_earliest_and_latest_day returns (earliest_day, latest_day, files)
+        local_range_result = self.manager._series_earliest_and_latest_day(
+            asset, symbol, interval, sink.lower()
+        )
+
+        if local_range_result:
+            local_range = (local_range_result[0], local_range_result[1])
+        else:
+            local_range = None
+
+        if local_range and local_range[0] and local_range[1]:
+            # Check if date_iso falls within the local range
+            if local_range[0] <= date_iso <= local_range[1]:
+                # Further verify by checking missing days
+                missing_days = self.manager._missing_1d_days_csv(
+                    asset, symbol, interval, sink.lower(),
+                    date_iso, date_iso
+                )
+
+                if not missing_days:
+                    # Data already exists locally, no need to re-download
+                    self.logger.log_resolution(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(date_iso, date_iso),
+                        message=f"EOD data for {date_iso} already exists locally, skipped download",
+                        details={'recovery_method': 'local_verification'}
+                    )
+                    return True
+
         context = {
             'symbol': symbol,
             'asset': asset,
@@ -508,8 +548,8 @@ class IncoherenceRecovery:
             asset=asset,
             interval=interval,
             date_range=(date_iso, date_iso),
-            message=f"Recovered EOD data for {date_iso}",
-            details={}
+            message=f"Recovered EOD data for {date_iso} via API download",
+            details={'recovery_method': 'api_download'}
         )
 
         return True

@@ -56,7 +56,7 @@ class DataConsistencyLogger:
         """
         self.root_dir = Path(root_dir)
         self.verbose = verbose_console
-        self._log_buffer: Dict[str, list] = {}  # Buffer per batch writes
+        self._log_buffer: Dict[str, list] = {}  # Buffer for batch writes
 
     def log_missing_data(
         self,
