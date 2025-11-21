@@ -227,6 +227,349 @@ class ThetaSyncManager:
     # =========================================================================
 
     # =========================================================================
+    # DATA VALIDATION (REAL-TIME)
+    # =========================================================================
+
+    async def _validate_downloaded_data(
+        self,
+        df: pd.DataFrame,
+        asset: str,
+        symbol: str,
+        interval: str,
+        day_iso: str,
+        sink: str,
+        enrich_greeks: bool = False,
+        enrich_tick_greeks: bool = False
+    ) -> bool:
+        """Validate downloaded data before persisting to storage.
+
+        This method performs real-time validation on DataFrames in RAM before they are saved.
+        It checks for required columns, enrichment columns (if requested), data completeness,
+        and volume consistency (for tick data). In strict mode, any validation failure blocks
+        the save operation (all-or-nothing). In non-strict mode, warnings are logged but data
+        is still saved.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to validate (in RAM).
+        asset : str
+            Asset type ("stock", "option", "index").
+        symbol : str
+            Symbol name.
+        interval : str
+            Time interval ("1d", "5m", "tick", etc.).
+        day_iso : str
+            Date being validated (YYYY-MM-DD).
+        sink : str
+            Storage sink ("csv", "parquet", "influx").
+        enrich_greeks : bool, optional
+            Whether full Greeks enrichment was requested (default False).
+        enrich_tick_greeks : bool, optional
+            Whether tick-level Greeks enrichment was requested (default False).
+
+        Returns
+        -------
+        bool
+            True if validation passes (or non-strict mode), False if strict mode and validation fails.
+        """
+        if not self.cfg.enable_data_validation:
+            return True
+
+        from .validator import DataValidator
+
+        validation_passed = True
+        strict_mode = self.cfg.validation_strict_mode
+
+        # 1. Validate required columns
+        required_cols = ['timestamp']
+
+        if interval == 'tick':
+            # Tick data requirements
+            required_cols += ['volume']
+            if asset == "option":
+                required_cols += ['strike', 'expiration', 'right']
+        elif interval == '1d':
+            # EOD requirements
+            required_cols += ['open', 'high', 'low', 'close', 'volume']
+            if asset == "option":
+                required_cols += ['strike', 'expiration', 'right']
+        else:
+            # Intraday OHLC requirements
+            required_cols += ['open', 'high', 'low', 'close', 'volume']
+            if asset == "option":
+                required_cols += ['strike', 'expiration', 'right']
+
+        # Enrichment columns
+        enrichment_cols = []
+        if asset == "option":
+            if enrich_greeks:
+                enrichment_cols += ['delta', 'gamma', 'theta', 'vega', 'rho']
+            if enrich_tick_greeks and interval == 'tick':
+                enrichment_cols += ['trade_iv']  # Trade-level IV
+            if interval != 'tick':
+                # Bar-level IV is always enriched for options intraday
+                if 'bar_iv' not in enrichment_cols and 'implied_volatility' not in enrichment_cols:
+                    # IV enrichment is opt-in for now, but we can check if present
+                    pass
+
+        validation_result = DataValidator.validate_required_columns(
+            df=df,
+            required_columns=required_cols,
+            enrichment_columns=enrichment_cols
+        )
+
+        if not validation_result.valid:
+            self.logger.log_missing_data(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                missing_type='REQUIRED_COLUMNS',
+                message=validation_result.error_message or "Missing required columns",
+                details=validation_result.details
+            )
+            validation_passed = False
+
+            if strict_mode:
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"STRICT MODE: Blocking save due to missing columns",
+                    details=validation_result.details
+                )
+                return False
+
+        # 2. Validate data completeness (EOD or intraday)
+        if interval == '1d':
+            # EOD: check that we have data for the expected date
+            expected_dates = [day_iso]
+            validation_result = DataValidator.validate_eod_completeness(
+                df=df,
+                expected_dates=expected_dates
+            )
+
+            if not validation_result.valid:
+                self.logger.log_missing_data(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    missing_type='EOD_COMPLETENESS',
+                    message=validation_result.error_message or "EOD date missing",
+                    details=validation_result.details
+                )
+                validation_passed = False
+
+                if strict_mode:
+                    self.logger.log_failure(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(day_iso, day_iso),
+                        message=f"STRICT MODE: Blocking save due to EOD incompleteness",
+                        details=validation_result.details
+                    )
+                    return False
+
+        elif interval != 'tick':
+            # Intraday OHLC: validate candle completeness
+            validation_result = DataValidator.validate_intraday_completeness(
+                df=df,
+                interval=interval,
+                date_iso=day_iso,
+                asset=asset
+            )
+
+            if not validation_result.valid:
+                self.logger.log_missing_data(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    missing_type='INTRADAY_COMPLETENESS',
+                    message=validation_result.error_message or "Missing candles",
+                    details=validation_result.details
+                )
+                validation_passed = False
+
+                if strict_mode:
+                    self.logger.log_failure(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(day_iso, day_iso),
+                        message=f"STRICT MODE: Blocking save due to intraday incompleteness",
+                        details=validation_result.details
+                    )
+                    return False
+
+        # 3. Validate tick vs EOD volume (for tick data only)
+        if interval == 'tick':
+            # Try to get EOD volume for comparison
+            eod_volume, eod_volume_call, eod_volume_put = await self._get_eod_volume_for_validation(
+                symbol=symbol,
+                asset=asset,
+                date_iso=day_iso,
+                sink=sink
+            )
+
+            if eod_volume is not None:
+                validation_result = DataValidator.validate_tick_vs_eod_volume(
+                    tick_df=df,
+                    eod_volume=eod_volume,
+                    date_iso=day_iso,
+                    asset=asset,
+                    tolerance=self.cfg.tick_eod_volume_tolerance,
+                    eod_volume_call=eod_volume_call,
+                    eod_volume_put=eod_volume_put
+                )
+
+                if not validation_result.valid:
+                    self.logger.log_missing_data(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(day_iso, day_iso),
+                        missing_type='TICK_VOLUME_MISMATCH',
+                        message=validation_result.error_message or "Tick volume doesn't match EOD",
+                        details=validation_result.details
+                    )
+                    validation_passed = False
+
+                    if strict_mode:
+                        self.logger.log_failure(
+                            symbol=symbol,
+                            asset=asset,
+                            interval=interval,
+                            date_range=(day_iso, day_iso),
+                            message=f"STRICT MODE: Blocking save due to tick volume mismatch",
+                            details=validation_result.details
+                        )
+                        return False
+
+        # If we got here and validation_passed is still True, or non-strict mode
+        if validation_passed:
+            return True
+        else:
+            # Non-strict mode: warnings logged but allow save
+            return True
+
+    async def _get_eod_volume_for_validation(
+        self,
+        symbol: str,
+        asset: str,
+        date_iso: str,
+        sink: str
+    ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """Get EOD volumes for tick validation.
+
+        First checks local storage (DB), then downloads from API if not found.
+        For options, attempts to get separate call and put volumes.
+
+        Parameters
+        ----------
+        symbol : str
+            Symbol name.
+        asset : str
+            Asset type.
+        date_iso : str
+            Date (YYYY-MM-DD).
+        sink : str
+            Storage sink.
+
+        Returns
+        -------
+        Tuple[Optional[float], Optional[float], Optional[float]]
+            (total_volume, call_volume, put_volume). For non-options, call and put are None.
+        """
+        import io
+
+        # First, try to read EOD from local storage
+        try:
+            files = self._list_series_files(asset, symbol, "1d", sink.lower())
+            eod_file = None
+            for f in files:
+                if date_iso in f:
+                    eod_file = f
+                    break
+
+            if eod_file:
+                if sink.lower() == "csv":
+                    eod_df = pd.read_csv(eod_file)
+                elif sink.lower() == "parquet":
+                    eod_df = pd.read_parquet(eod_file)
+                else:
+                    eod_df = None
+
+                if eod_df is not None and not eod_df.empty and 'volume' in eod_df.columns:
+                    total_volume = eod_df['volume'].sum()
+
+                    # For options, try to separate by call/put
+                    if asset == "option" and 'right' in eod_df.columns:
+                        call_volume = eod_df[eod_df['right'].isin(['C', 'call'])]['volume'].sum()
+                        put_volume = eod_df[eod_df['right'].isin(['P', 'put'])]['volume'].sum()
+                        return float(total_volume), float(call_volume), float(put_volume)
+
+                    return float(total_volume), None, None
+        except Exception:
+            pass
+
+        # If not in local storage, download from API
+        try:
+            if asset == "stock":
+                csv_txt, _ = await self.client.stock_history_eod(
+                    symbol=symbol,
+                    start_date=date_iso,
+                    end_date=date_iso,
+                    format_type="csv"
+                )
+            elif asset == "index":
+                csv_txt, _ = await self.client.index_history_eod(
+                    symbol=symbol,
+                    start_date=date_iso,
+                    end_date=date_iso,
+                    format_type="csv"
+                )
+            elif asset == "option":
+                csv_txt, _ = await self.client.option_history_eod(
+                    symbol=symbol,
+                    expiration="*",
+                    start_date=date_iso,
+                    end_date=date_iso,
+                    format_type="csv"
+                )
+            else:
+                return None, None, None
+
+            if not csv_txt:
+                return None, None, None
+
+            eod_df = pd.read_csv(io.StringIO(csv_txt))
+
+            if 'volume' in eod_df.columns:
+                total_volume = eod_df['volume'].sum()
+
+                if asset == "option" and 'right' in eod_df.columns:
+                    call_volume = eod_df[eod_df['right'].isin(['C', 'call'])]['volume'].sum()
+                    put_volume = eod_df[eod_df['right'].isin(['P', 'put'])]['volume'].sum()
+                    return float(total_volume), float(call_volume), float(put_volume)
+
+                return float(total_volume), None, None
+
+        except Exception:
+            pass
+
+        return None, None, None
+
+    # =========================================================================
+    # (END)
+    # DATA VALIDATION (REAL-TIME)
+    # =========================================================================
+
+    # =========================================================================
     # (BEGIN)
     # DATA SYNCHRONIZATION
     # =========================================================================
@@ -1005,11 +1348,30 @@ class ThetaSyncManager:
             _dedupe_keys = ["option_symbol"] if "option_symbol" in df.columns else ["symbol","expiration","strike","right"]
             df = df.drop_duplicates(subset=_dedupe_keys, keep="last")
 
-            
+            # ===== VALIDATION (Real-Time) =====
+            # Validate data before persisting
+            validation_ok = await self._validate_downloaded_data(
+                df=df,
+                asset="option",
+                symbol=symbol,
+                interval=interval,
+                day_iso=day_iso,
+                sink=sink,
+                enrich_greeks=enrich_greeks,
+                enrich_tick_greeks=False
+            )
+
+            if not validation_ok:
+                # Validation failed in strict mode - do not save
+                print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} EOD {day_iso} due to validation failure")
+                return
+            # ===== /VALIDATION =====
+
+
             # 3) persist + written rows counting
             st = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
             base_path = st.get("base_path") or self._make_file_basepath("option", symbol, interval, f"{day_iso}T00-00-00Z", sink_lower)
-            
+
             wrote = 0
             if sink_lower == "csv":
                 await self._append_csv_text(base_path, df.to_csv(index=False))
@@ -1748,10 +2110,29 @@ class ThetaSyncManager:
                 .drop_duplicates(subset=_key_cols, keep="last")
             )
         # --- /HARD DEDUPE ---
-    
-                
+
+        # ===== VALIDATION (Real-Time) =====
+        # Validate data before persisting
+        validation_ok = await self._validate_downloaded_data(
+            df=df_all,
+            asset="option",
+            symbol=symbol,
+            interval=interval,
+            day_iso=day_iso,
+            sink=sink,
+            enrich_greeks=enrich_greeks,
+            enrich_tick_greeks=enrich_tick_greeks
+        )
+
+        if not validation_ok:
+            # Validation failed in strict mode - do not save
+            print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} {interval} {day_iso} due to validation failure")
+            return
+        # ===== /VALIDATION =====
+
+
         st = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
-        
+
         # --- STATUS & BASE PATH (post tail-resume) ---
         base_path = st.get("base_path") or self._make_file_basepath(
             "option", symbol, interval, f"{day_iso}T00-00-00Z", sink_lower
@@ -2101,7 +2482,26 @@ class ThetaSyncManager:
                 # Rebuild CSV
                 if sink_lower in ("csv", "parquet"):
                     csv_txt = df_day.to_csv(index=False)
-            
+
+        # ===== VALIDATION (Real-Time) =====
+        # Validate data before persisting
+        validation_ok = await self._validate_downloaded_data(
+            df=df_day,
+            asset=asset,
+            symbol=symbol,
+            interval=interval,
+            day_iso=day_iso,
+            sink=sink,
+            enrich_greeks=False,  # Stocks/indices don't have Greeks enrichment
+            enrich_tick_greeks=False
+        )
+
+        if not validation_ok:
+            # Validation failed in strict mode - do not save
+            print(f"[VALIDATION] STRICT MODE: Skipping save for {asset} {symbol} {interval} {day_iso} due to validation failure")
+            return
+        # ===== /VALIDATION =====
+
         # -------------------------------
         # 6) PERSIST
         # -------------------------------
