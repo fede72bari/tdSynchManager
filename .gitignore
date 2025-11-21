@@ -68,3 +68,11 @@ Thumbs.db
 # Project specific
 data/
 *.log
+
+# Archive and backup files
+.archive/
+*.backup
+*.backup_*
+*_backup
+*.old
+*.orig
