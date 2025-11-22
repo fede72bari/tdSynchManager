@@ -1,7 +1,7 @@
 """Retry utilities with configurable policy and automatic logging."""
 
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, Tuple, Type, TypeVar
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple, Type, TypeVar
 
 from .config import RetryPolicy
 from .logger import DataConsistencyLogger
@@ -17,7 +17,7 @@ async def retry_with_policy(
     logger: DataConsistencyLogger,
     context: Dict[str, Any],
     error_types: Tuple[Type[Exception], ...] = (Exception,)
-) -> Tuple[T | None, bool]:
+) -> Tuple[Optional[T], bool]:
     """Execute an asynchronous operation with configurable retry logic and automatic logging.
 
     This function wraps any async operation with retry capabilities, automatically logging
@@ -51,7 +51,7 @@ async def retry_with_policy(
 
     Returns
     -------
-    Tuple[T | None, bool]
+    Tuple[Optional[T], bool]
         A tuple of (result, success_flag):
         - If successful: (operation_result, True) where operation_result is the return
           value from coro_func.
@@ -83,7 +83,7 @@ async def retry_with_policy(
         print("Failed to retrieve data after all retries")
     ```
     """
-    last_error: Exception | None = None
+    last_error: Optional[Exception] = None
     symbol = context.get('symbol', 'UNKNOWN')
     asset = context.get('asset', 'UNKNOWN')
     interval = context.get('interval', 'UNKNOWN')

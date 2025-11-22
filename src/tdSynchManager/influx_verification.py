@@ -254,7 +254,7 @@ async def write_influx_with_verification(
                     interval=interval,
                     date_range=date_range,
                     attempt=attempt + 1,
-                    message=f"InfluxDB partial write: {verification.missing_count}/{verification.total_attempted} missing, retrying",
+                    error_msg=f"InfluxDB partial write: {verification.missing_count}/{verification.total_attempted} missing, retrying",
                     details={
                         'missing_count': verification.missing_count,
                         'total_attempted': verification.total_attempted,
@@ -288,7 +288,7 @@ async def write_influx_with_verification(
                     interval=interval,
                     date_range=date_range,
                     attempt=attempt + 1,
-                    message=f"InfluxDB write error: {str(e)}, retrying",
+                    error_msg=f"InfluxDB write error: {str(e)}, retrying",
                     details={'error': str(e), 'error_type': type(e).__name__, 'measurement': measurement}
                 )
                 await asyncio.sleep(retry_policy.delay_seconds)

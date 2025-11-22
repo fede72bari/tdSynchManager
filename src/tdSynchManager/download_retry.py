@@ -89,7 +89,7 @@ async def download_with_retry_and_validation(
                     interval=interval,
                     date_range=date_range,
                     attempt=attempt + 1,
-                    message="Validation failed, retrying download",
+                    error_msg="Validation failed, retrying download",
                     details={}
                 )
                 await asyncio.sleep(retry_policy.delay_seconds)
@@ -102,7 +102,7 @@ async def download_with_retry_and_validation(
                     interval=interval,
                     date_range=date_range,
                     attempt=attempt + 1,
-                    message=f"Download failed: {str(e)}, retrying",
+                    error_msg=f"Download failed: {str(e)}, retrying",
                     details={'error': str(e), 'error_type': type(e).__name__}
                 )
                 await asyncio.sleep(retry_policy.delay_seconds)

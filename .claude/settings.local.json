@@ -10,7 +10,13 @@
       "Bash(git stash:*)",
       "Bash(git restore:*)",
       "Bash(git commit:*)",
-      "Bash(/c/Users/Federico/anaconda3/python.exe -m py_compile:*)"
+      "Bash(/c/Users/Federico/anaconda3/python.exe -m py_compile:*)",
+      "Bash(/c/Users/Federico/anaconda3/Scripts/jupyter nbconvert:*)",
+      "Bash(git push:*)",
+      "Bash(git branch:*)",
+      "Bash(/c/Users/Federico/anaconda3/python.exe:*)",
+      "Bash(/c/Users/Federico/anaconda3/Scripts/pip install:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []
