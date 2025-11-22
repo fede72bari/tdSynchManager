@@ -103,12 +103,16 @@ for attempt in range(cfg.retry_policy.max_attempts):
 ```
 
 **Verifica Codice**:
-- ❌ **NON INTEGRATO** nel manager.py (validation senza retry download)
 - ✅ **MODULO CREATO**: `download_retry.py:13-146`
 - ✅ **CONFIGURABILE**: `config.py:RetryPolicy`
-- ⚠️ **INTEGRAZIONE MANCANTE**: Serve sostituire validation calls con `download_with_retry_and_validation()`
+- ✅ **INTEGRATO (Options EOD)**: `manager.py:1216-1377` - Full download+enrich+validate retry
+- ⚠️ **NON INTEGRATO (Options Intraday)**: Troppo complesso per refactor (multi-expiration loops, resume logic)
+- ⚠️ **NON INTEGRATO (Equity/Index)**: Priorità minore, da implementare in futuro
 
-**Stato**: ⚠️ **PARZIALE** (modulo esiste, integrazione mancante)
+**Stato**: ⚠️ **PARZIALE**
+- ✅ Options EOD: COMPLETO (download+enrich retry)
+- ❌ Options Intraday: MANCANTE (solo InfluxDB verification)
+- ❌ Equity/Index: MANCANTE (solo InfluxDB verification)
 
 ---
 
@@ -296,13 +300,14 @@ missing_keys = set(original_keys) - set(written_keys)
 ```
 
 **Verifica Codice**:
-- ❌ **NON INTEGRATO** in manager
 - ✅ **MODULO CREATO**: `influx_verification.py:27-130` (`verify_influx_write`)
 - ✅ **QUERY**: Usa FlightSQL per verificare righe scritte
-- ✅ **CONFRONTO KEYS**: timestamp + tags (symbol, strike, expiration, right)
-- ⚠️ **INTEGRAZIONE MANCANTE**: Serve wrappare `_append_influx_df()` con verifica
+- ✅ **CONFRONTO KEYS**: timestamp + tags (symbol, strike, expiration, right, sequence)
+- ✅ **INTEGRATO (Options EOD)**: `manager.py:1410-1430`
+- ✅ **INTEGRATO (Options Intraday)**: `manager.py:2218-2238`
+- ✅ **INTEGRATO (Equity/Index)**: `manager.py:2612-2632`
 
-**Stato**: ⚠️ **PARZIALE** (modulo esiste, integrazione mancante)
+**Stato**: ✅ **COMPLETO** (integrato in tutti i punti di scrittura InfluxDB)
 
 ---
 
@@ -327,13 +332,14 @@ for attempt in range(M):
 ```
 
 **Verifica Codice**:
-- ❌ **NON INTEGRATO** in manager
 - ✅ **MODULO CREATO**: `influx_verification.py:133-292` (`write_influx_with_verification`)
 - ✅ **RETRY GRANULARE**: Linea 237-240 (retry solo missing_df)
 - ✅ **M TENTATIVI**: Usa `retry_policy.max_attempts`
-- ⚠️ **INTEGRAZIONE MANCANTE**: Serve sostituire chiamate `_append_influx_df`
+- ✅ **INTEGRATO (Options EOD)**: `manager.py:1410-1430`
+- ✅ **INTEGRATO (Options Intraday)**: `manager.py:2218-2238`
+- ✅ **INTEGRATO (Equity/Index)**: `manager.py:2612-2632`
 
-**Stato**: ⚠️ **PARZIALE** (modulo esiste, integrazione mancante)
+**Stato**: ✅ **COMPLETO** (integrato in tutti i punti di scrittura InfluxDB)
 
 ---
 
@@ -631,33 +637,57 @@ if date_iso in local_range:
 
 ### Priorità ALTA (Requisiti Originali Critici)
 
-1. **REQ-RT-003**: Integrare retry download in manager (3 locations)
-2. **REQ-INFLUX-001/002**: Integrare verifica InfluxDB (4 locations)
+1. ~~**REQ-RT-003**: Integrare retry download in manager (3 locations)~~ ✅ COMPLETATO per Options EOD
+2. ~~**REQ-INFLUX-001/002**: Integrare verifica InfluxDB (4 locations)~~ ✅ COMPLETATO per tutti i sink
 3. **REQ-ERR-002**: Aggiungere gestione InfluxDB auth errors
 
 ### Priorità MEDIA
 
-4. **REQ-ERR-001**: Usare ResilientThetaClient wrapper in manager
-5. **REQ-RT-004.3**: Aggiungere retry tick download su mismatch
+4. **REQ-RT-003**: Completare retry download per Options Intraday e Equity/Index (richiede refactoring)
+5. **REQ-ERR-001**: Usare ResilientThetaClient wrapper in manager
+6. **REQ-RT-004.3**: Aggiungere retry tick download su mismatch
 
 ### Priorità BASSA
 
-6. **REQ-RT-004.2**: Aggiungere weekend filter in real-time EOD validation
-7. **REQ-ERR-003**: Implementare detection + pausa globale risposte troncate
+7. **REQ-RT-004.2**: Aggiungere weekend filter in real-time EOD validation
+8. **REQ-ERR-003**: Implementare detection + pausa globale risposte troncate
 
 ---
 
 ## METRICHE FINALI
 
-- **Totale Requisiti**: 21 (19 originali + 2 post-hoc aggiunti)
-- **Completamente Implementati**: 11 (52%)
-- **Parzialmente Implementati**: 6 (29%)
-- **Non Implementati**: 2 (10%)
-- **Moduli Utility Creati ma Non Integrati**: 2 (download_retry, influx_verification)
+### Aggiornamento Post-Integrazione (22 Novembre 2025, ore 14:00)
 
-**Coverage Effettiva**: ~70% (considerando requisiti parziali come 50% implementati)
+- **Totale Requisiti**: 21 (19 originali + 2 post-hoc aggiunti)
+- **Completamente Implementati**: 13 (62%) ⬆️ +2 da 11
+  - **NUOVI**: REQ-INFLUX-001, REQ-INFLUX-002
+- **Parzialmente Implementati**: 6 (29%) ✓ invariato
+  - **AGGIORNATO**: REQ-RT-003 ora include Options EOD completo
+- **Non Implementati**: 2 (10%) ✓ invariato
+
+**Coverage Effettiva**: ~76% (considerando requisiti parziali come 50% implementati)
+- Miglioramento: +6% (da 70% a 76%)
+
+### Dettaglio Lavoro Integrazione
+
+**Completato**:
+- ✅ Options EOD: Download retry completo (download+enrich+validate)
+- ✅ Options EOD: InfluxDB write verification + granular retry
+- ✅ Options Intraday: InfluxDB write verification + granular retry
+- ✅ Equity/Index: InfluxDB write verification + granular retry
+
+**Rimasto da Fare**:
+- ⚠️ Options Intraday: Download retry (troppo complesso, richiede refactoring esteso)
+- ⚠️ Equity/Index: Download retry (priorità minore)
+- ❌ InfluxDB auth error handling in manager
+- ❌ ResilientThetaClient integration
+- ❌ Truncated response detection
 
 ---
 
-**Data Verifica**: 22 Novembre 2025
-**Prossimi Step**: Integrare moduli utility in manager.py per raggiungere 100% coverage
+**Data Prima Verifica**: 22 Novembre 2025, ore 09:00
+**Data Integrazione**: 22 Novembre 2025, ore 10:00-14:00
+**Prossimi Step**:
+1. Test end-to-end di retry e verification in scenari reali
+2. Gestione errori InfluxDB auth
+3. Refactoring Options Intraday per abilitare download retry
