@@ -5,7 +5,9 @@
       "Bash(\"/c/Users/Federico/anaconda3/python.exe\" test_influx_debug.py)",
       "Bash(conda env list:*)",
       "Bash(source:*)",
-      "Bash(conda activate:*)"
+      "Bash(conda activate:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
