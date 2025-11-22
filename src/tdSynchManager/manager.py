@@ -297,8 +297,7 @@ class ThetaSyncManager:
                 asset=asset,
                 interval=interval,
                 date_range=(day_iso, day_iso),
-                missing_type='REQUIRED_COLUMNS',
-                message=validation_result.error_message or "Missing required columns",
+                error_msg=validation_result.error_message or "Missing required columns",
                 details=validation_result.details
             )
             validation_passed = False
@@ -329,8 +328,7 @@ class ThetaSyncManager:
                     asset=asset,
                     interval=interval,
                     date_range=(day_iso, day_iso),
-                    missing_type='EOD_COMPLETENESS',
-                    message=validation_result.error_message or "EOD date missing",
+                    error_msg=validation_result.error_message or "EOD date missing",
                     details=validation_result.details
                 )
                 validation_passed = False
@@ -361,8 +359,7 @@ class ThetaSyncManager:
                     asset=asset,
                     interval=interval,
                     date_range=(day_iso, day_iso),
-                    missing_type='INTRADAY_COMPLETENESS',
-                    message=validation_result.error_message or "Missing candles",
+                    error_msg=validation_result.error_message or "Missing candles",
                     details=validation_result.details
                 )
                 validation_passed = False
@@ -405,8 +402,7 @@ class ThetaSyncManager:
                         asset=asset,
                         interval=interval,
                         date_range=(day_iso, day_iso),
-                        missing_type='TICK_VOLUME_MISMATCH',
-                        message=validation_result.error_message or "Tick volume doesn't match EOD",
+                        error_msg=validation_result.error_message or "Tick volume doesn't match EOD",
                         details=validation_result.details
                     )
                     validation_passed = False
