@@ -283,42 +283,12 @@ class ThetaSyncManager:
         validation_passed = True
         strict_mode = self.cfg.validation_strict_mode
 
-        # 1. Validate required columns
-        required_cols = ['timestamp']
-
-        if interval == 'tick':
-            # Tick data requirements
-            required_cols += ['volume']
-            if asset == "option":
-                required_cols += ['strike', 'expiration', 'right']
-        elif interval == '1d':
-            # EOD requirements
-            required_cols += ['open', 'high', 'low', 'close', 'volume']
-            if asset == "option":
-                required_cols += ['strike', 'expiration', 'right']
-        else:
-            # Intraday OHLC requirements
-            required_cols += ['open', 'high', 'low', 'close', 'volume']
-            if asset == "option":
-                required_cols += ['strike', 'expiration', 'right']
-
-        # Enrichment columns
-        enrichment_cols = []
-        if asset == "option":
-            if enrich_greeks:
-                enrichment_cols += ['delta', 'gamma', 'theta', 'vega', 'rho']
-            if enrich_tick_greeks and interval == 'tick':
-                enrichment_cols += ['trade_iv']  # Trade-level IV
-            if interval != 'tick':
-                # Bar-level IV is always enriched for options intraday
-                if 'bar_iv' not in enrichment_cols and 'implied_volatility' not in enrichment_cols:
-                    # IV enrichment is opt-in for now, but we can check if present
-                    pass
-
+        # 1. Validate required columns (DataValidator handles requirements internally)
         validation_result = DataValidator.validate_required_columns(
             df=df,
-            required_columns=required_cols,
-            enrichment_columns=enrichment_cols
+            asset=asset,
+            interval=interval,
+            enrich_greeks=enrich_greeks
         )
 
         if not validation_result.valid:
@@ -1104,6 +1074,15 @@ class ThetaSyncManager:
                 raise
             except Exception as e:
                 print(f"[WARN] {task.asset} {symbol} {interval} {day_iso}: {e}")
+                # CRITICAL: Log to persistent storage (not just console)
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset=task.asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"Download and store failed: {str(e)}",
+                    details={'error': str(e), 'error_type': type(e).__name__}
+                )
 
             cur_date += timedelta(days=1)
 
