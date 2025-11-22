@@ -6,8 +6,11 @@
       "Bash(conda env list:*)",
       "Bash(source:*)",
       "Bash(conda activate:*)",
-      "Bash(git fetch:*)",
-      "Bash(git checkout:*)"
+      "Bash(git merge:*)",
+      "Bash(git stash:*)",
+      "Bash(git restore:*)",
+      "Bash(git commit:*)",
+      "Bash(/c/Users/Federico/anaconda3/python.exe -m py_compile:*)"
     ],
     "deny": [],
     "ask": []

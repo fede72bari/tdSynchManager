@@ -30,6 +30,8 @@ from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
 from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
 from .retry import retry_with_policy
+from .download_retry import download_with_retry_and_validation
+from .influx_verification import verify_influx_write, write_influx_with_verification, InfluxWriteResult
 
 try:  # optional at runtime
     ipy_display = importlib.import_module("IPython.display").display
@@ -1211,103 +1213,43 @@ class ThetaSyncManager:
             if os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
                 return
 
-
-            # 1) EOD OHLC for ALL expirations in one call
-            #    (avoids brittle discovery via /option/list/contracts)
-            csv_txt, _ = await self.client.option_history_eod(
-                symbol=symbol,
-                expiration="*",         # all expirations
-                start_date=day_iso,     # "YYYY-MM-DD"
-                end_date=day_iso,       # inclusive
-                format_type="csv",
-            )
-            if not csv_txt:
-                return
-            df = pd.read_csv(io.StringIO(csv_txt))
-            if df is None or df.empty:
-                return
-        
-            # 2) (optional) EOD Greeks for ALL expirations and merge on robust keys
-            if enrich_greeks:
-                csv_g, _ = await self.client.option_history_greeks_eod(
+            # ===== DOWNLOAD WITH RETRY AND VALIDATION =====
+            # Define download+enrich function
+            async def download_and_enrich():
+                # 1) EOD OHLC for ALL expirations in one call
+                csv_txt, url = await self.client.option_history_eod(
                     symbol=symbol,
                     expiration="*",
                     start_date=day_iso,
                     end_date=day_iso,
-                    rate_type="sofr",
                     format_type="csv",
                 )
-                if csv_g:
-                    dg = pd.read_csv(io.StringIO(csv_g))
-                    if dg is not None and not dg.empty:
-                        # Preferred join key when present
+                if not csv_txt:
+                    raise ValueError("Empty response from option_history_eod")
+                df = pd.read_csv(io.StringIO(csv_txt))
+                if df is None or df.empty:
+                    raise ValueError("Empty DataFrame from option_history_eod")
 
-                        # allinea strike_price -> strike se serve (su entrambe le tabelle)
-                        if "strike_price" in dg.columns and "strike" not in dg.columns:
-                            dg = dg.rename(columns={"strike_price": "strike"})
-                        if "strike_price" in df.columns and "strike" not in df.columns:
-                            df = df.rename(columns={"strike_price": "strike"})
+                # 2) (optional) EOD Greeks for ALL expirations and merge
+                if enrich_greeks:
+                    csv_g, _ = await self.client.option_history_greeks_eod(
+                        symbol=symbol,
+                        expiration="*",
+                        start_date=day_iso,
+                        end_date=day_iso,
+                        rate_type="sofr",
+                        format_type="csv",
+                    )
+                    if csv_g:
+                        dg = pd.read_csv(io.StringIO(csv_g))
+                        if dg is not None and not dg.empty:
+                            # Align strike columns
+                            if "strike_price" in dg.columns and "strike" not in dg.columns:
+                                dg = dg.rename(columns={"strike_price": "strike"})
+                            if "strike_price" in df.columns and "strike" not in df.columns:
+                                df = df.rename(columns={"strike_price": "strike"})
 
-                        candidate_keys = [
-                            ["option_symbol"],
-                            ["root", "expiration", "strike", "right"],
-                            ["symbol", "expiration", "strike", "right"],
-                        ]
-                        on_cols = None
-                        for keys in candidate_keys:
-                            if all(k in df.columns for k in keys) and all(k in dg.columns for k in keys):
-                                on_cols = keys
-                                break
-                        if on_cols is not None:
-                            # FULL greeks merge (EOD): tieni tutte le colonne greche
-                            # 1) elimina le colonne duplicate non-chiave
-                            dup_cols = [c for c in dg.columns if c in df.columns and c not in on_cols]
-                            # 2) dedupe sul set di chiavi
-                            dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
-                            # 3) merge completo
-                            df = df.merge(dg, on=on_cols, how="left")
-
-                            
-            
-            # 2b) last_day_OI: OI del giorno precedente nella stessa tabella
-            try:
-                d = dt.fromisoformat(day_iso)
-                prev = d - timedelta(days=1)
-                # normalizza a feriale (sab->ven, dom->ven)
-                if prev.weekday() == 5:  # sab
-                    prev = prev - timedelta(days=1)
-                elif prev.weekday() == 6:  # dom
-                    prev = prev - timedelta(days=2)
-
-                cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
-                csv_oi, _ = await self.client.option_history_open_interest(
-                    symbol=symbol,
-                    expiration="*",
-                    date=cur_ymd,  # chiediamo con la DATA CORRENTE (D) per ottenere l’OI di D-1
-                    strike="*",
-                    right="both",
-                    format_type="csv",
-                )
-                if csv_oi:
-                    doi = pd.read_csv(io.StringIO(csv_oi))
-                    if doi is not None and not doi.empty:
-                        # rinomina la colonna OI trovata in last_day_OI
-                        oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
-                        if oi_col:
-                            doi = doi.rename(columns={oi_col: "last_day_OI"})
-                            
-                            # --- OI timestamp rename + semantic date ---
-                            ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
-                            if ts_col:
-                                doi = doi.rename(columns={ts_col: "timestamp_oi"})
-                            # (opzione consigliata) se c'è timestamp_oi, deduci il giorno effettivo dall'API:
-                            if "timestamp_oi" in doi.columns:
-                                _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
-                                doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
-                            else:
-                                doi["effective_date_oi"] = prev.date().isoformat()
-                            # --- /OI normalize ---
-                            
+                            # Find join keys
                             candidate_keys = [
                                 ["option_symbol"],
                                 ["root", "expiration", "strike", "right"],
@@ -1315,57 +1257,124 @@ class ThetaSyncManager:
                             ]
                             on_cols = None
                             for keys in candidate_keys:
-                                if all(k in df.columns for k in keys) and all(k in doi.columns for k in keys):
+                                if all(k in df.columns for k in keys) and all(k in dg.columns for k in keys):
                                     on_cols = keys
                                     break
                             if on_cols is not None:
-                                keep = on_cols + ["last_day_OI"]
+                                dup_cols = [c for c in dg.columns if c in df.columns and c not in on_cols]
+                                dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
+                                df = df.merge(dg, on=on_cols, how="left")
+
+                # 2b) last_day_OI: Previous day OI
+                try:
+                    d = dt.fromisoformat(day_iso)
+                    prev = d - timedelta(days=1)
+                    # Weekend normalization
+                    if prev.weekday() == 5:  # Sat -> Fri
+                        prev = prev - timedelta(days=1)
+                    elif prev.weekday() == 6:  # Sun -> Fri
+                        prev = prev - timedelta(days=2)
+
+                    cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
+                    csv_oi, _ = await self.client.option_history_open_interest(
+                        symbol=symbol,
+                        expiration="*",
+                        date=cur_ymd,
+                        strike="*",
+                        right="both",
+                        format_type="csv",
+                    )
+                    if csv_oi:
+                        doi = pd.read_csv(io.StringIO(csv_oi))
+                        if doi is not None and not doi.empty:
+                            oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
+                            if oi_col:
+                                doi = doi.rename(columns={oi_col: "last_day_OI"})
+
+                                ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
+                                if ts_col:
+                                    doi = doi.rename(columns={ts_col: "timestamp_oi"})
                                 if "timestamp_oi" in doi.columns:
-                                    keep += ["timestamp_oi"]
-                                keep += ["effective_date_oi"]
-                                doi = doi[keep].drop_duplicates(subset=on_cols)
-                                df = df.merge(doi, on=on_cols, how="left")
-            except Exception as e:
-                print(f"[WARN] EOD OI merge {symbol} {day_iso}: {e}")
+                                    _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
+                                    doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
+                                else:
+                                    doi["effective_date_oi"] = prev.date().isoformat()
 
-        
-            # 3) persist via capped writer (detect gaps and rebuild if needed)
+                                candidate_keys = [
+                                    ["option_symbol"],
+                                    ["root", "expiration", "strike", "right"],
+                                    ["symbol", "expiration", "strike", "right"],
+                                ]
+                                on_cols = None
+                                for keys in candidate_keys:
+                                    if all(k in df.columns for k in keys) and all(k in doi.columns for k in keys):
+                                        on_cols = keys
+                                        break
+                                if on_cols is not None:
+                                    keep = on_cols + ["last_day_OI"]
+                                    if "timestamp_oi" in doi.columns:
+                                        keep += ["timestamp_oi"]
+                                    keep += ["effective_date_oi"]
+                                    doi = doi[keep].drop_duplicates(subset=on_cols)
+                                    df = df.merge(doi, on=on_cols, how="left")
+                except Exception as e:
+                    print(f"[WARN] EOD OI merge {symbol} {day_iso}: {e}")
 
-            # Normalizza dtypes per la chiave EOD
-            if "expiration" in df.columns:
-                df["expiration"] = pd.to_datetime(df["expiration"], errors="coerce").dt.date
-            if "strike" in df.columns:
-                df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
-            if "right" in df.columns:
-                df["right"] = (
-                    df["right"].astype(str).str.strip().str.lower()
-                    .map({"c":"call","p":"put","call":"call","put":"put"})
-                    .fillna(df["right"])
+                # 3) Normalize dtypes and dedupe
+                if "expiration" in df.columns:
+                    df["expiration"] = pd.to_datetime(df["expiration"], errors="coerce").dt.date
+                if "strike" in df.columns:
+                    df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
+                if "right" in df.columns:
+                    df["right"] = (
+                        df["right"].astype(str).str.strip().str.lower()
+                        .map({"c":"call","p":"put","call":"call","put":"put"})
+                        .fillna(df["right"])
+                    )
+
+                _dedupe_keys = ["option_symbol"] if "option_symbol" in df.columns else ["symbol","expiration","strike","right"]
+                df = df.drop_duplicates(subset=_dedupe_keys, keep="last")
+
+                return (df, url)
+
+            # Define parse function (identity since download returns DataFrame)
+            def parse_result(result):
+                return result[0]  # Extract DataFrame from (df, url) tuple
+
+            # Define validation wrapper
+            async def validate_result(df):
+                return await self._validate_downloaded_data(
+                    df=df,
+                    asset="option",
+                    symbol=symbol,
+                    interval=interval,
+                    day_iso=day_iso,
+                    sink=sink,
+                    enrich_greeks=enrich_greeks,
+                    enrich_tick_greeks=False
                 )
 
-
-            # Hard dedupe EOD on contract keys
-            _dedupe_keys = ["option_symbol"] if "option_symbol" in df.columns else ["symbol","expiration","strike","right"]
-            df = df.drop_duplicates(subset=_dedupe_keys, keep="last")
-
-            # ===== VALIDATION (Real-Time) =====
-            # Validate data before persisting
-            validation_ok = await self._validate_downloaded_data(
-                df=df,
-                asset="option",
-                symbol=symbol,
-                interval=interval,
-                day_iso=day_iso,
-                sink=sink,
-                enrich_greeks=enrich_greeks,
-                enrich_tick_greeks=False
+            # Use retry wrapper
+            df, validation_ok = await download_with_retry_and_validation(
+                download_func=download_and_enrich,
+                parse_func=parse_result,
+                validate_func=validate_result,
+                retry_policy=self.cfg.retry_policy,
+                logger=self.logger,
+                context={
+                    'symbol': symbol,
+                    'asset': 'option',
+                    'interval': interval,
+                    'date_range': (day_iso, day_iso),
+                    'sink': sink
+                }
             )
 
-            if not validation_ok:
-                # Validation failed in strict mode - do not save
-                print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} EOD {day_iso} due to validation failure")
+            if not validation_ok or df is None:
+                # All retry attempts failed or validation failed
+                print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} EOD {day_iso} - all retry attempts failed")
                 return
-            # ===== /VALIDATION =====
+            # ===== /DOWNLOAD WITH RETRY AND VALIDATION =====
 
 
             # 3) persist + written rows counting
@@ -1382,9 +1391,46 @@ class ThetaSyncManager:
                 first_et = df["timestamp"].min() if "timestamp" in df.columns else None
                 last_et  = df["timestamp"].max() if "timestamp" in df.columns else None
                 print(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df)} window_ET=({first_et},{last_et})")
-            
-                wrote = await self._append_influx_df(base_path, df)
-            
+
+                # InfluxDB write with verification and retry
+                measurement = self._influx_measurement_from_base(base_path)
+                influx_client = self._ensure_influx_client()
+
+                # Define key columns for verification
+                key_cols = ['__ts_utc']
+                if 'symbol' in df.columns:
+                    key_cols.append('symbol')
+                if 'expiration' in df.columns:
+                    key_cols.append('expiration')
+                if 'strike' in df.columns:
+                    key_cols.append('strike')
+                if 'right' in df.columns:
+                    key_cols.append('right')
+
+                wrote, write_success = await write_influx_with_verification(
+                    write_func=lambda df_write: self._append_influx_df(base_path, df_write),
+                    verify_func=lambda df_verify: verify_influx_write(
+                        influx_client=influx_client,
+                        measurement=measurement,
+                        df_original=df_verify,
+                        key_cols=key_cols,
+                        time_col='__ts_utc'
+                    ),
+                    df=df,
+                    retry_policy=self.cfg.retry_policy,
+                    logger=self.logger,
+                    context={
+                        'symbol': symbol,
+                        'asset': 'option',
+                        'interval': interval,
+                        'date_range': (day_iso, day_iso),
+                        'sink': sink,
+                        'measurement': measurement
+                    }
+                )
+
+                if not write_success:
+                    print(f"[ALERT] InfluxDB write failed after retries for option {symbol} EOD {day_iso}")
                 if wrote == 0 and len(df) > 0:
                     print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                           "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
@@ -2151,9 +2197,48 @@ class ThetaSyncManager:
             first_et = df_all["timestamp"].min() if "timestamp" in df_all.columns else None
             last_et  = df_all["timestamp"].max() if "timestamp" in df_all.columns else None
             print(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df_all)} window_ET=({first_et},{last_et})")
-        
-            wrote = await self._append_influx_df(base_path, df_all)
-        
+
+            # InfluxDB write with verification and retry
+            measurement = self._influx_measurement_from_base(base_path)
+            influx_client = self._ensure_influx_client()
+
+            # Define key columns for verification
+            key_cols = ['__ts_utc']
+            if 'symbol' in df_all.columns:
+                key_cols.append('symbol')
+            if 'expiration' in df_all.columns:
+                key_cols.append('expiration')
+            if 'strike' in df_all.columns:
+                key_cols.append('strike')
+            if 'right' in df_all.columns:
+                key_cols.append('right')
+            if interval == 'tick' and 'sequence' in df_all.columns:
+                key_cols.append('sequence')
+
+            wrote, write_success = await write_influx_with_verification(
+                write_func=lambda df_write: self._append_influx_df(base_path, df_write),
+                verify_func=lambda df_verify: verify_influx_write(
+                    influx_client=influx_client,
+                    measurement=measurement,
+                    df_original=df_verify,
+                    key_cols=key_cols,
+                    time_col='__ts_utc'
+                ),
+                df=df_all,
+                retry_policy=self.cfg.retry_policy,
+                logger=self.logger,
+                context={
+                    'symbol': symbol,
+                    'asset': 'option',
+                    'interval': interval,
+                    'date_range': (day_iso, day_iso),
+                    'sink': sink,
+                    'measurement': measurement
+                }
+            )
+
+            if not write_success:
+                print(f"[ALERT] InfluxDB write failed after retries for option {symbol} {interval} {day_iso}")
             if wrote == 0 and len(df_all) > 0:
                 print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                       "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
@@ -2505,16 +2590,53 @@ class ThetaSyncManager:
         # -------------------------------
         # 6) PERSIST
         # -------------------------------
+        wrote = 0
         if sink_lower == "csv":
             await self._append_csv_text(base_path, csv_txt)
+            wrote = len(df_day)
         elif sink_lower == "parquet":
             self._write_parquet_from_csv(base_path, csv_txt)
+            wrote = len(df_day)
         elif sink_lower == "influxdb":
-            # parse once here; reuse the df already parsed in this function if available
-            df_to_write = df_day  # df_day è creato poco sopra in questa funzione
-            await self._append_influx_df(base_path, df_to_write)
+            # InfluxDB write with verification and retry
+            measurement = self._influx_measurement_from_base(base_path)
+            influx_client = self._ensure_influx_client()
+
+            # Define key columns for verification (stock/index have simpler keys than options)
+            key_cols = ['__ts_utc']
+            if 'symbol' in df_day.columns:
+                key_cols.append('symbol')
+            if interval == 'tick' and 'sequence' in df_day.columns:
+                key_cols.append('sequence')
+
+            wrote, write_success = await write_influx_with_verification(
+                write_func=lambda df_write: self._append_influx_df(base_path, df_write),
+                verify_func=lambda df_verify: verify_influx_write(
+                    influx_client=influx_client,
+                    measurement=measurement,
+                    df_original=df_verify,
+                    key_cols=key_cols,
+                    time_col='__ts_utc'
+                ),
+                df=df_day,
+                retry_policy=self.cfg.retry_policy,
+                logger=self.logger,
+                context={
+                    'symbol': symbol,
+                    'asset': asset,
+                    'interval': interval,
+                    'date_range': (day_iso, day_iso),
+                    'sink': sink,
+                    'measurement': measurement
+                }
+            )
+
+            if not write_success:
+                print(f"[ALERT] InfluxDB write failed after retries for {asset} {symbol} {interval} {day_iso}")
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
+
+        print(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
 
         
         # -------------------------------
