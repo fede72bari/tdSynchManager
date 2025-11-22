@@ -4322,7 +4322,18 @@ class ThetaSyncManager:
         Applica un dedup "hard" lato codice su chiave logica:
         (__ts_utc + eventuali tag: symbol, expiration, right, strike [+ sequence se presente]).
         """
-        cli = self._ensure_influx_client()
+        from .exceptions import InfluxDBAuthError
+
+        try:
+            cli = self._ensure_influx_client()
+        except Exception as e:
+            # Check for auth errors in client initialization
+            err_msg = str(e).lower()
+            if 'unauthorized' in err_msg or '401' in err_msg or '403' in err_msg or 'auth' in err_msg:
+                print(f"[INFLUX][FATAL] Authentication failed: {e}")
+                raise InfluxDBAuthError(f"InfluxDB authentication failed: {e}") from e
+            raise
+
         if df_new is None or len(df_new) == 0:
             return 0
     
@@ -4459,11 +4470,11 @@ class ThetaSyncManager:
                 warn = getattr(ret, "warnings", None) if ret is not None else None
                 errs = getattr(ret, "errors", None)   if ret is not None else None
                 stats = getattr(ret, "stats", None)   if ret is not None else None
-    
+
                 print(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={i//batch+1}/{(total+batch-1)//batch} points={len(chunk)} "
                       f"status={'ok' if not errs else 'partial/error'}")
-    
+
                 if stats is not None:
                     print(f"[INFLUX][STATS] {stats}")
                 if warn:
@@ -4471,9 +4482,14 @@ class ThetaSyncManager:
                         print(f"[INFLUX][WARN] {warn}")
                     except Exception:
                         pass
-    
+
                 written += len(chunk)
             except Exception as e:
+                # Check for InfluxDB auth errors (401/403)
+                err_msg = str(e).lower()
+                if 'unauthorized' in err_msg or '401' in err_msg or '403' in err_msg or 'forbidden' in err_msg:
+                    print(f"[INFLUX][FATAL] Authentication/authorization failed: {e}")
+                    raise InfluxDBAuthError(f"InfluxDB write failed - auth error: {e}") from e
                 print(f"[INFLUX][ERROR] write failed batch={i//batch+1}: {type(e).__name__}: {e}")
     
         return written

@@ -52,6 +52,20 @@ class DataValidator:
         ValidationResult
             Validation result with missing dates if any.
         """
+        # Filter out weekends from expected dates (markets closed on Sat/Sun)
+        filtered_dates = []
+        for date_str in expected_dates:
+            try:
+                date_obj = pd.to_datetime(date_str).date()
+                # weekday(): Monday=0, Sunday=6
+                if date_obj.weekday() < 5:  # Exclude Saturday (5) and Sunday (6)
+                    filtered_dates.append(date_str)
+            except Exception:
+                # If date parsing fails, keep it in the list
+                filtered_dates.append(date_str)
+
+        expected_dates = filtered_dates
+
         if df.empty:
             return ValidationResult(
                 valid=False,
