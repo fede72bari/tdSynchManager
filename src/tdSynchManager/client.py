@@ -6809,17 +6809,19 @@ class ResilientThetaClient:
     async def option_history_greeks_eod(self, *args, **kwargs):
         return await self._execute_with_reconnect('option_history_greeks_eod', *args, **kwargs)
 
-    async def option_history_greeks_all(self, *args, **kwargs):
-        return await self._execute_with_reconnect('option_history_greeks_all', *args, **kwargs)
+    # Match ThetaDataV3Client method names exactly (not greeks_all, but all_greeks)
+    async def option_history_all_greeks(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_all_greeks', *args, **kwargs)
 
-    async def option_history_greeks_implied_volatility(self, *args, **kwargs):
-        return await self._execute_with_reconnect('option_history_greeks_implied_volatility', *args, **kwargs)
+    async def option_history_implied_volatility(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_implied_volatility', *args, **kwargs)
 
     async def option_history_open_interest(self, *args, **kwargs):
         return await self._execute_with_reconnect('option_history_open_interest', *args, **kwargs)
 
-    async def option_snapshot_greeks_all(self, *args, **kwargs):
-        return await self._execute_with_reconnect('option_snapshot_greeks_all', *args, **kwargs)
+    # Match ThetaDataV3Client method names exactly (not greeks_all, but all_greeks)
+    async def option_snapshot_all_greeks(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_snapshot_all_greeks', *args, **kwargs)
 
     async def option_snapshot_trade_quote(self, *args, **kwargs):
         return await self._execute_with_reconnect('option_snapshot_trade_quote', *args, **kwargs)

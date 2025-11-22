@@ -16,7 +16,10 @@
       "Bash(git branch:*)",
       "Bash(/c/Users/Federico/anaconda3/python.exe:*)",
       "Bash(/c/Users/Federico/anaconda3/Scripts/pip install:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(while read f)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
