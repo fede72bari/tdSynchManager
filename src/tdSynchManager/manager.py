@@ -1760,11 +1760,12 @@ class ThetaSyncManager:
                         dg_all = dg_all.drop(columns=dup_cols)
                     df_all = df_all.merge(dg_all, on=on_cols, how="left")
         
-            # 2) IV bar (endpoint implied_volatility)
+            # 2) IV bar (endpoint implied_volatility returns 'implied_vol' column)
             if iv_bar_list:
                 div_all = pd.concat(iv_bar_list, ignore_index=True)
-                if "implied_volatility" in div_all.columns and "bar_iv" not in div_all.columns:
-                    div_all = div_all.rename(columns={"implied_volatility": "bar_iv"})
+                # ThetaData V3 API returns 'implied_vol' not 'implied_volatility'
+                if "implied_vol" in div_all.columns and "bar_iv" not in div_all.columns:
+                    div_all = div_all.rename(columns={"implied_vol": "bar_iv"})
                 if "strike_price" in div_all.columns and "strike" not in div_all.columns:
                     div_all = div_all.rename(columns={"strike_price": "strike"})
                 time_candidates = ["timestamp", "bar_timestamp", "datetime"]
@@ -1813,8 +1814,9 @@ class ThetaSyncManager:
         
         if interval == "tick" and enrich_tick_greeks and iv_trade_list:
             divt_all = pd.concat(iv_trade_list, ignore_index=True)
-            if "implied_volatility" in divt_all.columns and "trade_iv" not in divt_all.columns:
-                divt_all = divt_all.rename(columns={"implied_volatility": "trade_iv"})
+            # ThetaData V3 API returns 'implied_vol' not 'implied_volatility'
+            if "implied_vol" in divt_all.columns and "trade_iv" not in divt_all.columns:
+                divt_all = divt_all.rename(columns={"implied_vol": "trade_iv"})
             if "strike_price" in divt_all.columns and "strike" not in divt_all.columns:
                 divt_all = divt_all.rename(columns={"strike_price": "strike"})
             if "trade_timestamp" in df_all.columns and "trade_timestamp" not in divt_all.columns and "timestamp" in divt_all.columns:

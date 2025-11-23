@@ -354,7 +354,8 @@ class DataValidator:
             required_base.extend(['expiration', 'strike', 'right'])
 
             if enrich_greeks and interval != "tick":
-                required_greeks = ['delta', 'gamma', 'theta', 'vega', 'rho', 'implied_volatility']
+                # Use ThetaData V3 API column name 'implied_vol' not 'implied_volatility'
+                required_greeks = ['delta', 'gamma', 'theta', 'vega', 'rho', 'implied_vol']
                 required_base.extend(required_greeks)
 
         # Check for missing columns
