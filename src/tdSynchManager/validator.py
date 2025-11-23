@@ -56,7 +56,7 @@ class DataValidator:
         filtered_dates = []
         for date_str in expected_dates:
             try:
-                date_obj = pd.to_datetime(date_str, format='mixed').date()
+                date_obj = pd.to_datetime(date_str).date()
                 # weekday(): Monday=0, Sunday=6
                 if date_obj.weekday() < 5:  # Exclude Saturday (5) and Sunday (6)
                     filtered_dates.append(date_str)
@@ -76,9 +76,9 @@ class DataValidator:
 
         # Extract actual dates
         if 'date' in df.columns:
-            actual_dates = pd.to_datetime(df['date'], format='mixed').dt.strftime('%Y-%m-%d').unique().tolist()
+            actual_dates = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').unique().tolist()
         elif 'timestamp' in df.columns:
-            actual_dates = pd.to_datetime(df['timestamp'], format='mixed').dt.strftime('%Y-%m-%d').unique().tolist()
+            actual_dates = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d').unique().tolist()
         else:
             return ValidationResult(
                 valid=False,
@@ -232,13 +232,18 @@ class DataValidator:
                 details={'tick_volume': 0, 'eod_volume': eod_volume}
             )
 
-        # Check for volume column
-        if 'volume' not in tick_df.columns:
+        # Determine correct volume column name based on asset type
+        # OPTIONS: trade_quote endpoint returns 'size' (quantity per trade)
+        # STOCK/INDEX: returns 'volume'
+        volume_col = 'size' if asset == "option" else 'volume'
+
+        # Check for volume/size column
+        if volume_col not in tick_df.columns:
             return ValidationResult(
                 valid=False,
                 missing_ranges=[],
-                error_message="No 'volume' column in tick data",
-                details={}
+                error_message=f"No '{volume_col}' column in tick data",
+                details={'expected_column': volume_col, 'available_columns': list(tick_df.columns)}
             )
 
         # For options with separate call/put volumes
@@ -251,9 +256,9 @@ class DataValidator:
                     details={}
                 )
 
-            # Sum volumes separately for calls and puts
-            tick_call_volume = tick_df[tick_df['right'] == 'C']['volume'].sum()
-            tick_put_volume = tick_df[tick_df['right'] == 'P']['volume'].sum()
+            # Sum volumes separately for calls and puts using the correct column
+            tick_call_volume = tick_df[tick_df['right'] == 'C'][volume_col].sum()
+            tick_put_volume = tick_df[tick_df['right'] == 'P'][volume_col].sum()
 
             # Calculate differences
             if eod_volume_call == 0:
@@ -276,6 +281,7 @@ class DataValidator:
                     f"Volume mismatch - Call: {diff_call_pct:.2%}, Put: {diff_put_pct:.2%} difference"
                 ),
                 details={
+                    'volume_column_used': volume_col,
                     'tick_call_volume': float(tick_call_volume),
                     'tick_put_volume': float(tick_put_volume),
                     'tick_total_volume': float(tick_call_volume + tick_put_volume),
@@ -290,7 +296,7 @@ class DataValidator:
             )
         else:
             # Standard validation for stocks/indices or options without separate call/put volumes
-            tick_volume = tick_df['volume'].sum()
+            tick_volume = tick_df[volume_col].sum()
 
             # Calculate difference
             if eod_volume == 0:
@@ -305,6 +311,7 @@ class DataValidator:
                 missing_ranges=[] if is_valid else [(date_iso, date_iso)],
                 error_message=None if is_valid else f"Volume mismatch: {diff_pct:.2%} difference",
                 details={
+                    'volume_column_used': volume_col,
                     'tick_volume': float(tick_volume),
                     'eod_volume': float(eod_volume),
                     'diff_pct': float(diff_pct),
@@ -354,8 +361,14 @@ class DataValidator:
             required_base.extend(['expiration', 'strike', 'right'])
 
             if enrich_greeks and interval != "tick":
-                # Use ThetaData V3 API column name 'implied_vol' not 'implied_volatility'
-                required_greeks = ['delta', 'gamma', 'theta', 'vega', 'rho', 'implied_vol']
+                # EOD greeks endpoint returns: delta, gamma, theta, vega, rho (NO implied_vol)
+                # Intraday greeks endpoint (option_history_all_greeks) also returns implied_vol
+                if interval == "1d":
+                    # EOD greeks - no implied_vol
+                    required_greeks = ['delta', 'gamma', 'theta', 'vega', 'rho']
+                else:
+                    # Intraday greeks - includes implied_vol (ThetaData V3 API column name)
+                    required_greeks = ['delta', 'gamma', 'theta', 'vega', 'rho', 'implied_vol']
                 required_base.extend(required_greeks)
 
         # Check for missing columns
@@ -436,7 +449,7 @@ class DataValidator:
 
         # Sort by timestamp
         df_sorted = df.sort_values('timestamp').copy()
-        timestamps = pd.to_datetime(df_sorted['timestamp'], format='mixed')
+        timestamps = pd.to_datetime(df_sorted['timestamp'])
 
         # Calculate expected delta
         if interval.endswith('m'):
