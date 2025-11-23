@@ -145,19 +145,61 @@ class DataValidator:
                 details={'expected': 'N/A', 'actual': 0}
             )
 
-        # Calculate expected candle count
+        # Determine timestamp column
+        ts_col = None
+        for candidate in ["timestamp", "trade_timestamp", "created", "last_trade"]:
+            if candidate in df.columns:
+                ts_col = candidate
+                break
+
+        if ts_col is None:
+            return ValidationResult(
+                valid=False,
+                missing_ranges=[(f"{date_iso} 09:30:00", f"{date_iso} 16:00:00")],
+                error_message="No timestamp column available for intraday validation",
+                details={'expected': 'N/A', 'actual': 0}
+            )
+
+        ts_series = pd.to_datetime(df[ts_col], errors="coerce")
+        ts_series = ts_series.dropna()
+
+        if ts_series.empty:
+            return ValidationResult(
+                valid=False,
+                missing_ranges=[(f"{date_iso} 09:30:00", f"{date_iso} 16:00:00")],
+                error_message=f"No valid timestamps for {date_iso}",
+                details={'expected': 'N/A', 'actual': 0}
+            )
+
+        # Calculate expected candle count based on unique timestamps
         expected_count = DataValidator._expected_candles_for_interval(interval, asset)
 
+        def _freq_alias(interval: str) -> str:
+            if interval.endswith('m'):
+                return f"{int(interval[:-1])}min"
+            if interval.endswith('h'):
+                return f"{int(interval[:-1])}H"
+            if interval.endswith('s'):
+                return f"{int(interval[:-1])}S"
+            return "5min"
+
+        freq_alias = _freq_alias(interval)
+        unique_timestamps = ts_series.dt.floor(freq_alias).drop_duplicates()
+        unique_count = len(unique_timestamps)
         actual_count = len(df)
 
         # Allow 5% tolerance for market holidays, early closes, etc.
         tolerance = 0.05
-        if actual_count >= expected_count * (1 - tolerance):
+        if unique_count >= expected_count * (1 - tolerance):
             return ValidationResult(
                 valid=True,
                 missing_ranges=[],
                 error_message=None,
-                details={'expected': expected_count, 'actual': actual_count}
+                details={
+                    'expected': expected_count,
+                    'actual_rows': actual_count,
+                    'actual_buckets': unique_count
+                }
             )
 
         # Find time gaps
@@ -169,7 +211,8 @@ class DataValidator:
             error_message=f"Expected ~{expected_count} candles, found {actual_count}",
             details={
                 'expected': expected_count,
-                'actual': actual_count,
+                'actual_rows': actual_count,
+                'actual_buckets': unique_count,
                 'gaps': gaps,
                 'missing_count': expected_count - actual_count
             }
@@ -469,7 +512,7 @@ class DataValidator:
 
         # Sort by timestamp
         df_sorted = df.sort_values('timestamp').copy()
-        timestamps = pd.to_datetime(df_sorted['timestamp'])
+        timestamps = pd.to_datetime(df_sorted['timestamp']).dropna().drop_duplicates()
 
         # Calculate expected delta
         if interval.endswith('m'):

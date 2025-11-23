@@ -3697,33 +3697,23 @@ class ThetaSyncManager:
         # Returns: ["2024-01-05", "2024-01-12", "2024-01-19"] (business days with no data)
         """
 
-        base = self._find_existing_series_base(asset, symbol, interval, sink)
-        if not base:
+        sink_lower = (sink or "csv").lower()
+        series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
+        if not os.path.isdir(series_dir):
             return []
-        # raccogli tutti i part
-        files = []
-        p0 = self._pick_latest_part(base, "csv")
-        if p0:
-            # elenca da base + _partNN
-            base_no_ext = base[:-4]  # rimuove ".csv"
-            # Aggiungi il legacy base se esiste
-            p_base = f"{base_no_ext}.csv"
-            if os.path.exists(p_base):
-                files.append(p_base)
 
-            # Aggiungi TUTTI i _partNN esistenti (no early break su buchi)
-            for j in range(1, 1000):
-                pj = f"{base_no_ext}_part{j:02d}.csv"
-                if os.path.exists(pj):
-                    files.append(pj)
-                    
-        else:
-            if os.path.exists(base):
-                files.append(base)
-    
+        files = []
+        suffix = f"-{symbol}-{asset}-{interval}"
+        for name in os.listdir(series_dir):
+            if not name.lower().endswith(".csv"):
+                continue
+            if suffix not in name:
+                continue
+            files.append(os.path.join(series_dir, name))
+
         if not files:
             return []
-    
+
         # estrai giorni osservati
         observed_days = set()
         for f in files:

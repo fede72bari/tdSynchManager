@@ -4,12 +4,12 @@ This module provides tools to check data completeness and consistency between
 local storage and the ThetaData source, and to recover missing data.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .logger import DataConsistencyLogger
-from .retry import retry_with_policy
 from .validator import DataValidator, ValidationResult
 
 if TYPE_CHECKING:
@@ -438,6 +438,8 @@ class CoherenceChecker:
                     problem_segments = await self._segment_tick_problems(tick_df, date_iso)
 
                     report.is_coherent = False
+                    if date_iso not in report.tick_volume_mismatches:
+                        report.tick_volume_mismatches.append(date_iso)
                     report.issues.append(CoherenceIssue(
                         issue_type="TICK_VOLUME_MISMATCH",
                         severity="WARNING",
@@ -863,7 +865,20 @@ class IncoherenceRecovery:
         self.manager = manager
         self.client = manager.client
         self.logger = manager.logger
-        self.retry_policy = manager.config.retry_policy
+        self.retry_policy = manager.cfg.retry_policy
+
+    @contextmanager
+    def _suspend_validation(self):
+        cfg = self.manager.cfg
+        original_enable = cfg.enable_data_validation
+        original_strict = cfg.validation_strict_mode
+        cfg.enable_data_validation = False
+        cfg.validation_strict_mode = False
+        try:
+            yield
+        finally:
+            cfg.enable_data_validation = original_enable
+            cfg.validation_strict_mode = original_strict
 
     async def recover(
         self,
@@ -991,61 +1006,28 @@ class IncoherenceRecovery:
                     )
                     return True
 
-        # Download with abundant range (±1 day for safety margins)
-        date_obj = datetime.fromisoformat(date_iso)
-        download_start = (date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
-        download_end = (date_obj + timedelta(days=1)).strftime('%Y-%m-%d')
-
-        context = {
-            'symbol': symbol,
-            'asset': asset,
-            'interval': interval,
-            'date_range': (download_start, download_end),
-            'target_date': date_iso
-        }
-
-        # Download with retry
-        if asset == "stock":
-            coro_func = lambda: self.client.stock_history_eod(
+        try:
+            self.manager._purge_day_files(asset, symbol, 'tick', sink, date_iso)
+            with self._suspend_validation():
+                await self.manager._download_and_store_options(
+                    symbol=symbol,
+                    interval=interval,
+                    day_iso=date_iso,
+                    sink=sink,
+                    enrich_greeks=enrich_greeks,
+                    enrich_tick_greeks=False
+                )
+        except Exception as e:
+            self.logger.log_failure(
                 symbol=symbol,
-                start_date=download_start,
-                end_date=download_end,
-                format_type="csv"
+                asset=asset,
+                interval=interval,
+                date_range=(date_iso, date_iso),
+                message=f"Recovery failed for {date_iso}: {e}",
+                details={'error_type': type(e).__name__}
             )
-        elif asset == "index":
-            coro_func = lambda: self.client.index_history_eod(
-                symbol=symbol,
-                start_date=download_start,
-                end_date=download_end,
-                format_type="csv"
-            )
-        elif asset == "option":
-            coro_func = lambda: self.client.option_history_eod(
-                symbol=symbol,
-                expiration="*",
-                start_date=download_start,
-                end_date=download_end,
-                format_type="csv"
-            )
-        else:
             return False
 
-        result, success = await retry_with_policy(
-            coro_func=coro_func,
-            policy=self.retry_policy,
-            logger=self.logger,
-            context=context
-        )
-
-        if not success:
-            return False
-
-        # Parse CSV (this would need the Manager's parsing logic)
-        # For now, simplified
-        csv_text = result[0] if isinstance(result, tuple) else result
-
-        # Here we would parse and save using Manager methods
-        # Placeholder: assume success
         self.logger.log_resolution(
             symbol=symbol,
             asset=asset,
@@ -1095,64 +1077,25 @@ class IncoherenceRecovery:
         bool
             True if recovery successful, False otherwise.
         """
-        # Parse dates and add margin (±1 day)
         start_obj = datetime.fromisoformat(gap_start)
         end_obj = datetime.fromisoformat(gap_end)
 
-        download_start = (start_obj - timedelta(days=1)).strftime('%Y-%m-%d')
-        download_end = (end_obj + timedelta(days=1)).strftime('%Y-%m-%d')
-
-        context = {
-            'symbol': symbol,
-            'asset': asset,
-            'interval': interval,
-            'date_range': (download_start, download_end),
-            'target_range': (gap_start, gap_end)
-        }
-
-        # Download each day in the range
         current_date = start_obj
         all_success = True
 
         while current_date <= end_obj:
             date_str = current_date.strftime('%Y-%m-%d')
-
-            # Download with retry
-            if asset == "stock":
-                coro_func = lambda d=date_str: self.client.stock_history_ohlc(
-                    symbol=symbol,
-                    date=d,
-                    interval=interval,
-                    format_type="csv"
-                )
-            elif asset == "index":
-                coro_func = lambda d=date_str: self.client.index_history_ohlc(
-                    symbol=symbol,
-                    date=d,
-                    interval=interval,
-                    format_type="csv"
-                )
-            elif asset == "option":
-                coro_func = lambda d=date_str: self.client.option_history_ohlc(
-                    symbol=symbol,
-                    expiration="*",
-                    date=d,
-                    interval=interval,
-                    format_type="csv"
-                )
-            else:
-                return False
-
-            result, success = await retry_with_policy(
-                coro_func=coro_func,
-                policy=self.retry_policy,
-                logger=self.logger,
-                context=context
-            )
-
-            if success:
-                # Parse and save using manager
-                # For now, log success (full integration with manager's save methods would be needed)
+            try:
+                self.manager._purge_day_files(asset, symbol, interval, sink, date_str)
+                with self._suspend_validation():
+                    await self.manager._download_and_store_options(
+                        symbol=symbol,
+                        interval=interval,
+                        day_iso=date_str,
+                        sink=sink,
+                        enrich_greeks=enrich_greeks,
+                        enrich_tick_greeks=False
+                    )
                 self.logger.log_resolution(
                     symbol=symbol,
                     asset=asset,
@@ -1161,8 +1104,16 @@ class IncoherenceRecovery:
                     message=f"Recovered intraday data for {date_str}",
                     details={'recovery_method': 'api_download'}
                 )
-            else:
+            except Exception as e:
                 all_success = False
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(date_str, date_str),
+                    message=f"Failed to recover intraday data for {date_str}: {e}",
+                    details={'error_type': type(e).__name__}
+                )
 
             current_date += timedelta(days=1)
 
@@ -1197,55 +1148,34 @@ class IncoherenceRecovery:
         bool
             True if recovery successful, False otherwise.
         """
-        context = {
-            'symbol': symbol,
-            'asset': asset,
-            'interval': 'tick',
-            'date_range': (date_iso, date_iso)
-        }
-
-        # Download tick data with retry
-        if asset == "stock":
-            coro_func = lambda: self.client.stock_history_trade_quote(
-                symbol=symbol,
-                date=date_iso,
-                format_type="csv"
-            )
-        elif asset == "index":
-            # Indexes typically don't have tick data, use price endpoint
-            coro_func = lambda: self.client.index_history_price(
-                symbol=symbol,
-                date=date_iso,
-                format_type="csv"
-            )
-        elif asset == "option":
-            coro_func = lambda: self.client.option_history_trade_quote(
-                symbol=symbol,
-                expiration="*",
-                date=date_iso,
-                format_type="csv"
-            )
-        else:
-            return False
-
-        result, success = await retry_with_policy(
-            coro_func=coro_func,
-            policy=self.retry_policy,
-            logger=self.logger,
-            context=context
-        )
-
-        if success:
-            # Parse and save using manager
-            # For now, log success (full integration with manager's save methods would be needed)
-            self.logger.log_resolution(
+        try:
+            self.manager._purge_day_files(asset, symbol, 'tick', sink, date_iso)
+            with self._suspend_validation():
+                await self.manager._download_and_store_options(
+                    symbol=symbol,
+                    interval='tick',
+                    day_iso=date_iso,
+                    sink=sink,
+                    enrich_greeks=False,
+                    enrich_tick_greeks=False
+                )
+        except Exception as e:
+            self.logger.log_failure(
                 symbol=symbol,
                 asset=asset,
                 interval='tick',
                 date_range=(date_iso, date_iso),
-                message=f"Recovered tick data for {date_iso}",
-                details={'recovery_method': 'api_download'}
+                message=f"Failed to recover tick data for {date_iso}: {e}",
+                details={'error_type': type(e).__name__}
             )
-            return True
+            return False
 
-        return False
+        self.logger.log_resolution(
+            symbol=symbol,
+            asset=asset,
+            interval='tick',
+            date_range=(date_iso, date_iso),
+            message=f"Recovered tick data for {date_iso}",
+            details={'recovery_method': 'api_download'}
+        )
+        return True
