@@ -125,6 +125,24 @@ async def verify_influx_write(
         # Convert result to DataFrame
         df_written = result_table.to_pandas()
 
+        # FlightSQL may not properly alias 'time as __ts_utc', so rename explicitly if needed
+        if time_col not in df_written.columns and 'time' in df_written.columns:
+            df_written = df_written.rename(columns={'time': time_col})
+
+        # Verify we have all required key columns
+        missing_cols = [col for col in key_cols if col not in df_written.columns]
+        if missing_cols:
+            # Query returned data but missing expected columns - assume nothing written
+            print(f"[INFLUX][VERIFY] Query returned columns: {list(df_written.columns)}")
+            print(f"[INFLUX][VERIFY] Expected key_cols: {key_cols}, missing: {missing_cols}")
+            return InfluxWriteResult(
+                total_attempted=total,
+                successfully_written=0,
+                missing_count=total,
+                missing_indices=list(range(total)),
+                success=False
+            )
+
         # Compare key sets
         original_keys = set()
         for idx, row in df_original.iterrows():

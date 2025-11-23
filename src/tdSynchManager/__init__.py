@@ -11,6 +11,11 @@ Clean public surface:
 Note: This file is unrelated to class constructors (__init__ methods).
 """
 
+# Ensure every log line (console/text) carries a timestamp
+from .logging_utils import install_timestamped_print
+
+install_timestamped_print()
+
 # === >>> VERSION METADATA — BEGIN
 def _detect_version() -> str:
     try:

@@ -1382,6 +1382,8 @@ class ThetaSyncManager:
                 if 'right' in df.columns:
                     key_cols.append('right')
 
+                df_influx = self._ensure_ts_utc_column(df)
+
                 wrote, write_success = await write_influx_with_verification(
                     write_func=lambda df_write: self._append_influx_df(base_path, df_write),
                     verify_func=lambda df_verify: verify_influx_write(
@@ -1391,7 +1393,7 @@ class ThetaSyncManager:
                         key_cols=key_cols,
                         time_col='__ts_utc'
                     ),
-                    df=df,
+                    df=df_influx,
                     retry_policy=self.cfg.retry_policy,
                     logger=self.logger,
                     context={
@@ -2218,6 +2220,8 @@ class ThetaSyncManager:
             if interval == 'tick' and 'sequence' in df_all.columns:
                 key_cols.append('sequence')
 
+            df_influx = self._ensure_ts_utc_column(df_all)
+
             wrote, write_success = await write_influx_with_verification(
                 write_func=lambda df_write: self._append_influx_df(base_path, df_write),
                 verify_func=lambda df_verify: verify_influx_write(
@@ -2227,7 +2231,7 @@ class ThetaSyncManager:
                     key_cols=key_cols,
                     time_col='__ts_utc'
                 ),
-                df=df_all,
+                df=df_influx,
                 retry_policy=self.cfg.retry_policy,
                 logger=self.logger,
                 context={
@@ -2612,6 +2616,8 @@ class ThetaSyncManager:
             if interval == 'tick' and 'sequence' in df_day.columns:
                 key_cols.append('sequence')
 
+            df_influx = self._ensure_ts_utc_column(df_day)
+
             wrote, write_success = await write_influx_with_verification(
                 write_func=lambda df_write: self._append_influx_df(base_path, df_write),
                 verify_func=lambda df_verify: verify_influx_write(
@@ -2621,7 +2627,7 @@ class ThetaSyncManager:
                     key_cols=key_cols,
                     time_col='__ts_utc'
                 ),
-                df=df_day,
+                df=df_influx,
                 retry_policy=self.cfg.retry_policy,
                 logger=self.logger,
                 context={
@@ -4319,6 +4325,24 @@ class ThetaSyncManager:
         written = self._append_parquet_df(base_path, df_new)
         return written
 
+
+    def _ensure_ts_utc_column(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return a DataFrame that contains the __ts_utc column required for Influx verification."""
+        if df is None or "__ts_utc" in df.columns or len(df) == 0:
+            return df
+
+        df_ts = df.copy()
+        t_candidates = ["timestamp", "trade_timestamp", "bar_timestamp", "datetime", "created", "last_trade", "date"]
+        tcol = next((c for c in t_candidates if c in df_ts.columns), None)
+        if not tcol:
+            raise RuntimeError("No time column found while preparing data for Influx verification.")
+
+        series = pd.to_datetime(df_ts[tcol], errors="coerce")
+        if getattr(series.dtype, "tz", None) is not None:
+            series = series.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+        series = series.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
+        df_ts["__ts_utc"] = series
+        return df_ts
 
         
     # -------------------- INFLUXDB WRITER (append with overlap) --------------------

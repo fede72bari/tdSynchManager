@@ -256,9 +256,21 @@ class DataValidator:
                     details={}
                 )
 
+            # Normalize right column (handles C/P, call/put, any casing)
+            normalized_right = (
+                tick_df['right']
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .replace({'c': 'call', 'p': 'put'})
+            )
+
+            call_mask = normalized_right == 'call'
+            put_mask = normalized_right == 'put'
+
             # Sum volumes separately for calls and puts using the correct column
-            tick_call_volume = tick_df[tick_df['right'] == 'C'][volume_col].sum()
-            tick_put_volume = tick_df[tick_df['right'] == 'P'][volume_col].sum()
+            tick_call_volume = tick_df[call_mask][volume_col].sum()
+            tick_put_volume = tick_df[put_mask][volume_col].sum()
 
             # Calculate differences
             if eod_volume_call == 0:
@@ -273,6 +285,11 @@ class DataValidator:
 
             # Both must be within tolerance
             is_valid = diff_call_pct <= tolerance and diff_put_pct <= tolerance
+
+            # Log volume validation results
+            print(f"[TICK-VOLUME] {date_iso} Call: sum({volume_col})={int(tick_call_volume)} eod_volume={int(eod_volume_call)} diff={diff_call_pct:.2%}")
+            print(f"[TICK-VOLUME] {date_iso} Put: sum({volume_col})={int(tick_put_volume)} eod_volume={int(eod_volume_put)} diff={diff_put_pct:.2%}")
+            print(f"[TICK-VOLUME] {date_iso} Total: tick={int(tick_call_volume + tick_put_volume)} eod={int(eod_volume_call + eod_volume_put)} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             return ValidationResult(
                 valid=is_valid,
@@ -305,6 +322,9 @@ class DataValidator:
                 diff_pct = abs(tick_volume - eod_volume) / eod_volume
 
             is_valid = diff_pct <= tolerance
+
+            # Log volume validation results
+            print(f"[TICK-VOLUME] {date_iso} sum({volume_col})={int(tick_volume)} eod_volume={int(eod_volume)} diff={diff_pct:.2%} diff_abs={int(abs(tick_volume - eod_volume))} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             return ValidationResult(
                 valid=is_valid,
