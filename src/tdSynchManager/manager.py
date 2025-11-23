@@ -4354,8 +4354,8 @@ class ThetaSyncManager:
         if not tcol:
             raise RuntimeError("No time column found for Influx write.")
 
-        # Use format='ISO8601' to handle timestamps with microseconds (e.g., "2025-11-19T15:59:44.94")
-        s = pd.to_datetime(df_new[tcol], format='ISO8601', errors="coerce")
+        # Use format='mixed' to handle various timestamp formats (e.g., "2025-11-19T15:59:44.94")
+        s = pd.to_datetime(df_new[tcol], format='mixed', errors="coerce")
         # se già tz-aware, portala a ET naive per coerenza e poi rilocalizza
         if getattr(s.dtype, "tz", None) is not None:
             s = s.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
@@ -4388,8 +4388,8 @@ class ThetaSyncManager:
         _extra_ts_cols = ["underlying_timestamp", "timestamp_oi", "effective_date_oi"]
         for _c in _extra_ts_cols:
             if _c in df.columns:
-                # Use format='ISO8601' to handle timestamps with microseconds (e.g., "2025-11-19T15:59:44.94")
-                _ts = pd.to_datetime(df[_c], format='ISO8601', errors="coerce")
+                # Use format='mixed' to handle various timestamp formats (e.g., "2025-11-19T15:59:44.94")
+                _ts = pd.to_datetime(df[_c], format='mixed', errors="coerce")
                 if getattr(_ts.dtype, "tz", None) is not None:
                     _ts = _ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                 _ts = _ts.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")

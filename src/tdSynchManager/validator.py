@@ -56,7 +56,7 @@ class DataValidator:
         filtered_dates = []
         for date_str in expected_dates:
             try:
-                date_obj = pd.to_datetime(date_str, format='ISO8601').date()
+                date_obj = pd.to_datetime(date_str, format='mixed').date()
                 # weekday(): Monday=0, Sunday=6
                 if date_obj.weekday() < 5:  # Exclude Saturday (5) and Sunday (6)
                     filtered_dates.append(date_str)
@@ -76,9 +76,9 @@ class DataValidator:
 
         # Extract actual dates
         if 'date' in df.columns:
-            actual_dates = pd.to_datetime(df['date'], format='ISO8601').dt.strftime('%Y-%m-%d').unique().tolist()
+            actual_dates = pd.to_datetime(df['date'], format='mixed').dt.strftime('%Y-%m-%d').unique().tolist()
         elif 'timestamp' in df.columns:
-            actual_dates = pd.to_datetime(df['timestamp'], format='ISO8601').dt.strftime('%Y-%m-%d').unique().tolist()
+            actual_dates = pd.to_datetime(df['timestamp'], format='mixed').dt.strftime('%Y-%m-%d').unique().tolist()
         else:
             return ValidationResult(
                 valid=False,
@@ -436,7 +436,7 @@ class DataValidator:
 
         # Sort by timestamp
         df_sorted = df.sort_values('timestamp').copy()
-        timestamps = pd.to_datetime(df_sorted['timestamp'], format='ISO8601')
+        timestamps = pd.to_datetime(df_sorted['timestamp'], format='mixed')
 
         # Calculate expected delta
         if interval.endswith('m'):
