@@ -6822,6 +6822,12 @@ class ResilientThetaClient:
     async def option_history_trade_quote(self, *args, **kwargs):
         return await self._execute_with_reconnect('option_history_trade_quote', *args, **kwargs)
 
+    async def option_history_all_trade_greeks(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_all_trade_greeks', *args, **kwargs)
+
+    async def option_history_trade_implied_volatility(self, *args, **kwargs):
+        return await self._execute_with_reconnect('option_history_trade_implied_volatility', *args, **kwargs)
+
     # Match ThetaDataV3Client method names exactly (not greeks_all, but all_greeks)
     async def option_snapshot_all_greeks(self, *args, **kwargs):
         return await self._execute_with_reconnect('option_snapshot_all_greeks', *args, **kwargs)

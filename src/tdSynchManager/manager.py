@@ -1312,9 +1312,9 @@ class ThetaSyncManager:
 
                 return (df, url)
 
-            # Define parse function (identity since download returns DataFrame)
+            # Define parse function (identity since download_func already unpacks tuple)
             def parse_result(result):
-                return result[0]  # Extract DataFrame from (df, url) tuple
+                return result  # result is already the DataFrame (download_retry unpacks the tuple)
 
             # Define validation wrapper
             async def validate_result(df):
