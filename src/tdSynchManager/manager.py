@@ -455,6 +455,35 @@ class ThetaSyncManager:
         """
         import io
 
+        def _normalize_right(series: pd.Series) -> pd.Series:
+            return (
+                series.astype(str)
+                .str.strip()
+                .str.lower()
+                .replace({'c': 'call', 'p': 'put'})
+            )
+
+        def _extract_eod_volumes(eod_df: pd.DataFrame) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+            if eod_df is None or eod_df.empty:
+                return None, None, None
+
+            if 'volume' not in eod_df.columns:
+                return None, None, None
+
+            volumes = pd.to_numeric(eod_df['volume'], errors='coerce').fillna(0)
+            total_volume = float(volumes.sum())
+
+            if asset == "option" and 'right' in eod_df.columns:
+                normalized = _normalize_right(eod_df['right'])
+                call_volume = float(volumes[normalized == 'call'].sum())
+                put_volume = float(volumes[normalized == 'put'].sum())
+
+                # If normalization failed (both zero) but total > 0, fall back to total-only validation
+                if call_volume > 0 or put_volume > 0:
+                    return total_volume, call_volume, put_volume
+
+            return total_volume, None, None
+
         # First, try to read EOD from local storage
         try:
             files = self._list_series_files(asset, symbol, "1d", sink.lower())
@@ -472,16 +501,9 @@ class ThetaSyncManager:
                 else:
                     eod_df = None
 
-                if eod_df is not None and not eod_df.empty and 'volume' in eod_df.columns:
-                    total_volume = eod_df['volume'].sum()
-
-                    # For options, try to separate by call/put
-                    if asset == "option" and 'right' in eod_df.columns:
-                        call_volume = eod_df[eod_df['right'].isin(['C', 'call'])]['volume'].sum()
-                        put_volume = eod_df[eod_df['right'].isin(['P', 'put'])]['volume'].sum()
-                        return float(total_volume), float(call_volume), float(put_volume)
-
-                    return float(total_volume), None, None
+                total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
+                if total_volume is not None:
+                    return total_volume, call_volume, put_volume
         except Exception:
             pass
 
@@ -517,15 +539,9 @@ class ThetaSyncManager:
 
             eod_df = pd.read_csv(io.StringIO(csv_txt))
 
-            if 'volume' in eod_df.columns:
-                total_volume = eod_df['volume'].sum()
-
-                if asset == "option" and 'right' in eod_df.columns:
-                    call_volume = eod_df[eod_df['right'].isin(['C', 'call'])]['volume'].sum()
-                    put_volume = eod_df[eod_df['right'].isin(['P', 'put'])]['volume'].sum()
-                    return float(total_volume), float(call_volume), float(put_volume)
-
-                return float(total_volume), None, None
+            total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
+            if total_volume is not None:
+                return total_volume, call_volume, put_volume
 
         except Exception:
             pass
