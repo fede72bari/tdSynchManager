@@ -174,23 +174,37 @@ class DataValidator:
         # Calculate expected candle count based on unique timestamps
         expected_count = DataValidator._expected_candles_for_interval(interval, asset)
 
-        def _freq_alias(interval: str) -> str:
+        def _freq_alias_and_delta(interval: str):
             if interval.endswith('m'):
-                return f"{int(interval[:-1])}min"
+                minutes = int(interval[:-1])
+                return f"{minutes}min", timedelta(minutes=minutes)
             if interval.endswith('h'):
-                return f"{int(interval[:-1])}H"
+                hours = int(interval[:-1])
+                return f"{hours}H", timedelta(hours=hours)
             if interval.endswith('s'):
-                return f"{int(interval[:-1])}S"
-            return "5min"
+                seconds = int(interval[:-1])
+                return f"{seconds}S", timedelta(seconds=seconds)
+            return "5min", timedelta(minutes=5)
 
-        freq_alias = _freq_alias(interval)
+        freq_alias, bucket_delta = _freq_alias_and_delta(interval)
         unique_timestamps = ts_series.dt.floor(freq_alias).drop_duplicates()
         unique_count = len(unique_timestamps)
         actual_count = len(df)
 
+        bucket_counts = ts_series.dt.floor(freq_alias).value_counts()
+        bucket_median = bucket_counts.median() if not bucket_counts.empty else None
+        low_bucket_threshold = bucket_median * 0.6 if bucket_median and bucket_median > 0 else None
+        low_buckets = []
+        if low_bucket_threshold:
+            for bucket_time, count in bucket_counts.items():
+                if count < low_bucket_threshold:
+                    start_str = bucket_time.strftime('%Y-%m-%d %H:%M:%S')
+                    end_str = (bucket_time + bucket_delta).strftime('%Y-%m-%d %H:%M:%S')
+                    low_buckets.append((start_str, end_str))
+
         # Allow 5% tolerance for market holidays, early closes, etc.
         tolerance = 0.05
-        if unique_count >= expected_count * (1 - tolerance):
+        if unique_count >= expected_count * (1 - tolerance) and not low_buckets:
             return ValidationResult(
                 valid=True,
                 missing_ranges=[],
@@ -204,17 +218,19 @@ class DataValidator:
 
         # Find time gaps
         gaps = DataValidator._find_time_gaps(df, interval)
+        missing_ranges = gaps + low_buckets
 
         return ValidationResult(
             valid=False,
-            missing_ranges=gaps,
+            missing_ranges=missing_ranges,
             error_message=f"Expected ~{expected_count} candles, found {actual_count}",
             details={
                 'expected': expected_count,
                 'actual_rows': actual_count,
                 'actual_buckets': unique_count,
-                'gaps': gaps,
-                'missing_count': expected_count - actual_count
+                'gaps': missing_ranges,
+                'missing_count': expected_count - actual_count,
+                'low_bucket_threshold': float(low_bucket_threshold) if low_bucket_threshold else None
             }
         )
 

@@ -336,6 +336,10 @@ class CoherenceChecker:
                     problem_segments = await self._segment_intraday_problems(
                         df, date_iso, report.interval, report.asset
                     )
+                    combined_segments = problem_segments or validation_result.details.get('gaps', [])
+                    for seg in combined_segments:
+                        if seg not in report.intraday_gaps:
+                            report.intraday_gaps.append(seg)
 
                     report.is_coherent = False
                     report.issues.append(CoherenceIssue(
