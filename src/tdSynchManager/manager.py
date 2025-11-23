@@ -1517,16 +1517,20 @@ class ThetaSyncManager:
             
             for exp in expirations:
                 try:
-                    csv_tq, _ = await self.client.option_history_trade_quote(
-                        symbol=symbol,
-                        expiration=exp,
-                        date=ymd,
-                        strike="*",
-                        right="both",
-                        exclusive=True,
-                        start_time=bar_start_et,
-                        format_type="csv",
-                    )
+                    # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                    tq_kwargs = {
+                        "symbol": symbol,
+                        "expiration": exp,
+                        "date": ymd,
+                        "strike": "*",
+                        "right": "both",
+                        "exclusive": True,
+                        "format_type": "csv",
+                    }
+                    if bar_start_et is not None:
+                        tq_kwargs["start_time"] = bar_start_et
+
+                    csv_tq, _ = await self.client.option_history_trade_quote(**tq_kwargs)
                     if not csv_tq:
                         continue                 
                         
@@ -1633,11 +1637,19 @@ class ThetaSyncManager:
             
             for exp in expirations:
                 try:
+                    # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                    ohlc_kwargs = {
+                        "symbol": symbol,
+                        "expiration": exp,
+                        "date": ymd,
+                        "interval": interval,
+                        "format_type": "csv"
+                    }
+                    if bar_start_et is not None:
+                        ohlc_kwargs["start_time"] = bar_start_et
+
                     csv_ohlc, _ = await self._td_get_with_retry(
-                                    lambda: self.client.option_history_ohlc(
-                                        symbol=symbol, expiration=exp, date=ymd, interval=interval,
-                                        start_time=bar_start_et, format_type="csv"
-                                    ),
+                                    lambda: self.client.option_history_ohlc(**ohlc_kwargs),
                                     label=f"ohlc {symbol} {exp} {ymd} {interval}"
                                 )
 
@@ -1674,11 +1686,20 @@ class ThetaSyncManager:
 
                     # IV bars (bid/mid/ask) — collect once, merge later
                     try:
+                        # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                        iv_kwargs = {
+                            "symbol": symbol,
+                            "expiration": exp,
+                            "date": ymd,
+                            "interval": interval,
+                            "rate_type": "sofr",
+                            "format_type": "csv"
+                        }
+                        if bar_start_et is not None:
+                            iv_kwargs["start_time"] = bar_start_et
+
                         csv_iv, _ = await self._td_get_with_retry(
-                                        lambda: self.client.option_history_implied_volatility(
-                                            symbol=symbol, expiration=exp, date=ymd, interval=interval,
-                                            start_time=bar_start_et, rate_type="sofr", format_type="csv"
-                                        ),
+                                        lambda: self.client.option_history_implied_volatility(**iv_kwargs),
                                         label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
                                     )
                         if csv_iv:
