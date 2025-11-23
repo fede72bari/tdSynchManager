@@ -2841,20 +2841,23 @@ class ThetaSyncManager:
         # - Methods that need historical Greeks enrichment for options analysis
         """
         ymd = self._td_ymd(day_iso)
-        return await self.client.option_history_all_greeks(
-            symbol=symbol,
-            expiration=expiration,
-            date=ymd,
-            interval=interval,
-            strike=strike,
-            right=right,
-            rate_type=rate_type,
-            annual_dividend=annual_dividend,
-            rate_value=rate_value,
-            start_time=None,
-            end_time=None,
-            format_type=fmt,
-        )
+        # Use conditional kwargs to avoid passing None (causes total_seconds error in SDK)
+        kwargs = {
+            "symbol": symbol,
+            "expiration": expiration,
+            "date": ymd,
+            "interval": interval,
+            "strike": strike,
+            "right": right,
+            "rate_type": rate_type,
+            "format_type": fmt,
+        }
+        if annual_dividend is not None:
+            kwargs["annual_dividend"] = annual_dividend
+        if rate_value is not None:
+            kwargs["rate_value"] = rate_value
+
+        return await self.client.option_history_all_greeks(**kwargs)
 
 
 
@@ -4350,8 +4353,9 @@ class ThetaSyncManager:
         tcol = next((c for c in t_candidates if c in df_new.columns), None)
         if not tcol:
             raise RuntimeError("No time column found for Influx write.")
-    
-        s = pd.to_datetime(df_new[tcol], errors="coerce")
+
+        # Use format='ISO8601' to handle timestamps with microseconds (e.g., "2025-11-19T15:59:44.94")
+        s = pd.to_datetime(df_new[tcol], format='ISO8601', errors="coerce")
         # se già tz-aware, portala a ET naive per coerenza e poi rilocalizza
         if getattr(s.dtype, "tz", None) is not None:
             s = s.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
@@ -4384,7 +4388,8 @@ class ThetaSyncManager:
         _extra_ts_cols = ["underlying_timestamp", "timestamp_oi", "effective_date_oi"]
         for _c in _extra_ts_cols:
             if _c in df.columns:
-                _ts = pd.to_datetime(df[_c], errors="coerce")
+                # Use format='ISO8601' to handle timestamps with microseconds (e.g., "2025-11-19T15:59:44.94")
+                _ts = pd.to_datetime(df[_c], format='ISO8601', errors="coerce")
                 if getattr(_ts.dtype, "tz", None) is not None:
                     _ts = _ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
                 _ts = _ts.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
