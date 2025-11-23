@@ -4,9 +4,12 @@ This module provides post-write verification for InfluxDB to detect partial writ
 and automatically retry missing data.
 """
 
-import pandas as pd
-from typing import List, Tuple, Optional, Set
 from dataclasses import dataclass
+from datetime import datetime, date
+from typing import List, Tuple, Optional, Set
+
+import numpy as np
+import pandas as pd
 
 
 @dataclass
@@ -108,6 +111,35 @@ async def verify_influx_write(
         WHERE time >= {min_ns} AND time <= {max_ns}
     """
 
+    def _canonical_time(value):
+        if pd.isna(value):
+            return None
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.value)
+
+    def _canonical_scalar(value):
+        if pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            ts = value
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            else:
+                ts = ts.tz_convert("UTC")
+            return ts.isoformat()
+        if isinstance(value, datetime):
+            ts = pd.Timestamp(value, tz="UTC")
+            return ts.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
     try:
         # Execute query
         result_table = influx_client.query(query)
@@ -146,13 +178,25 @@ async def verify_influx_write(
         # Compare key sets
         original_keys = set()
         for idx, row in df_original.iterrows():
-            key = tuple(row[col] for col in key_cols)
-            original_keys.add((idx, key))
+            key_tuple = []
+            for col in key_cols:
+                val = row[col]
+                if col == time_col:
+                    key_tuple.append(_canonical_time(val))
+                else:
+                    key_tuple.append(_canonical_scalar(val))
+            original_keys.add((idx, tuple(key_tuple)))
 
         written_keys = set()
         for _, row in df_written.iterrows():
-            key = tuple(row[col] for col in key_cols)
-            written_keys.add(key)
+            key_tuple = []
+            for col in key_cols:
+                val = row[col]
+                if col == time_col:
+                    key_tuple.append(_canonical_time(val))
+                else:
+                    key_tuple.append(_canonical_scalar(val))
+            written_keys.add(tuple(key_tuple))
 
         # Find missing
         missing_indices = []
