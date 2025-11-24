@@ -108,7 +108,7 @@ async def verify_influx_write(
     query = f"""
         SELECT time as __ts_utc, {select_cols}
         FROM "{measurement}"
-        WHERE time >= {min_ns} AND time <= {max_ns}
+        WHERE time >= to_timestamp_ns({min_ns}) AND time <= to_timestamp_ns({max_ns})
     """
 
     def _canonical_time(value):
