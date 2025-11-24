@@ -350,7 +350,8 @@ class ThetaSyncManager:
                 df=df,
                 interval=interval,
                 date_iso=day_iso,
-                asset=asset
+                asset=asset,
+                bucket_tolerance=self.cfg.intraday_bucket_tolerance
             )
 
             if not validation_result.valid:

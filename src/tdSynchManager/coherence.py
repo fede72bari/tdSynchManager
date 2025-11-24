@@ -328,7 +328,8 @@ class CoherenceChecker:
                     df=df,
                     date_iso=date_iso,
                     interval=report.interval,
-                    asset=report.asset
+                    asset=report.asset,
+                    bucket_tolerance=self.manager.cfg.intraday_bucket_tolerance
                 )
 
                 if not validation_result.valid:

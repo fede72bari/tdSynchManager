@@ -84,6 +84,7 @@ class ManagerConfig:
     log_verbose_console: bool = True          # Print logs to console in addition to log tables
     eod_check_max_attempts: int = 1           # Additional retry attempts for EOD tick data check
     tick_eod_volume_tolerance: float = 0.01   # Tolerance for tick vs EOD volume comparison (1%)
+    intraday_bucket_tolerance: float = 0.0    # Allowed fraction of missing time buckets (0 = require 100%)
 
 
 @dataclass
