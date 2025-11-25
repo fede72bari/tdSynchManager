@@ -118,7 +118,8 @@ class DataValidator:
         interval: str,
         date_iso: str,
         asset: str,
-        bucket_tolerance: float = 0.0
+        bucket_tolerance: float = 0.0,
+        expected_combo_total: Optional[int] = None
     ) -> ValidationResult:
         """Check that DataFrame contains expected number of intraday candles.
 
@@ -134,6 +135,10 @@ class DataValidator:
             Asset type ("stock", "option", "index").
         bucket_tolerance : float
             Fractional tolerance for missing buckets/combos (0 = require all).
+        expected_combo_total : Optional[int]
+            Expected total combinations (expiration x strike x right) for the day. If provided,
+            per-bucket combo validation will compare against this value (adjusted by tolerance);
+            otherwise it falls back to combos observed in the df.
 
         Returns
         -------
@@ -165,6 +170,12 @@ class DataValidator:
 
         ts_series = pd.to_datetime(df[ts_col], errors="coerce")
         ts_series = ts_series.dropna()
+        # Porta i timestamp in ET (ThetaData intraday è in ET) e gestisci DST in modo tollerante
+        ts_series = ts_series.dt.tz_localize(
+            "America/New_York",
+            nonexistent="shift_forward",
+            ambiguous="NaT"
+        ).dropna()
 
         if ts_series.empty:
             return ValidationResult(
@@ -173,9 +184,6 @@ class DataValidator:
                 error_message=f"No valid timestamps for {date_iso}",
                 details={'expected': 'N/A', 'actual': 0}
             )
-
-        # Calculate expected candle count based on unique timestamps
-        expected_count = DataValidator._expected_candles_for_interval(interval, asset)
 
         def _freq_alias_and_delta(interval: str):
             if interval.endswith('m'):
@@ -195,6 +203,15 @@ class DataValidator:
         unique_count = len(unique_timestamps)
         actual_count = len(df)
 
+        # Calcola l'intervallo effettivo coperto dai bucket e l'atteso in base al range osservato
+        if unique_timestamps.empty:
+            expected_count = 0
+        else:
+            start_bucket = unique_timestamps.min()
+            end_bucket = unique_timestamps.max() + bucket_delta
+            span = end_bucket - start_bucket
+            expected_count = max(1, int(span / bucket_delta))
+
         # Coverage check on time buckets
         time_coverage_ok = unique_count >= expected_count * (1 - bucket_tolerance)
 
@@ -204,7 +221,11 @@ class DataValidator:
         min_combos = None
         if asset == "option" and all(col in df.columns for col in ["expiration", "strike", "right"]):
             combos = df[["expiration", "strike", "right"]].drop_duplicates()
-            total_combos = len(combos)
+            observed_combos = len(combos)
+            total_combos = expected_combo_total if expected_combo_total is not None else observed_combos
+            # Se osserviamo più combo dell'atteso (nuove strike/exp intraday), aggiorna l'atteso al massimo
+            if expected_combo_total is not None:
+                total_combos = max(total_combos, observed_combos)
             per_bucket = (
                 df.groupby(bucket_series)
                 .apply(lambda x: len(x[["expiration", "strike", "right"]].drop_duplicates()))
@@ -213,6 +234,12 @@ class DataValidator:
             expected_combos = total_combos * (1 - bucket_tolerance) if total_combos is not None else None
             if expected_combos is not None:
                 for bucket_time, count in per_bucket.items():
+                    # Log per-bucket atteso vs trovato
+                    print(
+                        f"[VALIDATION][BUCKET] {date_iso} {bucket_time.strftime('%H:%M:%S')} "
+                        f"combos_found={count} expected>={int(expected_combos)} "
+                        f"(total_combos={total_combos}, tol={bucket_tolerance:.2%})"
+                    )
                     if count < expected_combos:
                         start_str = bucket_time.strftime('%Y-%m-%d %H:%M:%S')
                         end_str = (bucket_time + bucket_delta).strftime('%Y-%m-%d %H:%M:%S')
@@ -232,22 +259,24 @@ class DataValidator:
                     'actual_rows': actual_count,
                     'actual_buckets': unique_count,
                     'total_combos': total_combos,
-                    'min_combos_per_bucket': min_combos
+                    'min_combos_per_bucket': min_combos,
+                    'expected_combo_total': expected_combo_total
                 }
             )
 
         return ValidationResult(
             valid=False,
             missing_ranges=missing_ranges,
-            error_message=f"Expected ~{expected_count} candles, found {actual_count}",
+            error_message=f"Expected ~{expected_count} buckets, found {unique_count}",
             details={
                 'expected': expected_count,
                 'actual_rows': actual_count,
                 'actual_buckets': unique_count,
                 'gaps': missing_ranges,
-                'missing_count': expected_count - actual_count,
+                'missing_count': expected_count - unique_count,
                 'total_combos': total_combos,
-                'min_combos_per_bucket': min_combos
+                'min_combos_per_bucket': min_combos,
+                'expected_combo_total': expected_combo_total
             }
         )
 

@@ -324,12 +324,22 @@ class CoherenceChecker:
                     continue
 
                 # Validate candle completeness
+                expected_combo_total = None
+                if report.asset == "option":
+                    try:
+                        expected_combo_total = await self.manager._expected_option_combos_for_day(report.symbol, date_iso)
+                        if expected_combo_total:
+                            print(f"[COHERENCE][INFO] {report.symbol} {report.interval} {date_iso} attese_combo={expected_combo_total}")
+                    except Exception as e:
+                        print(f"[COHERENCE][WARN] expected combos fetch failed {report.symbol} {date_iso}: {e}")
+
                 validation_result = DataValidator.validate_intraday_completeness(
                     df=df,
                     date_iso=date_iso,
                     interval=report.interval,
                     asset=report.asset,
-                    bucket_tolerance=self.manager.cfg.intraday_bucket_tolerance
+                    bucket_tolerance=self.manager.cfg.intraday_bucket_tolerance,
+                    expected_combo_total=expected_combo_total
                 )
 
                 if not validation_result.valid:
@@ -514,7 +524,7 @@ class CoherenceChecker:
         date_iso : str
             Date (YYYY-MM-DD).
         sink : str
-            Storage sink.
+            Storage sink (csv, parquet, influxdb).
 
         Returns
         -------
@@ -522,6 +532,31 @@ class CoherenceChecker:
             DataFrame with intraday data, or None if not found.
         """
         import pandas as pd
+
+        # Handle InfluxDB sink by querying the database
+        if sink.lower() == "influxdb":
+            measurement = f"{symbol}-{asset}-{interval}"
+            # Use next day for upper bound to include all timestamps (including nanoseconds)
+            # Pattern: time >= start AND time < next_day (exclusive upper bound)
+            from datetime import datetime, timedelta
+            next_day_iso = (datetime.fromisoformat(date_iso) + timedelta(days=1)).strftime('%Y-%m-%d')
+            query = f"""
+                SELECT *
+                FROM "{measurement}"
+                WHERE time >= to_timestamp('{date_iso}T00:00:00Z')
+                  AND time < to_timestamp('{next_day_iso}T00:00:00Z')
+                ORDER BY time
+            """
+            try:
+                df = self.manager._influx_query_dataframe(query)
+                if df.empty:
+                    return None
+                # Rename 'time' column to 'timestamp' for validator compatibility
+                if 'time' in df.columns:
+                    df = df.rename(columns={'time': 'timestamp'})
+                return df
+            except Exception:
+                return None
 
         # Use manager's file listing to find the file for this day
         files = self.manager._list_series_files(asset, symbol, interval, sink.lower())
@@ -587,6 +622,7 @@ class CoherenceChecker:
         """Get EOD volumes for a specific date.
 
         For options, attempts to get separate call and put volumes.
+        This method now delegates to the unified function in ThetaSyncManager.
 
         Parameters
         ----------
@@ -604,70 +640,13 @@ class CoherenceChecker:
         Tuple[Optional[float], Optional[float], Optional[float]]
             (total_volume, call_volume, put_volume). For non-options, call and put volumes are None.
         """
-        import pandas as pd
-
-        # First check local EOD data
-        eod_df = await self._read_intraday_day(symbol, asset, "1d", date_iso, sink)
-
-        if eod_df is not None and not eod_df.empty:
-            # Try to extract volumes from local data
-            if 'volume' in eod_df.columns:
-                total_volume = eod_df['volume'].sum()
-
-                # For options, try to separate by call/put
-                if asset == "option" and 'right' in eod_df.columns:
-                    call_volume = eod_df[eod_df['right'].isin(['C', 'call'])]['volume'].sum()
-                    put_volume = eod_df[eod_df['right'].isin(['P', 'put'])]['volume'].sum()
-                    return float(total_volume), float(call_volume), float(put_volume)
-
-                return float(total_volume), None, None
-
-        # If not in local storage, download from API
-        try:
-            if asset == "stock":
-                result, url = await self.client.stock_history_eod(
-                    symbol=symbol,
-                    start_date=date_iso,
-                    end_date=date_iso,
-                    format_type="csv"
-                )
-            elif asset == "index":
-                result, url = await self.client.index_history_eod(
-                    symbol=symbol,
-                    start_date=date_iso,
-                    end_date=date_iso,
-                    format_type="csv"
-                )
-            elif asset == "option":
-                result, url = await self.client.option_history_eod(
-                    symbol=symbol,
-                    expiration="*",
-                    start_date=date_iso,
-                    end_date=date_iso,
-                    format_type="csv"
-                )
-            else:
-                return None, None, None
-
-            # Parse CSV response
-            from io import StringIO
-            csv_text = result[0] if isinstance(result, tuple) else result
-            df = pd.read_csv(StringIO(csv_text))
-
-            if 'volume' in df.columns:
-                total_volume = df['volume'].sum()
-
-                if asset == "option" and 'right' in df.columns:
-                    call_volume = df[df['right'].isin(['C', 'call'])]['volume'].sum()
-                    put_volume = df[df['right'].isin(['P', 'put'])]['volume'].sum()
-                    return float(total_volume), float(call_volume), float(put_volume)
-
-                return float(total_volume), None, None
-
-        except Exception:
-            pass
-
-        return None, None, None
+        # Delegate to the unified function in manager (supports CSV/Parquet/InfluxDB + API fallback)
+        return await self.manager._get_eod_volume_for_validation(
+            symbol=symbol,
+            asset=asset,
+            date_iso=date_iso,
+            sink=sink
+        )
 
     async def _segment_intraday_problems(
         self,
@@ -1013,15 +992,15 @@ class IncoherenceRecovery:
 
         try:
             self.manager._purge_day_files(asset, symbol, 'tick', sink, date_iso)
-            with self._suspend_validation():
-                await self.manager._download_and_store_options(
-                    symbol=symbol,
-                    interval=interval,
-                    day_iso=date_iso,
-                    sink=sink,
-                    enrich_greeks=enrich_greeks,
-                    enrich_tick_greeks=False
-                )
+            # Download with validation enabled to ensure data quality
+            await self.manager._download_and_store_options(
+                symbol=symbol,
+                interval=interval,
+                day_iso=date_iso,
+                sink=sink,
+                enrich_greeks=enrich_greeks,
+                enrich_tick_greeks=False
+            )
         except Exception as e:
             self.logger.log_failure(
                 symbol=symbol,
@@ -1092,15 +1071,15 @@ class IncoherenceRecovery:
             date_str = current_date.strftime('%Y-%m-%d')
             try:
                 self.manager._purge_day_files(asset, symbol, interval, sink, date_str)
-                with self._suspend_validation():
-                    await self.manager._download_and_store_options(
-                        symbol=symbol,
-                        interval=interval,
-                        day_iso=date_str,
-                        sink=sink,
-                        enrich_greeks=enrich_greeks,
-                        enrich_tick_greeks=False
-                    )
+                # Download with validation enabled to ensure data quality
+                await self.manager._download_and_store_options(
+                    symbol=symbol,
+                    interval=interval,
+                    day_iso=date_str,
+                    sink=sink,
+                    enrich_greeks=enrich_greeks,
+                    enrich_tick_greeks=False
+                )
                 self.logger.log_resolution(
                     symbol=symbol,
                     asset=asset,
@@ -1155,15 +1134,15 @@ class IncoherenceRecovery:
         """
         try:
             self.manager._purge_day_files(asset, symbol, 'tick', sink, date_iso)
-            with self._suspend_validation():
-                await self.manager._download_and_store_options(
-                    symbol=symbol,
-                    interval='tick',
-                    day_iso=date_iso,
-                    sink=sink,
-                    enrich_greeks=False,
-                    enrich_tick_greeks=False
-                )
+            # Download with validation enabled to ensure data quality
+            await self.manager._download_and_store_options(
+                symbol=symbol,
+                interval='tick',
+                day_iso=date_iso,
+                sink=sink,
+                enrich_greeks=False,
+                enrich_tick_greeks=False
+            )
         except Exception as e:
             self.logger.log_failure(
                 symbol=symbol,

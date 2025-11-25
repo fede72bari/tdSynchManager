@@ -135,13 +135,17 @@ class Task:
     intervals : List[str]
         Bars timeframe identifiers (e.g., ["1m"], ["10m"], ["1h"]).
     sink : str
-        Storage sink {"parquet", "csv"}.
+        Storage sink {"parquet", "csv", "influxdb"}.
     refresh_seconds : Optional[int]
         Informational (external scheduler can call manager periodically).
     enrich_bar_greeks : bool
         If True and asset=="option", also persist per-interval Greeks as companion file.
+    enrich_tick_greeks : bool
+        If True and asset=="option", enrich tick data with Greeks at trade-level granularity.
     first_date_override : Optional[str]
         Optional ISO date (YYYY-MM-DD) to force the start coverage for this task.
+    end_date_override : Optional[str]
+        Optional ISO date (YYYY-MM-DD) to force the end coverage for this task (instead of today).
     discover_policy : DiscoverPolicy
         Controls discovery behavior (auto/force/skip, request type, fallbacks).
     ignore_existing: bool
@@ -156,6 +160,7 @@ class Task:
     enrich_bar_greeks: bool = False
     enrich_tick_greeks: bool = False
     first_date_override: Optional[str] = None
+    end_date_override: Optional[str] = None
     discover_policy: DiscoverPolicy = field(default_factory=DiscoverPolicy)
     ignore_existing: bool = False
 

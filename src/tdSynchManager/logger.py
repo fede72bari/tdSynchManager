@@ -165,6 +165,29 @@ class DataConsistencyLogger:
             details=details or {}
         )
 
+    def log_info(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        date_range: Tuple[str, str],
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        """Record an informational event (non-error) for observability."""
+        self._log_event(
+            event_type="INFO",
+            severity="INFO",
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=date_range,
+            error_message=message,
+            retry_attempt=0,
+            resolution_status="PENDING",
+            details=details or {}
+        )
+
     def log_resolution(
         self,
         symbol: str,
@@ -425,15 +448,25 @@ class DataConsistencyLogger:
             "error_message": error_message,
             "retry_attempt": retry_attempt,
             "resolution_status": resolution_status,
-            "details_json": json.dumps(details)
+            # Usa default=str per gestire tipi non serializzabili (es. numpy/int64)
+            "details_json": json.dumps(details, default=str)
         }
 
         # Console output
         if self.verbose:
             range_str = f"{date_range[0]}..{date_range[1]}" if date_range[0] else ""
+            measurement = ""
+            try:
+                measurement_val = details.get("measurement")
+                if measurement_val:
+                    measurement = f" meas={measurement_val}"
+            except Exception:
+                measurement = ""
+            attempt_str = f" attempt={retry_attempt}" if retry_attempt else ""
+            status_str = f" status={resolution_status}" if resolution_status else ""
             print(
                 f"[{severity}][{event_type}] {symbol} ({asset}/{interval}) "
-                f"{range_str}: {error_message}"
+                f"{range_str}: {error_message}{measurement}{attempt_str}{status_str}"
             )
 
         # Persist to file
@@ -479,3 +512,72 @@ class DataConsistencyLogger:
 
         # Write
         df_combined.to_parquet(log_path, index=False)
+
+    # -------- Query/Display Helpers --------
+    def get_logs(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        start_ts,
+        end_ts=None,
+        limit: int = 100
+    ) -> pd.DataFrame:
+        """Return logs for the given series filtered by timestamp range."""
+        log_dir = self.root_dir / "data" / asset / symbol / interval / "logs"
+        files = sorted(log_dir.glob("log_*_*.parquet")) if log_dir.exists() else []
+        if not files:
+            return pd.DataFrame()
+        dfs = []
+        for f in files:
+            try:
+                dfs.append(pd.read_parquet(f))
+            except Exception:
+                continue
+        if not dfs:
+            return pd.DataFrame()
+        df = pd.concat(dfs, ignore_index=True)
+        df = df[(df["asset"] == asset) & (df["symbol"] == symbol) & (df["interval"] == interval)]
+        start_ts = pd.to_datetime(start_ts, utc=True)
+        df = df[df["timestamp"] >= start_ts]
+        if end_ts is not None:
+            end_ts = pd.to_datetime(end_ts, utc=True)
+            df = df[df["timestamp"] <= end_ts]
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        if limit and len(df) > limit:
+            df = df.tail(limit)
+        return df
+
+    def display_logs(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        start_ts,
+        end_ts=None,
+        limit: int = 50
+    ):
+        """Return recent logs as DataFrame (caller can print/display as desired)."""
+        return self.get_logs(symbol, asset, interval, start_ts, end_ts, limit)
+
+    def print_logs(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        start_ts,
+        end_ts=None,
+        limit: int = 50
+    ) -> None:
+        """Print recent logs with no truncation (wide columns)."""
+        df = self.get_logs(symbol, asset, interval, start_ts, end_ts, limit)
+        if df.empty:
+            print(f"[LOGGER][INFO] No logs for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}.")
+            return
+        cols = ["timestamp", "severity", "event_type", "error_message", "retry_attempt", "resolution_status",
+                "date_range_start", "date_range_end"]
+        cols = [c for c in cols if c in df.columns]
+        with pd.option_context("display.max_colwidth", None, "display.max_rows", None, "display.width", 0):
+            print(f"[LOGGER][INFO] Showing last {len(df)} entries for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}:")
+            # Ensure no truncation of cells or rows
+            print(df[cols].to_string(index=False, max_colwidth=None))

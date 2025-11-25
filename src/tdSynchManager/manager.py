@@ -31,7 +31,7 @@ from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
 from .retry import retry_with_policy
 from .download_retry import download_with_retry_and_validation
-from .influx_verification import verify_influx_write, write_influx_with_verification, InfluxWriteResult
+# Removed influx_verification imports - InfluxDB write() is synchronous and raises exceptions on failure
 
 try:  # optional at runtime
     ipy_display = importlib.import_module("IPython.display").display
@@ -220,6 +220,61 @@ class ThetaSyncManager:
         self._root_sink_dir = os.path.join(self.cfg.root_dir, "data")
         os.makedirs(self._root_sink_dir, exist_ok=True)
 
+    # -------- Log display helper --------
+    def show_logs(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        start_ts,
+        end_ts=None,
+        limit: int = 50,
+        print_full: bool = False
+    ):
+        """Convenience wrapper to fetch/print recent logger entries for a series.
+
+        Parameters
+        ----------
+        print_full : bool
+            If True, uses display() with unlimited rows and column width.
+            If False, returns a truncated DataFrame.
+        """
+        df = self.logger.get_logs(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            limit=limit,
+        )
+
+        if print_full:
+            # Display with NO limitations
+            import pandas as pd
+            try:
+                # Try to use IPython display if available
+                from IPython.display import display
+                with pd.option_context(
+                    'display.max_rows', None,           # Show all rows
+                    'display.max_columns', None,        # Show all columns
+                    'display.max_colwidth', None,       # Show full text in columns
+                    'display.width', None,              # No width limit
+                    'display.max_seq_items', None       # Show all items in sequences
+                ):
+                    display(df)
+            except ImportError:
+                # Fallback to print if IPython not available
+                with pd.option_context(
+                    'display.max_rows', None,
+                    'display.max_columns', None,
+                    'display.max_colwidth', None,
+                    'display.width', 0
+                ):
+                    print(df)
+            return None
+
+        return df
+
 
 
 
@@ -345,14 +400,35 @@ class ThetaSyncManager:
                     return False
 
         elif interval != 'tick':
+            expected_combo_total = None
+            if asset == "option":
+                expected_combo_total = await self._expected_option_combos_for_day(symbol, day_iso)
+                if expected_combo_total:
+                    print(f"[VALIDATION][INFO] {symbol} {interval} {day_iso}: attese_combo={expected_combo_total} (exp x strike x right)")
+
             # Intraday OHLC: validate candle completeness
             validation_result = DataValidator.validate_intraday_completeness(
                 df=df,
                 interval=interval,
                 date_iso=day_iso,
                 asset=asset,
-                bucket_tolerance=self.cfg.intraday_bucket_tolerance
+                bucket_tolerance=self.cfg.intraday_bucket_tolerance,
+                expected_combo_total=expected_combo_total
             )
+            # Log esito anche quando passa, con expected/actual
+            if validation_result.valid:
+                det = validation_result.details or {}
+                print(f"[VALIDATION][OK] {symbol} {interval} {day_iso} buckets={det.get('actual_buckets')} exp_buckets=~{det.get('expected')} "
+                      f"combos_min={det.get('min_combos_per_bucket')} expected_combo_total={det.get('expected_combo_total')}")
+                # Log INFO anche nel logger
+                self.logger.log_info(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message="VALIDATION_OK",
+                    details=det
+                )
 
             if not validation_result.valid:
                 self.logger.log_missing_data(
@@ -435,7 +511,7 @@ class ThetaSyncManager:
     ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
         """Get EOD volumes for tick validation.
 
-        First checks local storage (DB), then downloads from API if not found.
+        First checks local storage (CSV/Parquet/InfluxDB), then downloads from API if not found.
         For options, attempts to get separate call and put volumes.
 
         Parameters
@@ -447,7 +523,7 @@ class ThetaSyncManager:
         date_iso : str
             Date (YYYY-MM-DD).
         sink : str
-            Storage sink.
+            Storage sink (csv, parquet, influxdb).
 
         Returns
         -------
@@ -487,24 +563,43 @@ class ThetaSyncManager:
 
         # First, try to read EOD from local storage
         try:
-            files = self._list_series_files(asset, symbol, "1d", sink.lower())
-            eod_file = None
-            for f in files:
-                if date_iso in f:
-                    eod_file = f
-                    break
+            # Handle InfluxDB sink by querying the database
+            if sink.lower() == "influxdb":
+                measurement = f"{symbol}-{asset}-1d"
+                query = f"""
+                    SELECT *
+                    FROM "{measurement}"
+                    WHERE time >= to_timestamp('{date_iso}T00:00:00Z')
+                      AND time <= to_timestamp('{date_iso}T23:59:59Z')
+                """
+                try:
+                    eod_df = self._influx_query_dataframe(query)
+                    if not eod_df.empty:
+                        total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
+                        if total_volume is not None:
+                            return total_volume, call_volume, put_volume
+                except Exception:
+                    pass
+            else:
+                # CSV/Parquet file-based storage
+                files = self._list_series_files(asset, symbol, "1d", sink.lower())
+                eod_file = None
+                for f in files:
+                    if date_iso in f:
+                        eod_file = f
+                        break
 
-            if eod_file:
-                if sink.lower() == "csv":
-                    eod_df = pd.read_csv(eod_file)
-                elif sink.lower() == "parquet":
-                    eod_df = pd.read_parquet(eod_file)
-                else:
-                    eod_df = None
+                if eod_file:
+                    if sink.lower() == "csv":
+                        eod_df = pd.read_csv(eod_file)
+                    elif sink.lower() == "parquet":
+                        eod_df = pd.read_parquet(eod_file)
+                    else:
+                        eod_df = None
 
-                total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
-                if total_volume is not None:
-                    return total_volume, call_volume, put_volume
+                    total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
+                    if total_volume is not None:
+                        return total_volume, call_volume, put_volume
         except Exception:
             pass
 
@@ -670,10 +765,17 @@ class ThetaSyncManager:
             getattr(task, "discover_policy", None) is not None
             and getattr(task.discover_policy, "mode", None) == "skip"
         )
-    
+
         # Compute resume window suggested by existing logic
         start_dt = await self._compute_resume_start_datetime(task, symbol, interval, first_date)
-        end_dt = dt.now(timezone.utc)
+
+        # Use end_date_override if provided, otherwise use current time
+        if hasattr(task, 'end_date_override') and task.end_date_override:
+            end_date_str = self._normalize_date_str(task.end_date_override)
+            end_dt = dt.fromisoformat(end_date_str).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+            print(f"[END-DATE-OVERRIDE] Using end_date={end_date_str} instead of today")
+        else:
+            end_dt = dt.now(timezone.utc)
 
         # >>> START_DATE_ET — BEGIN
         # Preferisci la data esplicita dell'utente per il retrogrado; altrimenti deriva da start_dt.
@@ -1128,11 +1230,13 @@ class ThetaSyncManager:
             Trading date in ISO format "YYYY-MM-DD" (UTC). Weekend dates are
             skipped automatically in the intraday branch.
         sink : str
-            Output format: "csv" or "parquet".
+            Output format: "csv", "parquet", or "influxdb".
         enrich_greeks : bool
             If True, fetch and merge the **full** Greeks set in addition to IV:
             - EOD: /option/history/greeks/eod over all expirations.
             - Intraday: /option/history/greeks/all aligned to the requested interval.
+        enrich_tick_greeks : bool, optional
+            If True, enrich tick data with trade-level Greeks granularity (default False).
 
         Behavior
         --------
@@ -1187,8 +1291,17 @@ class ThetaSyncManager:
           when possible.
         """
 
+        # Log start of download (console + parquet)
+        print(f"[DOWNLOAD-START] {symbol} option/{interval} day={day_iso} sink={sink} enrich_greeks={enrich_greeks}")
+        self.logger.log_info(
+            symbol=symbol,
+            asset="option",
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message=f"DOWNLOAD_START: sink={sink} enrich_greeks={enrich_greeks}",
+            details={"sink": sink, "enrich_greeks": enrich_greeks, "enrich_tick_greeks": enrich_tick_greeks}
+        )
 
-    
         sink_lower = sink.lower()
         stop_before_part = None
 
@@ -1203,6 +1316,15 @@ class ThetaSyncManager:
                 os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, f"{day_iso}T00-00-00Z-{symbol}-option-{interval}.{ext}")
             if os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
+                print(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - File already exists")
+                self.logger.log_info(
+                    symbol=symbol,
+                    asset="option",
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message="DOWNLOAD_SKIP: File already exists",
+                    details={"reason": "file_exists", "file_path": out_file}
+                )
                 return
 
             # ===== DOWNLOAD WITH RETRY AND VALIDATION =====
@@ -1401,30 +1523,32 @@ class ThetaSyncManager:
 
                 df_influx = self._ensure_ts_utc_column(df)
 
-                wrote, write_success = await write_influx_with_verification(
-                    write_func=lambda df_write: self._append_influx_df(base_path, df_write),
-                    verify_func=lambda df_verify: verify_influx_write(
-                        influx_client=influx_client,
-                        measurement=measurement,
-                        df_original=df_verify,
-                        key_cols=key_cols,
-                        time_col='__ts_utc'
-                    ),
-                    df=df_influx,
-                    retry_policy=self.cfg.retry_policy,
-                    logger=self.logger,
-                    context={
-                        'symbol': symbol,
-                        'asset': 'option',
-                        'interval': interval,
-                        'date_range': (day_iso, day_iso),
-                        'sink': sink,
-                        'measurement': measurement
-                    }
+                # Log SAVE_START for InfluxDB write
+                self.logger.log_info(
+                    symbol=symbol,
+                    asset="option",
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"SAVE_START: Writing to InfluxDB, rows={len(df_influx)}",
+                    details={"sink": "influxdb", "rows": len(df_influx), "branch": "EOD", "measurement": measurement}
                 )
 
-                if not write_success:
-                    print(f"[ALERT] InfluxDB write failed after retries for option {symbol} EOD {day_iso}")
+                # InfluxDB write is synchronous - if no exception, write succeeded
+                try:
+                    wrote = await self._append_influx_df(base_path, df_influx)
+                    write_success = True
+                except Exception as e:
+                    wrote = 0
+                    write_success = False
+                    print(f"[ALERT] InfluxDB write failed for option {symbol} EOD {day_iso}: {e}")
+                    self.logger.log_failure(
+                        symbol=symbol,
+                        asset="option",
+                        interval=interval,
+                        date_range=(day_iso, day_iso),
+                        message=f"SAVE_FAILURE: InfluxDB write failed: {str(e)}",
+                        details={"sink": "influxdb", "rows_attempted": len(df), "error": str(e), "branch": "EOD"}
+                    )
                 if wrote == 0 and len(df) > 0:
                     print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                           "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
@@ -1433,8 +1557,16 @@ class ThetaSyncManager:
             
             print(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
 
+            print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} EOD branch completed successfully")
+            self.logger.log_info(
+                symbol=symbol,
+                asset="option",
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"DOWNLOAD_SUCCESS: rows={len(df)} wrote={wrote}",
+                details={"rows": len(df), "wrote": wrote, "sink": sink_lower, "branch": "EOD"}
+            )
 
-        
             return  # end EOD branch
 
         
@@ -1516,6 +1648,15 @@ class ThetaSyncManager:
         if not expirations:
             expirations = await self._expirations_that_traded(symbol, day_iso, req_type="quote")
         if not expirations:
+            print(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - No expirations traded")
+            self.logger.log_info(
+                symbol=symbol,
+                asset="option",
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message="DOWNLOAD_SKIP: No expirations traded",
+                details={"reason": "no_expirations"}
+            )
             return
     
         # 2) fetch TICK **oppure** OHLC+enrichment per expiration e concatena
@@ -2239,30 +2380,32 @@ class ThetaSyncManager:
 
             df_influx = self._ensure_ts_utc_column(df_all)
 
-            wrote, write_success = await write_influx_with_verification(
-                write_func=lambda df_write: self._append_influx_df(base_path, df_write),
-                verify_func=lambda df_verify: verify_influx_write(
-                    influx_client=influx_client,
-                    measurement=measurement,
-                    df_original=df_verify,
-                    key_cols=key_cols,
-                    time_col='__ts_utc'
-                ),
-                df=df_influx,
-                retry_policy=self.cfg.retry_policy,
-                logger=self.logger,
-                context={
-                    'symbol': symbol,
-                    'asset': 'option',
-                    'interval': interval,
-                    'date_range': (day_iso, day_iso),
-                    'sink': sink,
-                    'measurement': measurement
-                }
+            # Log SAVE_START for InfluxDB write
+            self.logger.log_info(
+                symbol=symbol,
+                asset="option",
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"SAVE_START: Writing to InfluxDB, rows={len(df_influx)}",
+                details={"sink": "influxdb", "rows": len(df_influx), "branch": "intraday", "measurement": measurement, "expirations_count": len(expirations)}
             )
 
-            if not write_success:
-                print(f"[ALERT] InfluxDB write failed after retries for option {symbol} {interval} {day_iso}")
+            # InfluxDB write is synchronous - if no exception, write succeeded
+            try:
+                wrote = await self._append_influx_df(base_path, df_influx)
+                write_success = True
+            except Exception as e:
+                wrote = 0
+                write_success = False
+                print(f"[ALERT] InfluxDB write failed for option {symbol} {interval} {day_iso}: {e}")
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset="option",
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"SAVE_FAILURE: InfluxDB write failed: {str(e)}",
+                    details={"sink": "influxdb", "rows_attempted": len(df_all), "error": str(e), "branch": "intraday"}
+                )
             if wrote == 0 and len(df_all) > 0:
                 print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                       "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
@@ -2271,10 +2414,19 @@ class ThetaSyncManager:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
         print(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
+        print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} intraday branch completed successfully")
+        self.logger.log_info(
+            symbol=symbol,
+            asset="option",
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message=f"DOWNLOAD_SUCCESS: rows={len(df_all)} wrote={wrote}",
+            details={"rows": len(df_all), "wrote": wrote, "sink": sink_lower, "branch": "intraday", "expirations_count": len(expirations)}
+        )
 
 
-        
-                       
+
+
     
     async def _download_and_store_equity_or_index(
         self,
@@ -2635,34 +2787,45 @@ class ThetaSyncManager:
 
             df_influx = self._ensure_ts_utc_column(df_day)
 
-            wrote, write_success = await write_influx_with_verification(
-                write_func=lambda df_write: self._append_influx_df(base_path, df_write),
-                verify_func=lambda df_verify: verify_influx_write(
-                    influx_client=influx_client,
-                    measurement=measurement,
-                    df_original=df_verify,
-                    key_cols=key_cols,
-                    time_col='__ts_utc'
-                ),
-                df=df_influx,
-                retry_policy=self.cfg.retry_policy,
-                logger=self.logger,
-                context={
-                    'symbol': symbol,
-                    'asset': asset,
-                    'interval': interval,
-                    'date_range': (day_iso, day_iso),
-                    'sink': sink,
-                    'measurement': measurement
-                }
+            # Log SAVE_START for InfluxDB write
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"SAVE_START: Writing to InfluxDB, rows={len(df_influx)}",
+                details={"sink": "influxdb", "rows": len(df_influx), "branch": f"{asset}", "measurement": measurement}
             )
 
-            if not write_success:
-                print(f"[ALERT] InfluxDB write failed after retries for {asset} {symbol} {interval} {day_iso}")
+            # InfluxDB write is synchronous - if no exception, write succeeded
+            try:
+                wrote = await self._append_influx_df(base_path, df_influx)
+                write_success = True
+            except Exception as e:
+                wrote = 0
+                write_success = False
+                print(f"[ALERT] InfluxDB write failed for {asset} {symbol} {interval} {day_iso}: {e}")
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"SAVE_FAILURE: InfluxDB write failed: {str(e)}",
+                    details={"sink": "influxdb", "rows_attempted": len(df_day), "error": str(e), "branch": f"{asset}"}
+                )
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
-        print(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
+            print(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
+            # Log INFO write summary
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message="WRITE_OK",
+                details={"rows": len(df_day), "wrote": wrote, "sink": sink_lower}
+            )
 
         
         # -------------------------------
@@ -3669,7 +3832,7 @@ class ThetaSyncManager:
         interval : str
             The bar interval, must be '1d' for this method to work correctly.
         sink : str
-            The sink type (e.g., 'csv', 'parquet').
+            The sink type (e.g., 'csv', 'parquet', 'influxdb').
         first_day : str
             The start date of the range to check in ISO format "YYYY-MM-DD".
         last_day : str
@@ -3699,6 +3862,47 @@ class ThetaSyncManager:
         """
 
         sink_lower = (sink or "csv").lower()
+
+        # Handle InfluxDB sink by querying the database
+        if sink_lower == "influxdb":
+            measurement = f"{symbol}-{asset}-{interval}"
+
+            # Query for all unique dates in the range
+            query = f"""
+                SELECT DISTINCT DATE_TRUNC('day', time) AS date
+                FROM "{measurement}"
+                WHERE time >= to_timestamp('{first_day}T00:00:00Z')
+                  AND time <= to_timestamp('{last_day}T23:59:59Z')
+                ORDER BY date
+            """
+
+            df = self._influx_query_dataframe(query)
+            if df.empty:
+                # No data found - all days are missing
+                expected = pd.bdate_range(first_day, last_day, freq="C")
+                return [d.date().isoformat() for d in expected]
+
+            # Extract observed dates
+            observed_days = set()
+            date_col = df.columns[0]  # First column is the date
+            for val in df[date_col]:
+                try:
+                    date_str = pd.to_datetime(val).strftime("%Y-%m-%d")
+                    observed_days.add(date_str)
+                except Exception:
+                    continue
+
+            if not observed_days:
+                expected = pd.bdate_range(first_day, last_day, freq="C")
+                return [d.date().isoformat() for d in expected]
+
+            # Compare with expected business days
+            observed = pd.DatetimeIndex(pd.to_datetime(sorted(observed_days))).normalize()
+            expected = pd.bdate_range(first_day, last_day, freq="C")
+            missing = expected.difference(observed)
+            return [d.date().isoformat() for d in missing]
+
+        # Original file-based logic for CSV/Parquet
         series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
         if not os.path.isdir(series_dir):
             return []
@@ -4411,10 +4615,14 @@ class ThetaSyncManager:
                 .map({"c": "call", "p": "put", "call": "call", "put": "put"})
                 .fillna(df["right"])
             )
-    
+        if "sequence" in df.columns:
+            df["sequence"] = pd.to_numeric(df["sequence"], errors="coerce")
+
         # 3) HARD DEDUPE: __ts_utc + tag se presenti (+ sequence se presente)
         tag_keys = [c for c in ["symbol","expiration","right","strike"] if c in df.columns]
-        key_cols = ["__ts_utc"] + tag_keys + (["sequence"] if "sequence" in df.columns else [])
+        if "sequence" in df.columns:
+            tag_keys.append("sequence")
+        key_cols = ["__ts_utc"] + tag_keys
         before = len(df)
         df = df.dropna(subset=["__ts_utc"]).drop_duplicates(subset=key_cols, keep="last").reset_index(drop=True)
         dropped = before - len(df)
@@ -4447,8 +4655,10 @@ class ThetaSyncManager:
             else:
                 ts = ts.tz_convert("UTC")
             return int(ts.value)  # ns epoch
-    
+
         tag_keys = ["symbol","expiration","right","strike"]
+        if "sequence" in df.columns:
+            tag_keys.append("sequence")
         not_field = set(["__ts_utc", "timestamp"]) | set(tag_keys)
         meas_esc = _esc(measurement)
     
@@ -4649,7 +4859,7 @@ class ThetaSyncManager:
         interval : str
             Timeframe (e.g., "5m", "1m", "1d").
         sink_lower : str
-            Sink format: "csv" or "parquet".
+            Sink format: "csv", "parquet", or "influxdb".
 
         Returns
         -------
@@ -4674,8 +4884,37 @@ class ThetaSyncManager:
         - Extracts dates from filename format: "YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext"
         - Both earliest and latest are derived from filename prefixes (not file contents).
         - For daily-part files, each file represents exactly one calendar day.
+        - For InfluxDB sink, queries the database for MIN(time) and MAX(time).
         """
-    
+
+        # Handle InfluxDB sink by querying the database
+        if sink_lower == "influxdb":
+            measurement = f"{symbol}-{asset}-{interval}"
+            query = f"""
+                SELECT MIN(time) AS min_time, MAX(time) AS max_time
+                FROM "{measurement}"
+            """
+
+            df = self._influx_query_dataframe(query)
+            if df.empty:
+                return None, None, []
+
+            # Extract min and max timestamps
+            min_time = self._extract_scalar_from_df(df, ["min_time", "MIN", "min"])
+            max_time = self._extract_scalar_from_df(df, ["max_time", "MAX", "max"])
+
+            if min_time is None or max_time is None:
+                return None, None, []
+
+            # Convert to date strings (YYYY-MM-DD)
+            try:
+                earliest_date = pd.to_datetime(min_time).strftime("%Y-%m-%d")
+                latest_date = pd.to_datetime(max_time).strftime("%Y-%m-%d")
+                return earliest_date, latest_date, []
+            except Exception:
+                return None, None, []
+
+        # Original file-based logic for CSV/Parquet
         files = self._list_series_files(asset, symbol, interval, sink_lower)
         if not files:
             return None, None, []
@@ -5509,6 +5748,53 @@ class ThetaSyncManager:
         except Exception:
             return None
         return None
+
+    async def _expected_option_combos_for_day(self, symbol: str, day_iso: str) -> Optional[int]:
+        """
+        Stima il numero atteso di combinazioni (expiration x strike x right) per un giorno di opzioni
+        interrogando ThetaData: list_contracts + list_strikes. Restituisce None in caso di errore.
+        """
+        try:
+            ymd = self._td_ymd(day_iso)
+            payload, _ = await self.client.option_list_contracts(
+                request_type="trade", date=ymd, symbol=symbol, format_type="json"
+            )
+            expirations: list[str] = []
+            if isinstance(payload, dict):
+                for col in ("expiration", "expirationDate", "exp"):
+                    colv = payload.get(col)
+                    if isinstance(colv, list):
+                        expirations.extend(colv)
+            elif isinstance(payload, list):
+                for item in payload:
+                    if isinstance(item, dict):
+                        e = item.get("expiration") or item.get("expirationDate") or item.get("exp")
+                        if e:
+                            expirations.append(e)
+            expirations = sorted({str(e).replace("-", "") for e in expirations if str(e).strip()})
+            if not expirations:
+                return None
+
+            total_strikes = 0
+            for exp in expirations:
+                try:
+                    strikes_payload, _ = await self.client.option_list_strikes(
+                        symbol=symbol, expiration=exp, format_type="json"
+                    )
+                    if isinstance(strikes_payload, dict) and "strikes" in strikes_payload:
+                        strikes_list = strikes_payload["strikes"]
+                    else:
+                        strikes_list = strikes_payload if isinstance(strikes_payload, list) else []
+                    total_strikes += len(strikes_list)
+                except Exception as e:
+                    print(f"[VALIDATION][WARN] list_strikes exp={exp} {day_iso}: {e}")
+            if total_strikes == 0:
+                return None
+            # right=both → consideriamo call e put
+            return total_strikes * 2
+        except Exception as e:
+            print(f"[VALIDATION][WARN] expected combos fetch failed {symbol} {day_iso}: {e}")
+            return None
 
 
     # --- NEW: day utilities (ET day → UTC bounds, presence/first-ts) ---
@@ -9199,6 +9485,16 @@ class ThetaSyncManager:
         # Initialize checker
         checker = CoherenceChecker(self)
 
+        # Log coherence check start
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(start_date or "", end_date or ""),
+            message=f"COHERENCE_CHECK_START: checking data completeness for {symbol} {asset}/{interval}",
+            details={"sink": sink, "start_date": start_date, "end_date": end_date}
+        )
+
         # Perform coherence check
         report = await checker.check(
             symbol=symbol,
@@ -9209,13 +9505,60 @@ class ThetaSyncManager:
             end_date=end_date
         )
 
+        # Log coherence check end
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(start_date or "", end_date or ""),
+            message=f"COHERENCE_CHECK_END: is_coherent={report.is_coherent}, issues_found={len(report.issues)}",
+            details={
+                "is_coherent": report.is_coherent,
+                "issues_count": len(report.issues),
+                "missing_days": len(report.missing_days),
+                "intraday_gaps": len(report.intraday_gaps),
+                "tick_volume_mismatches": len(report.tick_volume_mismatches)
+            }
+        )
+
         # Auto-recover if enabled and issues found
         if not report.is_coherent and auto_recover:
             recovery = IncoherenceRecovery(self)
 
+            # Log recovery start
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(start_date or "", end_date or ""),
+                message=f"RECOVERY_START: attempting to recover {len(report.issues)} issues",
+                details={
+                    "issues_count": len(report.issues),
+                    "missing_days": len(report.missing_days),
+                    "intraday_gaps": len(report.intraday_gaps),
+                    "tick_volume_mismatches": len(report.tick_volume_mismatches),
+                    "enrich_greeks": enrich_greeks
+                }
+            )
+
             recovery_result = await recovery.recover(
                 report=report,
                 enrich_greeks=enrich_greeks
+            )
+
+            # Log recovery end
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(start_date or "", end_date or ""),
+                message=f"RECOVERY_END: successful={recovery_result.successful}, failed={recovery_result.failed}",
+                details={
+                    "total_issues": recovery_result.total_issues,
+                    "successful": recovery_result.successful,
+                    "failed": recovery_result.failed,
+                    "recovery_details": recovery_result.details
+                }
             )
 
             # Log recovery summary
@@ -9246,6 +9589,15 @@ class ThetaSyncManager:
                     )
 
             # Re-check after recovery
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(start_date or "", end_date or ""),
+                message="COHERENCE_CHECK_START: re-checking after recovery",
+                details={"check_type": "post_recovery"}
+            )
+
             report = await checker.check(
                 symbol=symbol,
                 asset=asset,
@@ -9253,6 +9605,20 @@ class ThetaSyncManager:
                 sink=sink,
                 start_date=start_date,
                 end_date=end_date
+            )
+
+            # Log post-recovery check result
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(start_date or "", end_date or ""),
+                message=f"COHERENCE_CHECK_END: post-recovery check, is_coherent={report.is_coherent}, remaining_issues={len(report.issues)}",
+                details={
+                    "is_coherent": report.is_coherent,
+                    "remaining_issues": len(report.issues),
+                    "check_type": "post_recovery"
+                }
             )
 
         return report

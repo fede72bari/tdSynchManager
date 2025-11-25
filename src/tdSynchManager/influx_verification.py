@@ -95,20 +95,34 @@ async def verify_influx_write(
     min_time = df_original[time_col].min()
     max_time = df_original[time_col].max()
 
-    # Convert to nanoseconds for InfluxDB query
-    if hasattr(min_time, 'value'):
-        min_ns = min_time.value
-        max_ns = max_time.value
+    # Convert to ISO timestamp strings (UTC) for InfluxDB query
+    # This matches the pattern used everywhere else in the codebase
+    # Handle both timezone-aware and naive timestamps
+    min_dt = pd.Timestamp(min_time)
+    if min_dt.tzinfo is None:
+        min_dt = min_dt.tz_localize('UTC')
     else:
-        min_ns = pd.Timestamp(min_time).value
-        max_ns = pd.Timestamp(max_time).value
+        min_dt = min_dt.tz_convert('UTC')
+
+    max_dt = pd.Timestamp(max_time)
+    if max_dt.tzinfo is None:
+        max_dt = max_dt.tz_localize('UTC')
+    else:
+        max_dt = max_dt.tz_convert('UTC')
+
+    # Expand range slightly (±1 second) to account for rounding/precision issues
+    min_dt = min_dt - pd.Timedelta(seconds=1)
+    max_dt = max_dt + pd.Timedelta(seconds=1)
+
+    min_ts = min_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    max_ts = max_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
     # Build SELECT query with all key columns
     select_cols = ', '.join([f'"{col}"' for col in key_cols if col != time_col])
     query = f"""
         SELECT time as __ts_utc, {select_cols}
         FROM "{measurement}"
-        WHERE time >= to_timestamp_ns({min_ns}) AND time <= to_timestamp_ns({max_ns})
+        WHERE time >= to_timestamp('{min_ts}') AND time <= to_timestamp('{max_ts}')
     """
 
     def _canonical_time(value):
@@ -124,6 +138,7 @@ async def verify_influx_write(
     def _canonical_scalar(value):
         if pd.isna(value):
             return None
+        # Per i tag usiamo sempre stringhe, così evitiamo mismatch (float vs str) restituiti da FlightSQL
         if isinstance(value, pd.Timestamp):
             ts = value
             if ts.tzinfo is None:
@@ -137,15 +152,40 @@ async def verify_influx_write(
         if isinstance(value, date):
             return value.isoformat()
         if isinstance(value, np.generic):
-            return value.item()
-        return value
+            value = value.item()
+        return str(value)
 
     try:
-        # Execute query
+        # First, do a quick COUNT(*) to see if data is there
+        count_query = f"""
+            SELECT COUNT(*) as cnt
+            FROM "{measurement}"
+            WHERE time >= to_timestamp('{min_ts}') AND time <= to_timestamp('{max_ts}')
+        """
+
+        # Retry COUNT query up to 5 times with increasing delays (total ~3 seconds max)
+        count_result = None
+        for retry in range(5):
+            count_result = influx_client.query(count_query)
+            if count_result and count_result.num_rows > 0:
+                df_count = count_result.to_pandas()
+                row_count = df_count['cnt'].iloc[0] if 'cnt' in df_count.columns else 0
+                if row_count > 0:
+                    print(f"[INFLUX][VERIFY] COUNT(*) found {row_count} rows in measurement '{measurement}'")
+                    break
+            if retry < 4:
+                import asyncio
+                await asyncio.sleep(0.5 * (retry + 1))  # 0.5s, 1s, 1.5s, 2s
+
+        # Now execute the full query
         result_table = influx_client.query(query)
 
         if result_table is None or result_table.num_rows == 0:
-            # Nothing written
+            # Nothing written - log for debugging
+            print(f"[INFLUX][VERIFY] No rows found! Query returned {result_table.num_rows if result_table else 0} rows")
+            print(f"[INFLUX][VERIFY] Time range: {min_ts} to {max_ts}")
+            print(f"[INFLUX][VERIFY] Expected {total} rows in measurement '{measurement}'")
+            print(f"[INFLUX][VERIFY] Query: {query}")
             return InfluxWriteResult(
                 total_attempted=total,
                 successfully_written=0,
@@ -217,6 +257,8 @@ async def verify_influx_write(
 
     except Exception as e:
         # Query failed - assume worst case (nothing written)
+        print(f"[INFLUX][VERIFY] Query failed with error: {e}")
+        print(f"[INFLUX][VERIFY] Query was: {query}")
         return InfluxWriteResult(
             total_attempted=total,
             successfully_written=0,
@@ -291,10 +333,24 @@ async def write_influx_with_verification(
             wrote = await write_func(current_df)
             total_written += wrote
 
-            # Verify
+            # Verify (with intelligent retry inside verify_influx_write)
             verification = await verify_func(current_df)
 
             if verification.success:
+                # Log successful verification (even on first attempt) for visibility
+                logger.log_info(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=date_range,
+                    message=f"InfluxDB write verified (attempt {attempt + 1}, rows={len(current_df)})",
+                    details={
+                        'total_written': total_written,
+                        'measurement': measurement,
+                        'attempt': attempt + 1
+                    }
+                )
+
                 if attempt > 0:
                     logger.log_resolution(
                         symbol=symbol,
