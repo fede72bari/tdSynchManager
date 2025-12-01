@@ -43,6 +43,21 @@ try:  # optional dependency, only needed for InfluxDB sinks
 except Exception:  # pragma: no cover
     InfluxDBClient3 = None
 
+# EOD TIMESTAMP FIX VERSION - increment on each modification group
+EOD_TIMESTAMP_FIX_VERSION = "v1.0.4"
+
+# Shell log/version banner (increment when delivering a new patch build)
+SHELL_LOG_VERSION = 3
+_SHELL_VERSION_PRINTED = False
+
+
+def _print_shell_version_banner():
+    """Emit a single banner line so operators can verify the loaded build."""
+    global _SHELL_VERSION_PRINTED
+    if not _SHELL_VERSION_PRINTED:
+        print(f"[VERSION] tdSynchManager shell v{SHELL_LOG_VERSION} (EOD timestamp fix {EOD_TIMESTAMP_FIX_VERSION})")
+        _SHELL_VERSION_PRINTED = True
+
 # -*- coding: utf-8 -*-
 """
 ThetaSync Orchestrator (v3.4, no-downloader)
@@ -186,6 +201,7 @@ class ThetaSyncManager:
         async with ThetaDataV3Client(base_url="http://localhost:25503/v3") as client:
             manager = ThetaSyncManager(cfg, client)
         """
+        _print_shell_version_banner()
         self.cfg = cfg
 
         # Initialize logger for data consistency tracking
@@ -591,7 +607,8 @@ class ThetaSyncManager:
 
                 if eod_file:
                     if sink.lower() == "csv":
-                        eod_df = pd.read_csv(eod_file)
+                        # Avoid pandas auto date parsing (mixed timestamp formats)
+                        eod_df = pd.read_csv(eod_file, dtype=str)
                     elif sink.lower() == "parquet":
                         eod_df = pd.read_parquet(eod_file)
                     else:
@@ -633,7 +650,8 @@ class ThetaSyncManager:
             if not csv_txt:
                 return None, None, None
 
-            eod_df = pd.read_csv(io.StringIO(csv_txt))
+            # Keep raw strings to avoid mixed-format parse warnings
+            eod_df = pd.read_csv(io.StringIO(csv_txt), dtype=str)
 
             total_volume, call_volume, put_volume = _extract_eod_volumes(eod_df)
             if total_volume is not None:
@@ -832,56 +850,6 @@ class ThetaSyncManager:
             task.asset, symbol, interval, sink_lower
         )
 
-        # ---------------------------
-        # 0) Pre-history: fill only missing head, stop at first existing file (+ head overlap)
-        # ---------------------------
-        if interval == "1d" and task.asset in ("stock", "index") and first_date_iso:
-            # elenco file e earliest/latest calcolati su TUTTI i file della serie
-            series_first_iso, series_last_iso, series_files = self._series_earliest_and_latest_day(
-                task.asset, symbol, interval, sink_lower
-            )
-        
-            if series_first_iso and first_date_iso < series_first_iso:
-        
-                req_start = dt.fromisoformat(first_date_iso).date()
-                first_file_day = dt.fromisoformat(series_first_iso).date()
-        
-                # vogliamo riempire fino al giorno precedente al primo file...
-                natural_end = first_file_day - timedelta(days=1)
-                # ... ma consentiamo un piccolo overlap che includa AL MASSIMO il giorno del primo file
-                head_ov = max(0, int(getattr(self.cfg, "eod_head_overlap_days", 1)))
-                capped_end = min(first_file_day, natural_end + timedelta(days=head_ov))
-        
-                # niente da fare se l'intervallo si svuota
-                if req_start <= capped_end:
-                    batch_days = max(1, int(getattr(self.cfg, "eod_batch_days", 30)))
-                    cur = req_start
-                    while cur <= capped_end:
-                        chunk_end = min(capped_end, cur + timedelta(days=batch_days - 1))
-                        start_iso = cur.isoformat()
-                        end_iso   = chunk_end.isoformat()
-                        print(f"[EOD-PREHIST] {task.asset} {symbol} {start_iso}..{end_iso}")
-                        try:
-                            await self._download_and_store_equity_or_index(
-                                asset=task.asset,
-                                symbol=symbol,
-                                interval=interval,
-                                day_iso=start_iso,
-                                sink=task.sink,
-                                range_end_iso=end_iso,   # inclusivo
-                            )
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as e:
-                            print(f"[WARN] prehistory {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
-                        cur = chunk_end + timedelta(days=1)
-        
-                # ricalcola earliest/latest dopo la pre-history
-                series_first_iso, series_last_iso, series_files = self._series_earliest_and_latest_day(
-                    task.asset, symbol, interval, sink_lower
-                )
-
-    
         # Compute an effective resume start day:
         resume_start_day = start_dt.date()
 
@@ -894,51 +862,9 @@ class ThetaSyncManager:
                 resume_start_day = max(resume_start_day, resume_from)
             except Exception:
                 pass
-    
+
         # ---------------------------
-        # 1) Backfill unexpected gaps (bounded strictly to pre-resume)
-        # ---------------------------
-        if interval == "1d" and task.asset in ("stock", "index"):
-            gap_end_iso = (resume_start_day - timedelta(days=1)).isoformat()
-    
-            # choose a start for gap-scan: if we have files, start at earliest file day; else at first_date
-            gap_start_iso = None
-            if series_first_iso:
-                gap_start_iso = series_first_iso
-            elif first_date_iso:
-                gap_start_iso = first_date_iso
-    
-            missing_days = []
-            if gap_start_iso and gap_start_iso <= gap_end_iso:
-                try:
-                    missing_days = self._missing_1d_days_csv(
-                        task.asset,
-                        symbol,
-                        interval,
-                        sink_lower,
-                        gap_start_iso,
-                        gap_end_iso,
-                    )
-                except Exception as e:
-                    print(f"[WARN] gap-scan {task.asset} {symbol} {interval}: {e}")
-                    missing_days = []
-    
-            for day_iso in sorted(set(missing_days)):
-                try:
-                    await self._download_and_store_equity_or_index(
-                        asset=task.asset,
-                        symbol=symbol,
-                        interval=interval,
-                        day_iso=day_iso,
-                        sink=task.sink,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    print(f"[WARN] backfill {task.asset} {symbol} {interval} {day_iso}: {e}")
-    
-        # ---------------------------
-        # 2) Main loop
+        # Main download loop
         # ---------------------------
 
         # >>> RESUME-START OVERRIDE (first_date_override) – BEGIN
@@ -1013,22 +939,24 @@ class ThetaSyncManager:
         
         cur_date = loop_start_date
         end_date = end_dt.date()
-        
+
         # EOD batched for stock/index
         if interval == "1d" and task.asset in ("stock", "index"):
             batch_days = getattr(self.cfg, "eod_batch_days", 30)
             if not isinstance(batch_days, int) or batch_days <= 0:
                 batch_days = 30
-    
-            # Se skip mode e c'è retrograde, gestisci prima il retrograde
-            if _strong_skip_policy and _first_day_db and start_date_et < dt.fromisoformat(_first_day_db).date():
-                # Scarica solo fino al giorno prima del primo presente
+
+            # STEP 1: RETROGRADE (per skip e mild_skip)
+            # Se la data di partenza è prima del primo dato presente, scarica in batch fino a first_db-1
+            if (_strong_skip_policy or _mild_skip_policy) and _first_day_db and start_date_et < dt.fromisoformat(_first_day_db).date():
                 retro_end = dt.fromisoformat(_first_day_db).date() - timedelta(days=1)
+                print(f"[EOD-BATCH][RETRO] Retrograde update: {cur_date.isoformat()}..{retro_end.isoformat()}")
+
                 while cur_date <= retro_end:
                     start_iso = cur_date.isoformat()
                     chunk_end = min(retro_end, cur_date + timedelta(days=batch_days - 1))
                     end_iso = chunk_end.isoformat()
-                    
+
                     try:
                         print(f"[EOD-BATCH][RETRO] {task.asset} {symbol} {start_iso}..{end_iso}")
                         await self._download_and_store_equity_or_index(
@@ -1041,20 +969,139 @@ class ThetaSyncManager:
                         )
                     except Exception as e:
                         print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
-                    
+
                     cur_date = chunk_end + timedelta(days=1)
-                
-                # Dopo il retrograde, salta all'ultimo giorno
-                if _last_day_db:
-                    cur_date = dt.fromisoformat(_last_day_db).date()
-                    print(f"[SKIP-MODE][EOD] jump to last_day: {cur_date}")
-            
-            # Continua dal cur_date (che potrebbe essere stato aggiornato)
+
+            # STEP 2: SKIP MODE - salta direttamente all'edge destro
+            if _strong_skip_policy and _last_day_db:
+                # Per 1d salta a last_db+1 (giorno completo)
+                cur_date = dt.fromisoformat(_last_day_db).date() + timedelta(days=1)
+                print(f"[SKIP-MODE][EOD-BATCH] jump to last_db+1: {cur_date}")
+
+            # STEP 3: MILD-SKIP MODE - controlla giorni mancanti e scarica solo quelli
+            elif _mild_skip_policy and _first_day_db and _last_day_db:
+                # Leggi le date effettivamente presenti nei file batch
+                existing_dates = self._get_dates_in_eod_batch_files(task.asset, symbol, interval, sink_lower)
+
+                # Trova giorni mancanti tra first_db e last_db
+                check_start = dt.fromisoformat(_first_day_db).date()
+                check_end = dt.fromisoformat(_last_day_db).date()
+
+                # STRATEGIA: Prima prova a ottenere le date di trading valide dall'API
+                # Se l'API fornisce le date, usa quelle (evita weekend/festivi)
+                # Se l'API fallisce, controlla ogni giorno (metodo vecchio)
+                valid_trading_dates = None
+
+                try:
+                    print(f"[MILD-SKIP][API] Fetching valid trading dates for {symbol} (asset={task.asset})...")
+
+                    if task.asset == "stock":
+                        # Chiama l'API per ottenere le date di trading valide per stock
+                        api_response, _ = await self.client.stock_list_dates(symbol, data_type="trade", format_type="json")
+                        # Estrai l'array di date dalla risposta JSON {"date": [...]}
+                        if isinstance(api_response, dict) and "date" in api_response:
+                            api_dates = api_response["date"]
+                        else:
+                            api_dates = api_response
+                        print(f"[MILD-SKIP][API] Stock API returned {len(api_dates) if api_dates else 0} total dates")
+                        if api_dates and len(api_dates) > 0:
+                            print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {api_dates[:3] if len(api_dates) >= 3 else api_dates}")
+                        valid_trading_dates = api_dates
+
+                    elif task.asset == "index":
+                        # Chiama l'API per ottenere le date di trading valide per index
+                        api_response, _ = await self.client.index_list_dates(symbol, data_type="ohlc", format_type="json")
+                        # Estrai l'array di date dalla risposta JSON {"date": [...]}
+                        if isinstance(api_response, dict) and "date" in api_response:
+                            api_dates = api_response["date"]
+                        else:
+                            api_dates = api_response
+                        print(f"[MILD-SKIP][API] Index API returned {len(api_dates) if api_dates else 0} total dates")
+                        if api_dates and len(api_dates) > 0:
+                            print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {api_dates[:3] if len(api_dates) >= 3 else api_dates}")
+                        valid_trading_dates = api_dates
+
+                    # Filtra solo le date nel range check_start..check_end
+                    if valid_trading_dates:
+                        valid_dates_in_range = set()
+                        for date_str in valid_trading_dates:
+                            try:
+                                date_obj = dt.fromisoformat(date_str).date()
+                                if check_start <= date_obj <= check_end:
+                                    valid_dates_in_range.add(date_obj.isoformat())
+                            except:
+                                continue
+
+                        print(f"[MILD-SKIP][API] Found {len(valid_dates_in_range)} valid trading dates in range {check_start}..{check_end}")
+                        valid_trading_dates = valid_dates_in_range
+
+                except Exception as e:
+                    print(f"[MILD-SKIP][API] Failed to fetch trading dates from API: {e}")
+                    print(f"[MILD-SKIP][API] Falling back to day-by-day checking")
+                    valid_trading_dates = None
+
+                # Trova date mancanti
+                missing_dates = []
+
+                if valid_trading_dates:
+                    # METODO PREFERITO: Usa le date valide dall'API
+                    print(f"[MILD-SKIP] Using API-provided valid trading dates")
+                    for date_iso in sorted(valid_trading_dates):
+                        if date_iso not in existing_dates:
+                            missing_dates.append(dt.fromisoformat(date_iso).date())
+                else:
+                    # FALLBACK: Controlla ogni giorno (include weekend/festivi)
+                    print(f"[MILD-SKIP] Using day-by-day checking (may include weekends/holidays)")
+                    check_date = check_start
+                    while check_date <= check_end:
+                        if check_date.isoformat() not in existing_dates:
+                            missing_dates.append(check_date)
+                        check_date += timedelta(days=1)
+
+                if missing_dates:
+                    print(f"[MILD-SKIP][EOD-BATCH] Found {len(missing_dates)} missing dates between {_first_day_db}..{_last_day_db}")
+
+                    # Crea batch per date mancanti adiacenti
+                    batch_start = None
+                    for i, missing_date in enumerate(missing_dates):
+                        if batch_start is None:
+                            batch_start = missing_date
+
+                        # Se è l'ultima data o la prossima non è adiacente, scarica il batch
+                        is_last = (i == len(missing_dates) - 1)
+                        next_not_adjacent = (not is_last) and (missing_dates[i+1] - missing_date).days > 1
+
+                        if is_last or next_not_adjacent:
+                            start_iso = batch_start.isoformat()
+                            end_iso = missing_date.isoformat()
+
+                            try:
+                                print(f"[EOD-BATCH][MILD-SKIP] {task.asset} {symbol} {start_iso}..{end_iso}")
+                                await self._download_and_store_equity_or_index(
+                                    asset=task.asset,
+                                    symbol=symbol,
+                                    interval=interval,
+                                    day_iso=start_iso,
+                                    sink=task.sink,
+                                    range_end_iso=end_iso,
+                                )
+                            except Exception as e:
+                                print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
+
+                            batch_start = None
+                else:
+                    print(f"[MILD-SKIP][EOD-BATCH] No missing dates between {_first_day_db}..{_last_day_db}")
+
+                # Dopo mild_skip, salta a last_db+1
+                cur_date = dt.fromisoformat(_last_day_db).date() + timedelta(days=1)
+                print(f"[MILD-SKIP][EOD-BATCH] Jump to last_db+1: {cur_date}")
+
+            # STEP 4: Continua in batch da cur_date a end_date
             while cur_date <= end_date:
                 start_iso = cur_date.isoformat()
                 chunk_end = min(end_date, cur_date + timedelta(days=batch_days - 1))
                 end_iso = chunk_end.isoformat()
-    
+
                 try:
                     print(f"[EOD-BATCH] {task.asset} {symbol} {start_iso}..{end_iso}")
                     await self._download_and_store_equity_or_index(
@@ -1069,12 +1116,13 @@ class ThetaSyncManager:
                     raise
                 except Exception as e:
                     print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
-    
+
                 cur_date = chunk_end + timedelta(days=1)
-    
+
             return  # done for EOD stock/index
-    
-        # Options or intraday: day-by-day
+
+        # Day-by-day loop: options and intraday
+
         while cur_date <= end_date:
             day_iso = cur_date.isoformat()
 
@@ -1340,7 +1388,7 @@ class ThetaSyncManager:
                 )
                 if not csv_txt:
                     raise ValueError("Empty response from option_history_eod")
-                df = pd.read_csv(io.StringIO(csv_txt))
+                df = pd.read_csv(io.StringIO(csv_txt), dtype=str)
                 if df is None or df.empty:
                     raise ValueError("Empty DataFrame from option_history_eod")
 
@@ -1355,7 +1403,7 @@ class ThetaSyncManager:
                         format_type="csv",
                     )
                     if csv_g:
-                        dg = pd.read_csv(io.StringIO(csv_g))
+                        dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
                         if dg is not None and not dg.empty:
                             # Align strike columns
                             if "strike_price" in dg.columns and "strike" not in dg.columns:
@@ -1399,7 +1447,7 @@ class ThetaSyncManager:
                         format_type="csv",
                     )
                     if csv_oi:
-                        doi = pd.read_csv(io.StringIO(csv_oi))
+                        doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
                         if doi is not None and not doi.empty:
                             oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
                             if oi_col:
@@ -1497,10 +1545,10 @@ class ThetaSyncManager:
 
             wrote = 0
             if sink_lower == "csv":
-                await self._append_csv_text(base_path, df.to_csv(index=False))
+                await self._append_csv_text(base_path, df.to_csv(index=False), asset="option", interval=interval)
                 wrote = len(df)
             elif sink_lower == "parquet":
-                wrote = self._append_parquet_df(base_path, df)
+                wrote = self._append_parquet_df(base_path, df, asset="option", interval=interval)
             elif sink_lower == "influxdb":
                 first_et = df["timestamp"].min() if "timestamp" in df.columns else None
                 last_et  = df["timestamp"].max() if "timestamp" in df.columns else None
@@ -1699,7 +1747,7 @@ class ThetaSyncManager:
                     if not csv_tq:
                         continue                 
                         
-                    df = pd.read_csv(io.StringIO(csv_tq))
+                    df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
                     if df is None or df.empty:
                         continue
 
@@ -1731,7 +1779,7 @@ class ThetaSyncManager:
                                 format_type="csv",
                             )
                             if csv_tg:
-                                dg = pd.read_csv(io.StringIO(csv_tg))
+                                dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
                                 if dg is not None and not dg.empty:
 
                                     # --- normalizza nomi per join robusta ---
@@ -1766,7 +1814,7 @@ class ThetaSyncManager:
                                 format_type="csv",
                             )
                             if csv_tiv:
-                                divt = pd.read_csv(io.StringIO(csv_tiv))
+                                divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
                                 if divt is not None and not divt.empty:
                                     # prefer a clear name to avoid confusion with bar-level IV
                                     if "implied_volatility" in divt.columns and "trade_iv" not in divt.columns:
@@ -1820,7 +1868,7 @@ class ThetaSyncManager:
 
                     if not csv_ohlc:
                         continue
-                    df = pd.read_csv(io.StringIO(csv_ohlc))
+                    df = pd.read_csv(io.StringIO(csv_ohlc), dtype=str)
                     if df is None or df.empty:
                         continue
 
@@ -1844,7 +1892,7 @@ class ThetaSyncManager:
                         )
 
                         if csv_gr_all:
-                            dg = pd.read_csv(io.StringIO(csv_gr_all))
+                            dg = pd.read_csv(io.StringIO(csv_gr_all), dtype=str)
                             if dg is not None and not dg.empty:
                                 # collect once: postpone the join to after the main concat
                                 greeks_bar_list.append(dg)
@@ -1868,7 +1916,7 @@ class ThetaSyncManager:
                                         label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
                                     )
                         if csv_iv:
-                            div = pd.read_csv(io.StringIO(csv_iv))
+                            div = pd.read_csv(io.StringIO(csv_iv), dtype=str)
                             if div is not None and not div.empty:
                                 # collect once: postpone the join to after the main concat
                                 iv_bar_list.append(div)
@@ -2033,7 +2081,7 @@ class ThetaSyncManager:
                             format_type="csv",
                         )
                         if csv_oi_exp:
-                            oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp)))
+                            oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp), dtype=str))
                     except Exception as e:
                         print(f"[WARN] OI exp={exp} day={day_iso}: {e}")
                 
@@ -2050,7 +2098,7 @@ class ThetaSyncManager:
                     format_type="csv",
                 )
                 if csv_oi:
-                    doi = pd.read_csv(io.StringIO(csv_oi))
+                    doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
             
             if doi is not None and not doi.empty:
                 oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
@@ -2178,9 +2226,9 @@ class ThetaSyncManager:
             def _read_minimal(path: str, cols: list[str]):
                 use = list(dict.fromkeys([c for c in cols if c]))
                 if sink_lower == "csv":
-                    head = pd.read_csv(path, nrows=0)
+                    head = pd.read_csv(path, nrows=0, dtype=str)
                     keep = [c for c in use if c in head.columns]
-                    df = pd.read_csv(path, usecols=keep) if keep else pd.read_csv(path)
+                    df = pd.read_csv(path, usecols=keep, dtype=str) if keep else pd.read_csv(path, dtype=str)
                 else:
                     try:
                         df = pd.read_parquet(path, columns=use)
@@ -2351,10 +2399,10 @@ class ThetaSyncManager:
         # --- scrittura "normale" ---
         wrote = 0
         if sink_lower == "csv":
-            await self._append_csv_text(base_path, df_all.to_csv(index=False))
+            await self._append_csv_text(base_path, df_all.to_csv(index=False), asset="option", interval=interval)
             wrote = len(df_all)
         elif sink_lower == "parquet":
-            wrote = self._append_parquet_df(base_path, df_all)
+            wrote = self._append_parquet_df(base_path, df_all, asset="option", interval=interval)
         elif sink_lower == "influxdb":
             # >>> PATCH: log finestra prima di scrivere (INTRADAY)
             first_et = df_all["timestamp"].min() if "timestamp" in df_all.columns else None
@@ -2629,7 +2677,8 @@ class ThetaSyncManager:
         # -------------------------------
         # 2) PARSE
         # -------------------------------
-        df_day = pd.read_csv(io.StringIO(csv_txt))
+        # Parse raw text as strings to avoid pandas auto date parsing errors on mixed ISO formats
+        df_day = pd.read_csv(io.StringIO(csv_txt), dtype=str)
         if df_day is None or df_day.empty:
             return
     
@@ -2652,19 +2701,27 @@ class ThetaSyncManager:
         # -------------------------------
         if interval == "1d":
             # Pick a date/time column in order of preference
+            # Prefer last_trade (actual trading date) over created (processing timestamp)
             tcol = None
-            for c in ("created", "timestamp", "date"):
+            for c in ("last_trade", "created", "timestamp", "date"):
                 if c in df_day.columns:
                     tcol = c
                     break
-    
+
             # Build list of 'YYYY-MM-DD' for each row
-            if tcol in ("created", "timestamp"):
-                ts = pd.to_datetime(df_day[tcol], errors="coerce", utc=True)
+            if tcol in ("last_trade", "created", "timestamp"):
+                # Parse timestamps without format spec - pandas auto-detects ISO variants
+                # ThetaData API returns mixed formats (with/without milliseconds, 3 or 6 digit ms)
+                # errors='coerce' handles unparseable values as NaT without raising exceptions
+                ts = pd.to_datetime(df_day[tcol], utc=True, errors='coerce')
+                # Check for any NaT values (parsing failures) and warn
+                if ts.isna().any():
+                    failed_count = ts.isna().sum()
+                    print(f"[WARN] Failed to parse {failed_count} timestamps in {tcol} column")
                 day_list = ts.dt.date.astype(str)
             elif tcol == "date":
                 # If 'date' exists but not parsed, coerce to string 'YYYY-MM-DD'
-                day_list = pd.to_datetime(df_day["date"], errors="coerce").dt.date.astype(str)
+                day_list = pd.to_datetime(df_day["date"], utc=True, errors='coerce').dt.date.astype(str)
             else:
                 # Fallback: treat as single day (day_iso) if no recognizable column
                 day_list = pd.Series([day_iso] * len(df_day), dtype=str)
@@ -2704,7 +2761,7 @@ class ThetaSyncManager:
                     
                     # >>> BOUNDARY DEDUP: leggi ultime 100 righe e rimuovi duplicati su timestamp
                     try:
-                        last_chunk = pd.read_csv(target_path).tail(100)
+                        last_chunk = pd.read_csv(target_path, dtype=str).tail(100)
                         if tcol in last_chunk.columns:
                             existing_ts = set(pd.to_datetime(last_chunk[tcol], errors="coerce", utc=True).dropna())
                             if existing_ts:
@@ -2768,10 +2825,10 @@ class ThetaSyncManager:
         # -------------------------------
         wrote = 0
         if sink_lower == "csv":
-            await self._append_csv_text(base_path, csv_txt)
+            await self._append_csv_text(base_path, csv_txt, asset=asset, interval=interval)
             wrote = len(df_day)
         elif sink_lower == "parquet":
-            self._write_parquet_from_csv(base_path, csv_txt)
+            self._write_parquet_from_csv(base_path, csv_txt, asset=asset, interval=interval)
             wrote = len(df_day)
         elif sink_lower == "influxdb":
             # InfluxDB write with verification and retry
@@ -3523,7 +3580,7 @@ class ThetaSyncManager:
         if last_ts:
             if interval == "1d":
                 nd = (last_ts.astimezone(timezone.utc).date() + timedelta(days=1))
-                candidates.append(datetime.combine(nd, datetime.min.time(), tzinfo=timezone.utc))
+                candidates.append(dt.combine(nd, dt.min.time(), tzinfo=timezone.utc))
             else:
                 # >>> BUCKET ALIGNMENT FOR M/H FRAMES <
                 overlap = max(0, self.cfg.overlap_seconds)
@@ -3582,7 +3639,7 @@ class ThetaSyncManager:
             if last_ts is not None:
                 if interval == "1d":
                     nd = (last_ts.astimezone(timezone.utc).date() + timedelta(days=1))
-                    should_start_dt = datetime.combine(nd, datetime.min.time(), tzinfo=timezone.utc)
+                    should_start_dt = dt.combine(nd, dt.min.time(), tzinfo=timezone.utc)
                 else:
                     should_start_dt = last_ts - timedelta(seconds=max(0, self.cfg.overlap_seconds))
             should_start_s = should_start_dt.isoformat() if should_start_dt else "None"
@@ -3780,13 +3837,16 @@ class ThetaSyncManager:
             path = self._pick_latest_part(base, "csv") or base
             if not os.path.exists(path):
                 return None, None
+
+            # Files are now kept chronologically sorted, so we can read last lines efficiently
             lines = self._tail_csv_last_n_lines(path, n=64)
             for ln in lines:  # newest-first
                 dt = self._parse_csv_first_col_as_dt(ln)
                 if dt is not None:
                     if interval == "1d":
                         day = dt.date()
-                        return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc), path
+                        from datetime import datetime as datetime_cls
+                        return datetime_cls.combine(day, datetime_cls.min.time(), tzinfo=timezone.utc), path
                     return dt, path
             return None, path
     
@@ -3804,7 +3864,7 @@ class ThetaSyncManager:
                             last_dt = ts.iloc[-1].to_pydatetime()
                             if interval == "1d":
                                 day = last_dt.astimezone(timezone.utc).date()
-                                last_dt = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+                                last_dt = dt.combine(day, dt.min.time(), tzinfo=timezone.utc)
                             return last_dt, path
             except Exception:
                 pass
@@ -3923,12 +3983,12 @@ class ThetaSyncManager:
         observed_days = set()
         for f in files:
             try:
-                head = pd.read_csv(f, nrows=0)
+                head = pd.read_csv(f, nrows=0, dtype=str)
                 cols = head.columns.tolist()
                 time_col = "created" if "created" in cols else ("timestamp" if "timestamp" in cols else ("last_trade" if "last_trade" in cols else None))
                 if not time_col:
                     continue
-                s = pd.read_csv(f, usecols=[time_col])[time_col]
+                s = pd.read_csv(f, usecols=[time_col], dtype=str)[time_col]
                 s = pd.to_datetime(s, errors="coerce", utc=True).dt.normalize().dropna()
                 observed_days.update(s.dt.date.astype(str).tolist())
             except Exception:
@@ -3972,7 +4032,7 @@ class ThetaSyncManager:
                 if interval == "1d":
                     # ripartenza dal giorno successivo alle 00:00:00Z
                     next_day = (resume_anchor_dt.astimezone(timezone.utc).date() + timedelta(days=1))
-                    should_start_dt = datetime.combine(next_day, datetime.min.time(), tzinfo=timezone.utc)
+                    should_start_dt = dt.combine(next_day, dt.min.time(), tzinfo=timezone.utc)
                 else:
                     # intraday: piccolo overlap configurato
                     ov = max(0, getattr(self.cfg, "overlap_seconds", 60))
@@ -4041,12 +4101,12 @@ class ThetaSyncManager:
             def _max_ts_from_file(path: str) -> Optional[pd.Timestamp]:
                 try:
                     if path.endswith(".csv"):
-                        head = pd.read_csv(path, nrows=0)
+                        head = pd.read_csv(path, nrows=0, dtype=str)
                         cols = list(head.columns)
                         tcol = next((c for c in ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"] if c in cols), None)
                         if not tcol:
                             return None
-                        s = pd.read_csv(path, usecols=[tcol])[tcol]
+                        s = pd.read_csv(path, usecols=[tcol], dtype=str)[tcol]
                         ts = pd.to_datetime(s, errors="coerce")
                     else:
                         df = pd.read_parquet(path, columns=["timestamp"])
@@ -4125,7 +4185,9 @@ class ThetaSyncManager:
     async def _append_csv_text(
         self, base_path: str, csv_text: str, *,
         force_first_part: int | None = None,
-        stop_before_part: int | None = None
+        stop_before_part: int | None = None,
+        asset: str | None = None,
+        interval: str | None = None
     ) -> None:
         """
         Append CSV text to part files with automatic size-based rotation and atomic writes.
@@ -4179,6 +4241,53 @@ class ThetaSyncManager:
         - Uses synchronous file I/O (open/write/close) for atomic operations.
         - If target part already exists, appends to it until size limit reached.
         """
+
+        # For EOD batch files (stock/index 1d), sort chronologically before writing
+        # This ensures the file is always in chronological order for efficient reading
+        if interval == "1d" and asset in ("stock", "index"):
+            import pandas as pd
+            from io import StringIO
+
+            # Parse new CSV data as raw strings to avoid pandas auto date parsing
+            # (mixed ISO8601 formats like "2024-02-01T16:46:45" vs "...45.000Z"
+            # would otherwise raise and skip the batch)
+            new_df = pd.read_csv(
+                StringIO(csv_text),
+                dtype=str,
+                parse_dates=False,
+                keep_default_na=False
+            )
+            if new_df.empty:
+                return
+
+            # Get target file (latest part or create new one)
+            target = self._pick_latest_part(base_path, "csv")
+            base_no_ext = base_path[:-4] if base_path.endswith(".csv") else base_path
+            if not target or target == base_path:
+                target = f"{base_no_ext}_part01.csv"
+
+            # Read existing data if file exists
+            existing_df = None
+            if os.path.exists(target):
+                try:
+                    existing_df = pd.read_csv(
+                        target,
+                        dtype=str,
+                        parse_dates=False,
+                        keep_default_na=False
+                    )
+                except Exception as e:
+                    print(f"[WARN] Could not read existing CSV for sorting: {e}, using new data only")
+                    existing_df = None
+
+            # Use common sorting/deduplication logic
+            sorted_df, existing_count, new_rows, time_col = self._sort_and_deduplicate_eod_batch(existing_df, new_df)
+            after_dedup = len(sorted_df)
+
+            # Write sorted data back to file
+            sorted_df.to_csv(target, index=False)
+            print(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            return
 
         # Seleziona il target corrente o l'ultimo _partNN
         target = self._pick_latest_part(base_path, "csv")
@@ -4273,6 +4382,8 @@ class ThetaSyncManager:
         *,
         force_first_part: int | None = None,
         stop_before_part: int | None = None,
+        asset: str | None = None,
+        interval: str | None = None
     ) -> int:
         """
         Write DataFrame to Parquet format using atomic, size-capped, append-by-rotation part files.
@@ -4341,10 +4452,39 @@ class ThetaSyncManager:
     
         # normalizza: se arriva un path già con _partNN rimuovilo
         base_path = re.sub(r"_part\d{2}(?=\.(?:csv|parquet)$)", "", base_path)
-    
+
         if df_new is None or len(df_new) == 0:
             return 0
-    
+
+        # For EOD batch files (stock/index 1d), sort chronologically before writing
+        # This ensures the file is always in chronological order for efficient reading
+        if interval == "1d" and asset in ("stock", "index"):
+            import pandas as pd
+
+            # Get target file (latest part or create new one)
+            target = self._pick_latest_part(base_path, "parquet")
+            base_no_ext = base_path[:-8] if base_path.endswith(".parquet") else base_path
+            if not target or target == base_path:
+                target = f"{base_no_ext}_part01.parquet"
+
+            # Read existing data if file exists
+            existing_df = None
+            if os.path.exists(target):
+                try:
+                    existing_df = pd.read_parquet(target)
+                except Exception as e:
+                    print(f"[WARN] Could not read existing Parquet for sorting: {e}, using new data only")
+                    existing_df = None
+
+            # Use common sorting/deduplication logic
+            sorted_df, existing_count, new_rows, time_col = self._sort_and_deduplicate_eod_batch(existing_df, df_new)
+            after_dedup = len(sorted_df)
+
+            # Write sorted data back to file
+            sorted_df.to_parquet(target, engine='pyarrow', index=False)
+            print(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            return after_dedup
+
         # --- keys & columns ---
         ts_col = "timestamp"
         key_candidates = [ts_col, "symbol", "expiration", "strike", "right", "sequence"]  # include 'sequence' for ticks
@@ -4503,12 +4643,12 @@ class ThetaSyncManager:
 
 
 
-    def _write_parquet_from_csv(self, base_path: str, csv_text: str) -> None:
+    def _write_parquet_from_csv(self, base_path: str, csv_text: str, asset: str | None = None, interval: str | None = None) -> None:
         """
         Convert CSV text to DataFrame and persist into capped Parquet parts
         (..._partNN.parquet) using the same binary-search chunking as _append_parquet_df.
         """
-        df_new = pd.read_csv(io.StringIO(csv_text))
+        df_new = pd.read_csv(io.StringIO(csv_text), dtype=str)
         if df_new.empty:
             return
 
@@ -4517,13 +4657,13 @@ class ThetaSyncManager:
             df_new["timestamp"] = pd.to_datetime(df_new["timestamp"], errors="coerce")
             if getattr(df_new["timestamp"].dtype, "tz", None) is not None:
                 df_new["timestamp"] = df_new["timestamp"].dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-                        
+
         if "expiration" in df_new.columns:
             df_new["expiration"] = pd.to_datetime(df_new["expiration"], errors="coerce").dt.date
-            
+
         if "strike" in df_new.columns:
             df_new["strike"] = pd.to_numeric(df_new["strike"], errors="coerce")
-            
+
         if "right" in df_new.columns:
             df_new["right"] = (
                 df_new["right"].astype(str).str.strip().str.lower()
@@ -4533,7 +4673,7 @@ class ThetaSyncManager:
 
 
         # --- SCRITTURA PARQUET (append sicuro) ---
-        written = self._append_parquet_df(base_path, df_new)
+        written = self._append_parquet_df(base_path, df_new, asset=asset, interval=interval)
         return written
 
 
@@ -4785,7 +4925,54 @@ class ThetaSyncManager:
         return os.path.join(folder, fname)
 
 
-            
+    def _get_dates_in_eod_batch_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> set:
+        """
+        Legge i file batch EOD e restituisce un set di date (YYYY-MM-DD) effettivamente presenti.
+        Usato per mild_skip mode per determinare quali giorni sono già scaricati.
+        """
+        files = self._list_series_files(asset, symbol, interval, sink_lower)
+        if not files:
+            return set()
+
+        dates = set()
+
+        for file_path in files:
+            try:
+                if sink_lower == "csv":
+                    # Leggi CSV e estrai date
+                    import csv
+                    with open(file_path, 'r') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            # Cerca colonna timestamp/created/last_trade
+                            for col in ('created', 'timestamp', 'last_trade'):
+                                if col in row and row[col]:
+                                    try:
+                                        ts = pd.to_datetime(row[col], utc=True)
+                                        dates.add(ts.date().isoformat())
+                                        break
+                                    except:
+                                        continue
+
+                elif sink_lower == "parquet":
+                    # Leggi Parquet e estrai date
+                    df = pd.read_parquet(file_path)
+                    for col in ('created', 'timestamp', 'last_trade'):
+                        if col in df.columns:
+                            try:
+                                ts_series = pd.to_datetime(df[col], utc=True, errors='coerce').dropna()
+                                dates.update(ts_series.dt.date.astype(str).unique())
+                                break
+                            except:
+                                continue
+
+            except Exception as e:
+                print(f"[WARN] Could not read dates from {file_path}: {e}")
+                continue
+
+        return dates
+
+
     def _list_series_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> list:
         """
         Return only canonical daily-part files for (asset, symbol, interval, sink), sorted by name.
@@ -4918,26 +5105,58 @@ class ThetaSyncManager:
         files = self._list_series_files(asset, symbol, interval, sink_lower)
         if not files:
             return None, None, []
-    
+
         def _start_from_filename(path: str) -> str | None:
             base = os.path.basename(path)
             # expected: 'YYYY-MM-DDT...-SYMBOL-asset-interval.csv'
             return base.split("T", 1)[0] if "T" in base else None
-    
+
         earliest = None
         latest = None
-    
+
         for path in files:
             # compute earliest from filename
             s = _start_from_filename(path)
             if s and (earliest is None or s < earliest):
                 earliest = s
-    
+
             # compute latest directly from filename prefix (daily files are one-day each)
             if s and (latest is None or s > latest):
                 latest = s
 
-                
+        # For EOD stock/index, read the ACTUAL last date from file content
+        # (batch downloads create single files spanning multiple dates)
+        if interval == "1d" and asset in ("stock", "index") and files:
+            try:
+                # Get the file with the latest start date
+                latest_file = max(files, key=lambda f: _start_from_filename(f) or "")
+
+                if sink_lower == "csv":
+                    # Read last few lines to find actual last date
+                    # Files are now kept chronologically sorted, so last lines = latest dates
+                    lines = self._tail_csv_last_n_lines(latest_file, n=32)
+                    for line in lines:  # lines are newest-first
+                        dt = self._parse_csv_first_col_as_dt(line)
+                        if dt is not None:
+                            latest = dt.date().isoformat()
+                            break
+
+                elif sink_lower == "parquet":
+                    # Read parquet and get max date
+                    df = pd.read_parquet(latest_file)
+                    for tcol in ("created", "timestamp", "last_trade"):
+                        if tcol in df.columns:
+                            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True).dropna()
+                            if not ts.empty:
+                                latest_dt = ts.max().to_pydatetime()
+                                latest = latest_dt.astimezone(timezone.utc).date().isoformat()
+                                break
+            except Exception as e:
+                # If reading fails, keep filename-based latest
+                print(f"[WARN] Could not read actual last date from {latest_file}: {e}")
+                pass
+
+
         return earliest, latest, files
 
 
@@ -5116,8 +5335,109 @@ class ThetaSyncManager:
                 return os.path.join(folder, name_clean)
         return None
 
-        
-        
+    def _sort_and_deduplicate_eod_batch(
+        self,
+        existing_df: Optional[pd.DataFrame],
+        new_df: pd.DataFrame
+    ) -> tuple[pd.DataFrame, int, int, str]:
+        """
+        Sort and deduplicate EOD batch data chronologically.
+
+        Common logic shared between CSV and Parquet EOD batch processing.
+
+        Parameters
+        ----------
+        existing_df : Optional[pd.DataFrame]
+            Existing data from file (None if new file)
+        new_df : pd.DataFrame
+            New data to append
+
+        Returns
+        -------
+        tuple[pd.DataFrame, int, int, str]
+            (sorted_df, existing_count, new_rows, time_col)
+        """
+        import pandas as pd
+
+        # Track existing count
+        existing_count = len(existing_df) if existing_df is not None else 0
+
+        # Combine existing and new data
+        if existing_df is not None:
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        else:
+            combined_df = new_df
+
+        # Sort by trading date (prefer last_trade over created for EOD data)
+        # last_trade = actual trading date, created = processing timestamp
+        time_col_candidates = ['last_trade', 'created', 'timestamp', 'date']
+
+        # Parse each candidate column separately, then merge row-wise (first non-NaT wins)
+        parsed_map: Dict[str, pd.Series] = {}
+        cand_debug: List[Tuple[str, int, int, List[str]]] = []
+        for col in time_col_candidates:
+            if col not in combined_df.columns:
+                continue
+            # Clean obvious control chars before parsing (handles CR/LF/TAB from CSV payloads)
+            series = combined_df[col].astype(str).str.replace(r"[\r\n\t]", "", regex=True).str.strip()
+            parsed = pd.to_datetime(series, utc=True, errors='coerce')
+            valid = int(parsed.notna().sum())
+            invalid_examples = series[parsed.isna()].head(3).tolist()
+            cand_debug.append((col, len(series), valid, invalid_examples))
+            parsed_map[col] = parsed
+
+        if not parsed_map:
+            print(f"[WARN] No timestamp-like columns found while sorting EOD batch; tried={time_col_candidates}")
+            after_dedup = len(combined_df)
+            new_rows = after_dedup - existing_count
+            return combined_df, existing_count, new_rows, combined_df.columns[0]
+
+        merged_ts = None
+        for col in time_col_candidates:
+            if col not in parsed_map:
+                continue
+            merged_ts = parsed_map[col] if merged_ts is None else merged_ts.fillna(parsed_map[col])
+
+        time_col = "__eod_time"
+        combined_df[time_col] = merged_ts
+
+        total_valid = int(combined_df[time_col].notna().sum())
+
+        # If nothing parsed (all NaT), log detailed debug and keep data without time-dedupe
+        if total_valid == 0:
+            for idx, (col, total, valid, bad) in enumerate(cand_debug, start=1):
+                print(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
+            print(f"[WARN] Could not parse any timestamps in columns {list(parsed_map.keys())}; writing batch in arrival order without time-based dedupe")
+            after_dedup = len(combined_df)
+            new_rows = after_dedup - existing_count
+            return combined_df, existing_count, new_rows, time_col
+
+        # Remove rows with NaT (failed parsing) BEFORE deduplication
+        nat_mask = combined_df[time_col].isna()
+        if nat_mask.any():
+            failed_count = int(nat_mask.sum())
+            sample = ", ".join(combined_df.loc[nat_mask, time_col_candidates[0] if time_col_candidates[0] in combined_df.columns else combined_df.columns[0]].astype(str).head(3).tolist())
+            # Debug candidates to understand why parsing failed
+            for idx, (col, total, valid, bad) in enumerate(cand_debug, start=1):
+                print(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
+            if sample:
+                print(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col}; examples: {sample})")
+            else:
+                print(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col})")
+            combined_df = combined_df[~nat_mask]
+
+        # Sort chronologically
+        combined_df = combined_df.sort_values(by=time_col)
+
+        # Remove duplicates based on trading date (keep last occurrence)
+        combined_df = combined_df.drop_duplicates(subset=[time_col], keep='last')
+        after_dedup = len(combined_df)
+
+        # Calculate new rows added
+        new_rows = after_dedup - existing_count
+
+        return combined_df, existing_count, new_rows, time_col
+
 
     def _pick_latest_part(self, base_path: str, ext: str) -> Optional[str]:
         """Find the latest existing part for a given daily base path."""
@@ -5262,12 +5582,12 @@ class ThetaSyncManager:
     
         for f in files:
             try:
-                head = pd.read_csv(f, nrows=0)
+                head = pd.read_csv(f, nrows=0, dtype=str)
                 cols = head.columns.tolist()
                 tcol = "created" if "created" in cols else ("timestamp" if "timestamp" in cols else ("last_trade" if "last_trade" in cols else None))
                 if not tcol:
                     continue
-                s = pd.read_csv(f, usecols=[tcol])[tcol]
+                s = pd.read_csv(f, usecols=[tcol], dtype=str)[tcol]
                 d = pd.to_datetime(s, errors="coerce", utc=True).dt.date.astype(str)
                 if (d == day_iso).any():
                     return True
@@ -5326,7 +5646,7 @@ class ThetaSyncManager:
         if not os.path.exists(path):
             return None
         try:
-            head = pd.read_csv(path, nrows=0)
+            head = pd.read_csv(path, nrows=0, dtype=str)
         except Exception:
             return None
     
@@ -5337,7 +5657,7 @@ class ThetaSyncManager:
             return None
     
         try:
-            s = pd.read_csv(path, usecols=[tcol])[tcol]
+            s = pd.read_csv(path, usecols=[tcol], dtype=str)[tcol]
             # Parse **without** assuming UTC; treat values as naive ET.
             ts = pd.to_datetime(s, errors="coerce")
     
@@ -5364,7 +5684,7 @@ class ThetaSyncManager:
         """Read a small chunk and return the earliest timestamp as pandas.Timestamp(UTC) or None."""
 
         try:
-            df = pd.read_csv(path, nrows=500)
+            df = pd.read_csv(path, nrows=500, dtype=str)
             if df is None or df.empty:
                 return None
             col = self._detect_time_col(df.columns)
@@ -5431,9 +5751,9 @@ class ThetaSyncManager:
         sink_lower = (sink_lower or "csv").lower()
         if sink_lower == "csv":
             # CSV: limitiamo le colonne in read
-            head = pd.read_csv(path, nrows=0)
+            head = pd.read_csv(path, nrows=0, dtype=str)
             cols = [c for c in usecols if c in head.columns]
-            df = pd.read_csv(path, usecols=cols) if cols else pd.read_csv(path)
+            df = pd.read_csv(path, usecols=cols, dtype=str) if cols else pd.read_csv(path, dtype=str)
         else:
             # PARQUET: proviamo a leggere solo le colonne richieste
             try:
@@ -6135,7 +6455,7 @@ class ThetaSyncManager:
             if not csv_txt:
                 continue
     
-            df = pd.read_csv(io.StringIO(csv_txt))
+            df = pd.read_csv(io.StringIO(csv_txt), dtype=str)
             if df is None or df.empty:
                 continue
     
@@ -6273,7 +6593,7 @@ class ThetaSyncManager:
             if not csv_txt:
                 continue
     
-            df = pd.read_csv(io.StringIO(csv_txt))
+            df = pd.read_csv(io.StringIO(csv_txt), dtype=str)
             if df is None or df.empty:
                 continue
     
@@ -6737,9 +7057,9 @@ class ThetaSyncManager:
                 df = self._read_minimal_frame(path, usecols, sink_lower)
             else:
                 if sink_lower == "csv":
-                    head = pd.read_csv(path, nrows=0)
+                    head = pd.read_csv(path, nrows=0, dtype=str)
                     keep = [c for c in usecols if c in head.columns]
-                    df = pd.read_csv(path, usecols=keep) if keep else pd.read_csv(path)
+                    df = pd.read_csv(path, usecols=keep, dtype=str) if keep else pd.read_csv(path, dtype=str)
                 else:
                     try:
                         df = pd.read_parquet(path, columns=usecols)
@@ -7492,7 +7812,7 @@ class ThetaSyncManager:
         for f in files:
             try:
                 if sink_lower == "csv":
-                    df = pd.read_csv(f)
+                    df = pd.read_csv(f, dtype=str)
                 else:
                     df = pd.read_parquet(f)
                 dfs.append(df)
@@ -8113,7 +8433,7 @@ class ThetaSyncManager:
             try:
                 for file_path in relevant_files:
                     if sink_lower == "csv":
-                        df_chunk = pd.read_csv(file_path)
+                        df_chunk = pd.read_csv(file_path, dtype=str)
                     else:  # parquet
                         df_chunk = pd.read_parquet(file_path)
 
@@ -9228,7 +9548,7 @@ class ThetaSyncManager:
             yield cur.isoformat()
             cur += timedelta(days=1)
 
-    def _tail_csv_last_n_lines(path: str, n: int = 64) -> list[str]:
+    def _tail_csv_last_n_lines(self, path: str, n: int = 64) -> list[str]:
         """
         Read the last N non-empty lines from a CSV file without loading the entire file.
 

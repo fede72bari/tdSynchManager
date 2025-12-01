@@ -85,6 +85,8 @@ class ManagerConfig:
     eod_check_max_attempts: int = 1           # Additional retry attempts for EOD tick data check
     tick_eod_volume_tolerance: float = 0.01   # Tolerance for tick vs EOD volume comparison (1%)
     intraday_bucket_tolerance: float = 0.0    # Allowed fraction of missing time buckets (0 = require 100%)
+    tick_segment_minutes: int = 30            # Bucket size for tick volume analysis (default 30 minutes)
+    enable_tick_bucket_analysis: bool = True  # Enable granular tick bucket analysis on daily volume FAIL
 
 
 @dataclass

@@ -75,17 +75,23 @@ class DataValidator:
             )
 
         # Extract actual dates
-        if 'date' in df.columns:
-            actual_dates = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').unique().tolist()
-        elif 'timestamp' in df.columns:
-            actual_dates = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d').unique().tolist()
-        else:
+        # Try time column candidates in order of preference
+        # timestamp first (used by tick/intraday), then EOD columns (last_trade, created, date)
+        time_col = None
+        for col in ['timestamp', 'last_trade', 'created', 'date']:
+            if col in df.columns:
+                time_col = col
+                break
+
+        if time_col is None:
             return ValidationResult(
                 valid=False,
                 missing_ranges=[],
-                error_message="No 'date' or 'timestamp' column found",
-                details={}
+                error_message="No date/time column found (expected: last_trade, created, timestamp, or date)",
+                details={'available_columns': list(df.columns)}
             )
+
+        actual_dates = pd.to_datetime(df[time_col]).dt.strftime('%Y-%m-%d').unique().tolist()
 
         # Find missing dates
         missing = sorted(set(expected_dates) - set(actual_dates))
@@ -470,17 +476,29 @@ class DataValidator:
             Validation result with missing columns if any.
         """
         # Define required columns by asset and interval
-        required_base = ['timestamp']
-
+        # For EOD data, prefer 'last_trade' (actual trading date) over 'created' (processing timestamp)
         if interval == "1d":
-            required_base.extend(['open', 'high', 'low', 'close', 'volume'])
+            # EOD can have 'last_trade', 'created', 'timestamp', or 'date' as time column
+            # Prefer last_trade as it represents the actual trading date
+            time_col_candidates = ['last_trade', 'created', 'timestamp', 'date']
+            has_time_col = any(col in df.columns for col in time_col_candidates)
+            if not has_time_col:
+                return ValidationResult(
+                    valid=False,
+                    missing_ranges=[],
+                    error_message=f"No date/time column found (expected: last_trade, created, timestamp, or date)",
+                    details={'available_columns': list(df.columns)}
+                )
+            required_base = ['open', 'high', 'low', 'close', 'volume']
         elif interval == "tick":
+            # Tick data requires 'timestamp'
+            required_base = ['timestamp']
             if asset == "stock":
                 required_base.extend(['price', 'size', 'exchange', 'sequence'])
             # Tick data may have different schema
         else:
-            # Intraday OHLC
-            required_base.extend(['open', 'high', 'low', 'close', 'volume'])
+            # Intraday OHLC requires 'timestamp'
+            required_base = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
 
         if asset == "option":
             required_base.extend(['expiration', 'strike', 'right'])

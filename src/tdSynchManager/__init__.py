@@ -36,11 +36,15 @@ __version__ = _detect_version()
 from .client import ThetaDataV3Client
 from .manager import ThetaSyncManager
 from .config import ManagerConfig
+from .tick_bucket_analysis import analyze_tick_buckets, DayBucketAnalysisReport, BucketAnalysisResult
 
 __all__ = [
     "ThetaDataV3Client",
     "ThetaSyncManager",
     "ManagerConfig",
+    "analyze_tick_buckets",
+    "DayBucketAnalysisReport",
+    "BucketAnalysisResult",
     "new_manager",
     "__version__",
 ]

@@ -492,8 +492,11 @@ class DataConsistencyLogger:
         interval : str
             Time interval.
         """
+        # Normalize interval name for filesystem (eod -> 1d to match data directories)
+        interval_dir = "1d" if interval == "eod" else interval
+
         # Create log directory
-        log_dir = self.root_dir / "data" / asset / symbol / interval / "logs"
+        log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # Log filename: log_YYYY-MM-DD_symbol-asset-interval.parquet
@@ -524,7 +527,9 @@ class DataConsistencyLogger:
         limit: int = 100
     ) -> pd.DataFrame:
         """Return logs for the given series filtered by timestamp range."""
-        log_dir = self.root_dir / "data" / asset / symbol / interval / "logs"
+        # Normalize interval name for filesystem (eod -> 1d to match data directories)
+        interval_dir = "1d" if interval == "eod" else interval
+        log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
         files = sorted(log_dir.glob("log_*_*.parquet")) if log_dir.exists() else []
         if not files:
             return pd.DataFrame()

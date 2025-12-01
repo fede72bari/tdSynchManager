@@ -450,20 +450,90 @@ class CoherenceChecker:
 
                 if not validation_result.valid:
                     # If volume mismatch, try to segment the day to find problem hours
-                    problem_segments = await self._segment_tick_problems(tick_df, date_iso)
+                    problem_segments = await self._segment_tick_problems(tick_df, date_iso, report.asset)
+
+                    # Optionally run granular bucket analysis (comparing tick vs intraday bars)
+                    bucket_analysis = None
+                    if self.manager.cfg.enable_tick_bucket_analysis:
+                        from .tick_bucket_analysis import analyze_tick_buckets
+                        try:
+                            # Determine intraday interval from config (default 30m)
+                            interval_map = {30: "30m", 60: "1h", 15: "15m", 5: "5m", 1: "1m"}
+                            intraday_interval = interval_map.get(
+                                self.manager.cfg.tick_segment_minutes,
+                                "30m"
+                            )
+
+                            bucket_analysis = await analyze_tick_buckets(
+                                manager=self.manager,
+                                symbol=report.symbol,
+                                asset=report.asset,
+                                date_iso=date_iso,
+                                sink=report.sink,
+                                intraday_interval=intraday_interval,
+                                tolerance=self.manager.cfg.tick_eod_volume_tolerance
+                            )
+
+                            # Compare EOD delta vs Bucket delta
+                            if bucket_analysis:
+                                # Calculate tick total from tick_df
+                                volume_col = 'size' if report.asset == "option" else 'volume'
+                                tick_total = tick_df[volume_col].sum() if volume_col in tick_df.columns else 0
+
+                                eod_total = eod_volume_call + eod_volume_put
+                                intraday_total = bucket_analysis.total_intraday_volume
+
+                                if tick_total > 0:
+                                    delta_eod = eod_total - tick_total
+                                    delta_bucket = intraday_total - tick_total
+                                    delta_diff = abs(delta_eod) - abs(delta_bucket)
+
+                                    print(f"\n[DELTA-COMPARISON] {date_iso} - EOD vs Bucket Analysis:")
+                                    print(f"  Tick total:       {int(tick_total)}")
+                                    print(f"  EOD total:        {int(eod_total)}")
+                                    print(f"  Intraday total:   {int(intraday_total)}")
+                                    print(f"  Delta EOD:        {delta_eod:+.0f} ({abs(delta_eod/tick_total)*100:.3f}%)")
+                                    print(f"  Delta Bucket:     {delta_bucket:+.0f} ({abs(delta_bucket/tick_total)*100:.3f}%)")
+                                    print(f"  Difference:       {delta_diff:.0f} volume")
+                                    if abs(delta_eod) > 0:
+                                        ratio = (1 - abs(delta_bucket)/abs(delta_eod)) * 100
+                                        print(f"  Bucket {ratio:+.1f}% more accurate than EOD")
+                        except Exception as e:
+                            print(f"[BUCKET-ANALYSIS] Failed for {date_iso}: {e}")
 
                     report.is_coherent = False
                     if date_iso not in report.tick_volume_mismatches:
                         report.tick_volume_mismatches.append(date_iso)
+
+                    issue_details = {
+                        **validation_result.details,
+                        'problem_segments': problem_segments
+                    }
+
+                    # Add bucket analysis to details if available
+                    if bucket_analysis:
+                        issue_details['bucket_analysis'] = {
+                            'intraday_interval': bucket_analysis.intraday_interval,
+                            'total_buckets': len(bucket_analysis.buckets),
+                            'coherent_buckets': sum(1 for b in bucket_analysis.buckets if b.is_coherent),
+                            'problematic_buckets': [
+                                {
+                                    'start': b.bucket_start,
+                                    'end': b.bucket_end,
+                                    'tick_volume': b.tick_volume,
+                                    'intraday_volume': b.intraday_volume,
+                                    'diff_pct': b.diff_pct
+                                }
+                                for b in bucket_analysis.buckets if not b.is_coherent
+                            ]
+                        }
+
                     report.issues.append(CoherenceIssue(
                         issue_type="TICK_VOLUME_MISMATCH",
                         severity="WARNING",
                         date_range=(date_iso, date_iso),
                         description=validation_result.error_message or f"Tick volume mismatch on {date_iso}",
-                        details={
-                            **validation_result.details,
-                            'problem_segments': problem_segments
-                        }
+                        details=issue_details
                     ))
 
             except Exception as e:
@@ -759,7 +829,8 @@ class CoherenceChecker:
     async def _segment_tick_problems(
         self,
         tick_df,
-        date_iso: str
+        date_iso: str,
+        asset: str = "option"
     ) -> List[Dict]:
         """Segment tick data to identify problematic hour blocks.
 
@@ -772,6 +843,9 @@ class CoherenceChecker:
             Tick data for the day.
         date_iso : str
             Date (YYYY-MM-DD).
+        asset : str
+            Asset type ('option' or 'stock'). Used to determine volume column name.
+            Default: 'option'
 
         Returns
         -------
@@ -789,7 +863,12 @@ class CoherenceChecker:
                 ts_col = col
                 break
 
-        if ts_col is None or 'volume' not in tick_df.columns:
+        # Determine correct volume column based on asset type
+        # OPTIONS: 'size' column (quantity per trade)
+        # STOCK/INDEX: 'volume' column
+        volume_col = 'size' if asset == "option" else 'volume'
+
+        if ts_col is None or volume_col not in tick_df.columns:
             return segments
 
         try:
@@ -805,8 +884,10 @@ class CoherenceChecker:
             market_start = pd.to_datetime(f"{date_iso} 09:30:00")
             market_end = pd.to_datetime(f"{date_iso} 16:00:00")
 
-            # Create 1-hour segments
-            segment_duration = timedelta(hours=1)
+            # Create segments (default 30 minutes, configurable)
+            # Use manager config if available, otherwise default to 30 minutes
+            segment_minutes = getattr(self.manager.cfg, 'tick_segment_minutes', 30)
+            segment_duration = timedelta(minutes=segment_minutes)
             current_start = market_start
 
             while current_start < market_end:
@@ -817,7 +898,7 @@ class CoherenceChecker:
                     (tick_df['_parsed_time'] < current_end)
                 ]
 
-                segment_volume = segment_df['volume'].sum() if not segment_df.empty else 0
+                segment_volume = segment_df[volume_col].sum() if not segment_df.empty else 0
                 segment_ticks = len(segment_df)
 
                 segments.append({
@@ -829,8 +910,15 @@ class CoherenceChecker:
 
                 current_start = current_end
 
-        except Exception:
-            pass
+        except Exception as e:
+            # Log exception but don't fail
+            print(f"[DEBUG] _segment_tick_problems exception: {e}")
+
+        # Log segment summary
+        if segments:
+            print(f"\n[TICK-SEGMENT] {date_iso} - Segmented into {len(segments)} buckets ({segment_minutes}min each):")
+            for seg in segments:
+                print(f"  [{seg['hour_start']}-{seg['hour_end']}] volume={int(seg['volume'])} ticks={seg['tick_count']}")
 
         return segments
 
