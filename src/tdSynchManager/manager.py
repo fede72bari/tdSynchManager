@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover
     InfluxDBClient3 = None
 
 # EOD TIMESTAMP FIX VERSION - increment on each modification group
-EOD_TIMESTAMP_FIX_VERSION = "v1.0.4"
+EOD_TIMESTAMP_FIX_VERSION = "v1.0.9"  # Dropped legacy infer_datetime_format workaround (pandas 2.x)
 
 # Shell log/version banner (increment when delivering a new patch build)
 SHELL_LOG_VERSION = 3
@@ -1748,6 +1748,7 @@ class ThetaSyncManager:
                         continue                 
                         
                     df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
+                    df = self._normalize_df_types(df)
                     if df is None or df.empty:
                         continue
 
@@ -1780,6 +1781,7 @@ class ThetaSyncManager:
                             )
                             if csv_tg:
                                 dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
+                                dg = self._normalize_df_types(dg)
                                 if dg is not None and not dg.empty:
 
                                     # --- normalizza nomi per join robusta ---
@@ -1815,6 +1817,7 @@ class ThetaSyncManager:
                             )
                             if csv_tiv:
                                 divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
+                                divt = self._normalize_df_types(divt)
                                 if divt is not None and not divt.empty:
                                     # prefer a clear name to avoid confusion with bar-level IV
                                     if "implied_volatility" in divt.columns and "trade_iv" not in divt.columns:
@@ -2101,6 +2104,10 @@ class ThetaSyncManager:
                     doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
             
             if doi is not None and not doi.empty:
+                # Normalize types before merge (avoid object/float mismatch on strike, etc.)
+                doi = self._normalize_df_types(doi)
+                df_all = self._normalize_df_types(df_all)
+
                 oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
                 if oi_col:
                     doi = doi.rename(columns={oi_col: "last_day_OI"})
@@ -2681,7 +2688,7 @@ class ThetaSyncManager:
         df_day = pd.read_csv(io.StringIO(csv_txt), dtype=str)
         if df_day is None or df_day.empty:
             return
-    
+
         # -------------------------------
         # 3) RESOLVE SERIES BASE PATH
         # -------------------------------
@@ -2710,14 +2717,9 @@ class ThetaSyncManager:
 
             # Build list of 'YYYY-MM-DD' for each row
             if tcol in ("last_trade", "created", "timestamp"):
-                # Parse timestamps without format spec - pandas auto-detects ISO variants
-                # ThetaData API returns mixed formats (with/without milliseconds, 3 or 6 digit ms)
-                # errors='coerce' handles unparseable values as NaT without raising exceptions
+                # Parse timestamps - pandas handles mixed ISO8601 formats correctly (pandas 2.x strict)
+                # ThetaData API returns: '2024-01-29T17:10:35.602' and '2024-02-01T16:46:45'
                 ts = pd.to_datetime(df_day[tcol], utc=True, errors='coerce')
-                # Check for any NaT values (parsing failures) and warn
-                if ts.isna().any():
-                    failed_count = ts.isna().sum()
-                    print(f"[WARN] Failed to parse {failed_count} timestamps in {tcol} column")
                 day_list = ts.dt.date.astype(str)
             elif tcol == "date":
                 # If 'date' exists but not parsed, coerce to string 'YYYY-MM-DD'
@@ -2758,7 +2760,7 @@ class ThetaSyncManager:
                     df_day = df_day.loc[ts > cutoff]
                     if df_day.empty:
                         return
-                    
+
                     # >>> BOUNDARY DEDUP: leggi ultime 100 righe e rimuovi duplicati su timestamp
                     try:
                         last_chunk = pd.read_csv(target_path, dtype=str).tail(100)
@@ -4677,13 +4679,96 @@ class ThetaSyncManager:
         return written
 
 
+    def _normalize_df_types(
+        self,
+        df: pd.DataFrame,
+        *,
+        string_cols: Iterable[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Heuristic normalization: parse timestamps/dates, convert numerics where safe,
+        and leave known categorical columns as strings. Designed to avoid arithmetic
+        on stringified numbers (e.g., mixed-format CSV payloads).
+        """
+        if df is None or df.empty:
+            return df
+
+        df_norm = df.copy()
+
+        # Known timestamp-like columns (parse to UTC-aware, keep NaT on failure)
+        ts_candidates = [
+            "timestamp", "trade_timestamp", "bar_timestamp", "datetime",
+            "created", "last_trade", "date", "time", "timestamp_oi",
+            "underlying_timestamp"
+        ]
+        for col in ts_candidates:
+            if col in df_norm.columns:
+                df_norm[col] = pd.to_datetime(df_norm[col], errors="coerce", utc=True)
+                # Normalize to ET-naive when the rest of the pipeline expects ET
+                if getattr(df_norm[col].dtype, "tz", None) is not None:
+                    df_norm[col] = df_norm[col].dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+
+        # Date-only columns
+        date_cols = ["expiration", "effective_date_oi"]
+        for col in date_cols:
+            if col in df_norm.columns:
+                df_norm[col] = pd.to_datetime(df_norm[col], errors="coerce").dt.date
+
+        # Columns that must stay string/categorical
+        default_string_cols = {
+            "symbol", "root", "option_symbol", "exchange", "condition", "right",
+            "type", "side", "currency", "mic", "venue", "status", "flag", "id",
+            "code", "indicator", "source"
+        }
+        if string_cols:
+            default_string_cols.update(string_cols)
+
+        # Prefer numeric conversion for well-known numeric fields
+        numeric_preferred = {
+            "price", "bid", "ask", "mid", "last", "open", "high", "low", "close",
+            "volume", "size", "trade_size", "bid_size", "ask_size", "oi", "open_interest",
+            "implied_volatility", "trade_iv", "vega", "theta", "gamma", "delta", "rho",
+            "multiplier", "strike", "sequence", "spread", "underlying_price"
+        }
+
+        for col in df_norm.columns:
+            if col in default_string_cols or col in ts_candidates or col in date_cols:
+                continue
+
+            series = df_norm[col]
+            # Skip pure string-like columns (non-numeric content)
+            numeric_candidate = None
+            try:
+                numeric_candidate = pd.to_numeric(series, errors="coerce")
+            except Exception:
+                numeric_candidate = None
+
+            if col in numeric_preferred:
+                if numeric_candidate is not None:
+                    df_norm[col] = numeric_candidate
+                continue
+
+            if numeric_candidate is None:
+                continue
+
+            # Heuristic: convert if at least 80% of non-null values parse as numeric
+            non_null = series.notna().sum()
+            if non_null == 0:
+                continue
+            numeric_ratio = numeric_candidate.notna().sum() / non_null
+            if numeric_ratio >= 0.8:
+                df_norm[col] = numeric_candidate
+
+        return df_norm
+
+
     def _ensure_ts_utc_column(self, df: pd.DataFrame) -> pd.DataFrame:
         """Return a DataFrame that contains the __ts_utc column required for Influx verification."""
         if df is None or "__ts_utc" in df.columns or len(df) == 0:
             return df
 
         df_ts = df.copy()
-        t_candidates = ["timestamp", "trade_timestamp", "bar_timestamp", "datetime", "created", "last_trade", "date"]
+        t_candidates = ["timestamp", "trade_timestamp", "bar_timestamp", "datetime", "created", "last_trade", "date", "time"]
         tcol = next((c for c in t_candidates if c in df_ts.columns), None)
         if not tcol:
             raise RuntimeError("No time column found while preparing data for Influx verification.")
@@ -4729,7 +4814,7 @@ class ThetaSyncManager:
             self._influx_seen_measurements.add(measurement)
     
         # 1) Individua la colonna tempo e normalizza ET-naive -> UTC-aware
-        t_candidates = ["timestamp","trade_timestamp","bar_timestamp","datetime","created","last_trade","date"]
+        t_candidates = ["timestamp","trade_timestamp","bar_timestamp","datetime","created","last_trade","date","time"]
         tcol = next((c for c in t_candidates if c in df_new.columns), None)
         if not tcol:
             raise RuntimeError("No time column found for Influx write.")
@@ -5380,6 +5465,7 @@ class ThetaSyncManager:
                 continue
             # Clean obvious control chars before parsing (handles CR/LF/TAB from CSV payloads)
             series = combined_df[col].astype(str).str.replace(r"[\r\n\t]", "", regex=True).str.strip()
+            # Parse with errors='coerce'; pandas 2.x handles mixed ISO formats
             parsed = pd.to_datetime(series, utc=True, errors='coerce')
             valid = int(parsed.notna().sum())
             invalid_examples = series[parsed.isna()].head(3).tolist()

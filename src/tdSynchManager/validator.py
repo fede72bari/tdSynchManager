@@ -91,7 +91,7 @@ class DataValidator:
                 details={'available_columns': list(df.columns)}
             )
 
-        actual_dates = pd.to_datetime(df[time_col]).dt.strftime('%Y-%m-%d').unique().tolist()
+        actual_dates = pd.to_datetime(df[time_col], utc=True, errors='coerce').dt.strftime('%Y-%m-%d').unique().tolist()
 
         # Find missing dates
         missing = sorted(set(expected_dates) - set(actual_dates))
