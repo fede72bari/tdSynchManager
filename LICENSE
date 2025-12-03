@@ -1,0 +1,100 @@
+# tdSynchManager Custom License
+
+**Copyright (c) 2025 Federico Bari**
+**Author:** Federico Bari
+**Contact:** fede72bari@gmail.com
+
+---
+
+## Grant of Rights
+
+This software and associated documentation files (the "Software") are provided under the following terms:
+
+### 1. Personal Use (Free)
+
+Permission is granted, free of charge, to any person obtaining a copy of this Software for **strictly personal, non-commercial use**, subject to the following conditions:
+
+- ✅ You may use, copy, and modify the Software for personal projects
+- ✅ You may study and learn from the source code
+- ✅ You must retain this license notice in all copies
+- ❌ You may **NOT** use the Software for any commercial purpose
+- ❌ You may **NOT** redistribute the Software or modified versions publicly
+- ❌ You may **NOT** create independent forks or derivative works for distribution
+
+### 2. Commercial Use (Paid License Required)
+
+**Any commercial use of this Software, including but not limited to:**
+- Use in commercial products or services
+- Use by for-profit organizations
+- Integration into commercial software (in whole or in part)
+- Use of derivative works or evolved versions in commercial contexts
+
+**REQUIRES a separate commercial license agreement and written authorization from the author.**
+
+To obtain a commercial license:
+- Contact: **fede72bari@gmail.com**
+- Subject: "tdSynchManager Commercial License Request"
+- Include: Intended use case, organization details, scope of usage
+
+Commercial licensing fees and terms will be negotiated on a case-by-case basis.
+
+### 3. Contributions
+
+Community contributions to improve the Software are welcomed and appreciated. By submitting a contribution (pull request, patch, suggestion), you agree that:
+
+- ✅ Your contribution enables free personal use for the community
+- ✅ The contribution is provided voluntarily without expectation of compensation
+- ❌ You do **NOT** retain rights to exploit your contribution commercially
+- ❌ You do **NOT** gain any ownership rights in the Software
+- ✅ **All rights remain exclusively with the original author, Federico Bari**
+
+Contributors will be acknowledged in the project documentation (CONTRIBUTORS.md or similar).
+
+### 4. Restrictions on Forking
+
+- ❌ **Independent forks are NOT permitted**
+- ❌ You may **NOT** create and maintain derivative works independently
+- ✅ Contributions should be submitted as pull requests to the official repository
+- ✅ For significant changes or new directions, contact the author to discuss collaboration
+
+### 5. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## Summary
+
+| Use Case | License Required | Conditions |
+|----------|-----------------|------------|
+| **Personal (non-commercial)** | ✅ Free | Must retain license notice, no redistribution |
+| **Commercial use** | 💰 Paid license | Contact author for authorization |
+| **Contributions** | ✅ Accepted | Rights remain with author |
+| **Independent forks** | ❌ Not allowed | Submit PRs to official repo instead |
+
+---
+
+## Enforcement
+
+Unauthorized commercial use or violation of this license will result in:
+1. Cease and desist notice
+2. Demand for compensation based on unauthorized use
+3. Legal action if necessary to protect intellectual property rights
+
+---
+
+## Contact
+
+For licensing inquiries, commercial use requests, or questions:
+
+**Federico Bari**
+Email: fede72bari@gmail.com
+GitHub: https://github.com/fede72bari/tdSynchManager
+
+---
+
+**By using this Software, you acknowledge that you have read, understood, and agree to be bound by the terms of this license.**
+
+---
+
+*Last Updated: December 2025*

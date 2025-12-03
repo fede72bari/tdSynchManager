@@ -2,7 +2,9 @@
 
 **Version:** 1.0.9
 **Last Updated:** December 2025
-**License:** MIT
+**License:** Custom (Free for personal use, Commercial license required)
+**Author:** Federico Bari
+**Contact:** fede72bari@gmail.com
 
 ---
 
@@ -37,77 +39,85 @@
    - 4.5 [Testing InfluxDB Connection](#45-testing-influxdb-connection)
    - 4.6 [InfluxDB Startup Scripts](#46-influxdb-startup-scripts)
 
-5. [Helper Scripts & Batch Files](#5-helper-scripts--batch-files)
+5. [Helper Scripts & Batch Files](#5-helper-scripts--batch-files) **(Windows)**
    - 5.1 [Batch Files Overview](#51-batch-files-overview)
-   - 5.2 [start_influxdb.bat](#52-start_influxdbbat)
-   - 5.3 [start_thetadata.bat](#53-start_thetadatabat)
-   - 5.4 [start_jupyter.bat](#54-start_jupyterbat)
-   - 5.5 [run_sync.bat](#55-run_syncbat)
-   - 5.6 [Example Jupyter Notebooks](#56-example-jupyter-notebooks)
+   - 5.2 [start_environment.bat](#52-start_environmentbat)
+   - 5.3 [start_influxdb.bat](#53-start_influxdbbat)
+   - 5.4 [start_thetadata.bat](#54-start_thetadatabat)
+   - 5.5 [start_jupyter.bat](#55-start_jupyterbat)
+   - 5.6 [run_sync.bat](#56-run_syncbat)
+   - 5.7 [Example Jupyter Notebook](#57-example-jupyter-notebook)
 
-6. [Quick Start](#6-quick-start)
-   - 6.1 [First Working Example](#61-first-working-example)
-   - 6.2 [Minimal Configuration](#62-minimal-configuration)
-   - 6.3 [Running Basic Sync](#63-running-basic-sync)
-   - 6.4 [Verifying Results](#64-verifying-results)
+6. [Core API Reference](#6-core-api-reference)
+   - 6.1 [ThetaDataV3Client](#61-thetadatav3client)
+   - 6.2 [ManagerConfig](#62-managerconfig)
+   - 6.3 [Task](#63-task)
+   - 6.4 [DiscoverPolicy](#64-discoverpolicy)
+   - 6.5 [ThetaSyncManager](#65-thetasyncmanager)
 
-7. [ThetaDataV3Client API](#7-thetadatav3client-api)
-   - 7.1 [Fundamental Concepts](#71-fundamental-concepts)
-   - 7.2 [Initialization and Configuration](#72-initialization-and-configuration)
-   - 7.3 [Data Download Methods](#73-data-download-methods)
-   - 7.4 [Supported Asset Types](#74-supported-asset-types)
-   - 7.5 [API Methods Reference](#75-api-methods-reference)
-   - 7.6 [Error Handling](#76-error-handling)
+7. [Quick Start](#7-quick-start)
+   - 7.1 [First Working Example](#71-first-working-example)
+   - 7.2 [Minimal Configuration](#72-minimal-configuration)
+   - 7.3 [Running Basic Sync](#73-running-basic-sync)
+   - 7.4 [Verifying Results](#74-verifying-results)
 
-8. [ManagerConfig](#8-managerconfig)
-   - 8.1 [Configuration Parameters](#81-configuration-parameters)
-   - 8.2 [Sink Configuration](#82-sink-configuration)
-   - 8.3 [Coherence Settings](#83-coherence-settings)
-   - 8.4 [Logging Configuration](#84-logging-configuration)
+8. [ThetaDataV3Client Detailed](#8-thetadatav3client-detailed)
+   - 8.1 [Fundamental Concepts](#81-fundamental-concepts)
+   - 8.2 [Initialization and Configuration](#82-initialization-and-configuration)
+   - 8.3 [Data Download Methods](#83-data-download-methods)
+   - 8.4 [Supported Asset Types](#84-supported-asset-types)
+   - 8.5 [API Methods Reference](#85-api-methods-reference)
+   - 8.6 [Error Handling](#86-error-handling)
 
-9. [Task Definition](#9-task-definition)
-   - 9.1 [Task Structure](#91-task-structure)
-   - 9.2 [Discovery Policy](#92-discovery-policy)
-   - 9.3 [Advanced Options](#93-advanced-options)
+9. [ManagerConfig Detailed](#9-managerconfig-detailed)
+   - 9.1 [Configuration Parameters](#91-configuration-parameters)
+   - 9.2 [Sink Configuration](#92-sink-configuration)
+   - 9.3 [Coherence Settings](#93-coherence-settings)
+   - 9.4 [Logging Configuration](#94-logging-configuration)
 
-10. [ThetaSyncManager](#10-thetasyncmanager)
-    - 10.1 [Initialization](#101-initialization)
-    - 10.2 [run() Method](#102-run-method)
-    - 10.3 [Internal Pipeline](#103-internal-pipeline)
-    - 10.4 [Idempotent Operations](#104-idempotent-operations)
+10. [Task Definition](#10-task-definition)
+    - 10.1 [Task Structure](#101-task-structure)
+    - 10.2 [Discovery Policy](#102-discovery-policy)
+    - 10.3 [Advanced Options](#103-advanced-options)
 
-11. [Sink Strategies](#11-sink-strategies)
-    - 11.1 [CSV Sink](#111-csv-sink)
-    - 11.2 [Parquet Sink](#112-parquet-sink)
-    - 11.3 [InfluxDB Sink](#113-influxdb-sink)
+11. [ThetaSyncManager Detailed](#11-thetasyncmanager-detailed)
+    - 11.1 [Initialization](#111-initialization)
+    - 11.2 [run() Method](#112-run-method)
+    - 11.3 [Internal Pipeline](#113-internal-pipeline)
+    - 11.4 [Idempotent Operations](#114-idempotent-operations)
 
-12. [Coherence Checking](#12-coherence-checking)
-    - 12.1 [Coherence Concepts](#121-coherence-concepts)
-    - 12.2 [Coherence Modes](#122-coherence-modes)
-    - 12.3 [Bucket Analysis](#123-bucket-analysis-intraday)
-    - 12.4 [Validation Flow](#124-validation-flow)
-    - 12.5 [Output and Reports](#125-output-and-reports)
+12. [Sink Strategies](#12-sink-strategies)
+    - 12.1 [CSV Sink](#121-csv-sink)
+    - 12.2 [Parquet Sink](#122-parquet-sink)
+    - 12.3 [InfluxDB Sink](#123-influxdb-sink)
 
-13. [Recovery & Repair](#13-recovery--repair)
-    - 13.1 [Automatic Recovery](#131-automatic-recovery)
-    - 13.2 [Manual Recovery](#132-manual-recovery)
-    - 13.3 [Common Troubleshooting](#133-common-troubleshooting)
+13. [Coherence Checking](#13-coherence-checking)
+    - 13.1 [Coherence Concepts](#131-coherence-concepts)
+    - 13.2 [Coherence Modes](#132-coherence-modes)
+    - 13.3 [Bucket Analysis](#133-bucket-analysis-intraday)
+    - 13.4 [Validation Flow](#134-validation-flow)
+    - 13.5 [Output and Reports](#135-output-and-reports)
 
-14. [Timestamp Handling](#14-timestamp-handling)
-    - 14.1 [Supported ISO8601 Formats](#141-supported-iso8601-formats)
-    - 14.2 [Pandas Compatibility](#142-pandas-compatibility)
-    - 14.3 [Timezone Management](#143-timezone-management)
-    - 14.4 [EOD vs Intraday vs Tick Timestamps](#144-eod-vs-intraday-vs-tick-timestamps)
-    - 14.5 [Known Issues and Solutions](#145-known-issues-and-solutions)
+14. [Recovery & Repair](#14-recovery--repair)
+    - 14.1 [Automatic Recovery](#141-automatic-recovery)
+    - 14.2 [Manual Recovery](#142-manual-recovery)
+    - 14.3 [Common Troubleshooting](#143-common-troubleshooting)
 
-15. [Performance & Optimization](#15-performance--optimization)
-16. [Practical Examples](#16-practical-examples)
-17. [Advanced Topics](#17-advanced-topics)
-18. [API Reference](#18-api-reference)
-19. [Best Practices](#19-best-practices)
-20. [Changelog & Versioning](#20-changelog--versioning)
-21. [FAQ & Troubleshooting](#21-faq--troubleshooting)
-22. [Appendices](#appendices)
+15. [Timestamp Handling](#15-timestamp-handling)
+    - 15.1 [Supported ISO8601 Formats](#151-supported-iso8601-formats)
+    - 15.2 [Pandas Compatibility](#152-pandas-compatibility)
+    - 15.3 [Timezone Management](#153-timezone-management)
+    - 15.4 [EOD vs Intraday vs Tick Timestamps](#154-eod-vs-intraday-vs-tick-timestamps)
+    - 15.5 [Known Issues and Solutions](#155-known-issues-and-solutions)
+
+16. [Performance & Optimization](#16-performance--optimization)
+17. [Practical Examples](#17-practical-examples)
+18. [Advanced Topics](#18-advanced-topics)
+19. [Full API Reference](#19-full-api-reference)
+20. [Best Practices](#20-best-practices)
+21. [Changelog & Versioning](#21-changelog--versioning)
+22. [FAQ & Troubleshooting](#22-faq--troubleshooting)
+23. [Appendices](#appendices)
 
 ---
 
@@ -843,19 +853,64 @@ chmod +x start_influxdb.sh
 
 ### 5.1 Batch Files Overview
 
-Helper scripts automate common tasks:
+Helper scripts automate common tasks. **Note:** All `.bat` files are for **Windows only**. Linux/macOS users should create equivalent `.sh` scripts.
 
 | Script | Purpose | Platform |
 |--------|---------|----------|
-| `start_influxdb.bat` | Start InfluxDB server | Windows |
-| `start_thetadata.bat` | Launch ThetaData Terminal | Windows |
-| `start_jupyter.bat` | Open Jupyter notebooks | Windows |
-| `run_sync.bat` | Execute sync script | Windows |
-| `*.sh` | Linux/macOS equivalents | Unix |
+| `start_environment.bat` | **All-in-one launcher** (InfluxDB + ThetaData + Jupyter) | **Windows** |
+| `start_influxdb.bat` | Start InfluxDB server | **Windows** |
+| `start_thetadata.bat` | Launch ThetaData Terminal | **Windows** |
+| `start_jupyter.bat` | Open Jupyter notebooks | **Windows** |
+| `run_sync.bat` | Execute sync script | **Windows** |
+| `*.sh` | Linux/macOS equivalents (user-created) | Unix |
 
 ---
 
-### 5.2 start_influxdb.bat
+### 5.2 start_environment.bat ⭐
+
+**All-in-one environment launcher** - Recommended for beginners!
+
+This script automatically starts:
+1. InfluxDB 3 Enterprise
+2. ThetaData Terminal (if installed)
+3. Jupyter Lab in the project directory
+
+**Location:** `start_environment.bat` (project root)
+
+**Usage:**
+```batch
+REM Double-click the file or run from command line:
+start_environment.bat
+```
+
+**Script Content:**
+```batch
+@echo off
+REM Full script available in project repository
+REM See: start_environment.bat
+REM
+REM This launcher:
+REM   - Detects conda installation automatically
+REM   - Starts InfluxDB in separate window
+REM   - Starts ThetaData Terminal if available
+REM   - Launches Jupyter Lab with tdsync environment
+```
+
+**Prerequisites:**
+- Anaconda/Miniconda with `tdsync` environment
+- InfluxDB 3 installed (optional but recommended)
+- ThetaData Terminal (optional)
+
+**What it does:**
+1. ✅ Checks for required components
+2. ✅ Starts InfluxDB in background window
+3. ✅ Launches ThetaData Terminal
+4. ✅ Activates conda environment `tdsync`
+5. ✅ Opens Jupyter Lab in project directory
+
+---
+
+### 5.3 start_influxdb.bat
 
 ```batch
 @echo off
@@ -964,63 +1019,293 @@ pause
 
 ---
 
-### 5.6 Example Jupyter Notebooks
+### 5.7 Example Jupyter Notebook
 
-**Provided notebooks** (in `examples/notebooks/`):
+**Single unified notebook** (in `examples/`): **`ThetaDataManager_Examples.ipynb`**
 
-#### 01_QuickStart.ipynb
-```python
-"""
-Quick Start Guide
-- Install & setup
-- First EOD download
-- Verify results
-"""
+This comprehensive notebook contains **8 practical examples** demonstrating all major features of tdSynchManager using the exported library classes.
+
+**Location:** `examples/ThetaDataManager_Examples.ipynb`
+
+**Contents:**
+
+1. **Setup & Imports** - Verify installation and import required libraries
+2. **Example 1: Basic EOD Download to CSV** - Single symbol daily data download
+3. **Example 2: Multi-Symbol EOD Download** - Parallel downloads for multiple symbols
+4. **Example 3: Intraday Data to Parquet** - 5-minute bars with Parquet compression
+5. **Example 4: InfluxDB Integration** - Write data directly to InfluxDB time-series database
+6. **Example 5: Coherence Check & Recovery** - Automatic gap detection and backfill
+7. **Example 6: Custom Discovery Policy** - Control symbol/date discovery behavior (skip/mild_skip/wild)
+8. **Example 7: Querying InfluxDB Data** - Retrieve and analyze stored time-series data
+9. **Example 8: Verify Data Completeness** - Check for missing dates and validate coverage
+
+**How to use:**
+
+```batch
+REM Windows - Start Jupyter via environment launcher
+start_environment.bat
+
+REM Or manually
+conda activate tdsync
+jupyter lab examples/ThetaDataManager_Examples.ipynb
 ```
 
-#### 02_EOD_Download.ipynb
-```python
-"""
-End-of-Day Data Download
-- Multi-symbol EOD sync
-- Date range configuration
-- CSV/Parquet output
-"""
+```bash
+# Linux/macOS
+conda activate tdsync
+jupyter lab examples/ThetaDataManager_Examples.ipynb
 ```
 
-#### 03_Intraday_Sync.ipynb
+**Each example includes:**
+- ✅ Complete working code using `ThetaSyncManager`, `ManagerConfig`, and `Task` classes
+- ✅ Expected output and verification steps
+- ✅ Inline comments explaining each parameter
+- ✅ Ready to run (just add your ThetaData API token)
+
+**Prerequisites:**
+- ThetaData API token set as environment variable: `THETADATA_API_TOKEN`
+- For InfluxDB examples: InfluxDB 3.x running with valid token
+
+---
+
+## 6. Core API Reference
+
+This chapter provides a comprehensive reference for all user-facing classes and their parameters. These are the main building blocks for using tdSynchManager.
+
+---
+
+### 6.1 ThetaDataV3Client
+
+**Purpose:** Asynchronous client for ThetaData V3 API
+
+**Import:**
 ```python
-"""
-Intraday Bar Synchronization
-- 5min/15min bar downloads
-- Coherence checking
-- Gap recovery
-"""
+from tdSynchManager import ThetaDataV3Client
 ```
 
-#### 04_Coherence_Check.ipynb
+**Initialization:**
 ```python
-"""
-Coherence Validation & Recovery
-- Run validation on existing data
-- Detect gaps
-- Trigger recovery
-"""
+client = ThetaDataV3Client(
+    token=None,           # API token (default: reads from env THETADATA_API_TOKEN)
+    base_url=None,        # API endpoint (default: ThetaData cloud API)
+    timeout=30            # Request timeout in seconds
+)
 ```
 
-#### 05_InfluxDB_Queries.ipynb
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `token` | `str` | `None` | ThetaData V3 API token. If `None`, reads from `THETADATA_API_TOKEN` environment variable |
+| `base_url` | `str` | `None` | API endpoint URL. If `None`, uses default ThetaData cloud API. Set to `http://127.0.0.1:25510` for local ThetaData Terminal |
+| `timeout` | `int` | `30` | HTTP request timeout in seconds |
+
+**Usage (Context Manager - Recommended):**
 ```python
-"""
-InfluxDB Integration
-- Write data to InfluxDB
-- Query examples
-- Grafana dashboard setup
-"""
+async with ThetaDataV3Client() as client:
+    data = await client.get_eod(symbol="AAPL", asset="stock", start_date="2024-01-01", end_date="2024-12-31")
 ```
 
 ---
 
-## 6. Quick Start
+### 6.2 ManagerConfig
+
+**Purpose:** Configuration object for ThetaSyncManager
+
+**Import:**
+```python
+from tdSynchManager import ManagerConfig
+```
+
+**Initialization:**
+```python
+config = ManagerConfig(
+    root_dir="./data",                # Base directory for file outputs
+    max_concurrency=10,               # Max parallel downloads
+    coherence_mode="off",             # Coherence checking: "off", "light", "full"
+    coherence_tolerance=0.05,         # Acceptable gap threshold (5%)
+    influx_url=None,                  # InfluxDB URL (e.g., "http://localhost:8086")
+    influx_bucket=None,               # InfluxDB bucket/database name
+    influx_token=None,                # InfluxDB authentication token
+    influx_measure_prefix="",         # Prefix for InfluxDB measurements
+    influx_write_batch=5000           # Batch size for InfluxDB writes
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Values/Description |
+|-----------|------|---------|-------------------|
+| `root_dir` | `str` | `"./data"` | Base directory for CSV/Parquet outputs |
+| `max_concurrency` | `int` | `10` | Maximum parallel downloads. Range: 1-50 (recommended: 5-15) |
+| `coherence_mode` | `str` | `"off"` | **Options:** `"off"` (no checks), `"light"` (basic validation), `"full"` (deep validation + auto-recovery) |
+| `coherence_tolerance` | `float` | `0.05` | Acceptable missing data threshold (0.05 = 5%). Used with `coherence_mode="full"` |
+| `influx_url` | `str` | `None` | InfluxDB server URL. Required for `sink="influxdb"` |
+| `influx_bucket` | `str` | `None` | InfluxDB bucket (database) name. Required for `sink="influxdb"` |
+| `influx_token` | `str` | `None` | InfluxDB API token. Required for `sink="influxdb"` |
+| `influx_measure_prefix` | `str` | `""` | Prefix for InfluxDB measurement names. Example: `"market_"` → `market_AAPL_stock_1d` |
+| `influx_write_batch` | `int` | `5000` | Batch size for InfluxDB writes. Range: 1000-10000 (larger = faster but more memory) |
+
+---
+
+### 6.3 Task
+
+**Purpose:** Defines a synchronization task (what to download and where to save it)
+
+**Import:**
+```python
+from tdSynchManager.config import Task, DiscoverPolicy
+```
+
+**Initialization:**
+```python
+task = Task(
+    asset="stock",                          # Asset type
+    symbols=["AAPL", "MSFT"],              # List of symbols to download
+    intervals=["1d", "5min"],              # List of intervals
+    sink="csv",                             # Output format
+    first_date_override=None,               # Start date (YYYYMMDD or "YYYY-MM-DD")
+    end_date_override=None,                 # End date (YYYYMMDD or "YYYY-MM-DD")
+    discover_policy=DiscoverPolicy(mode="skip"),  # Discovery behavior
+    ignore_existing=False                   # Force redownload
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Values/Description |
+|-----------|------|---------|-------------------|
+| `asset` | `str` | **Required** | **Options:** `"stock"`, `"index"`, `"option"`, `"future"` |
+| `symbols` | `List[str]` | **Required** | List of ticker symbols (e.g., `["AAPL", "MSFT", "GOOGL"]`) |
+| `intervals` | `List[str]` | **Required** | **Options:** `"1d"` (EOD), `"1min"`, `"5min"`, `"15min"`, `"30min"`, `"1h"`, `"4h"`, `"tick"` |
+| `sink` | `str` | **Required** | **Options:** `"csv"`, `"parquet"`, `"influxdb"` |
+| `first_date_override` | `str` | `None` | Start date. Format: `"20240101"` or `"2024-01-01"`. If `None`, uses default lookback |
+| `end_date_override` | `str` | `None` | End date. Format: `"20241231"` or `"2024-12-31"`. If `None`, uses current date |
+| `discover_policy` | `DiscoverPolicy` | `DiscoverPolicy(mode="skip")` | Controls symbol/date discovery (see 6.4) |
+| `ignore_existing` | `bool` | `False` | If `True`, redownload all data even if files exist (breaks idempotency) |
+
+---
+
+### 6.4 DiscoverPolicy
+
+**Purpose:** Controls automatic symbol and date range discovery behavior
+
+**Import:**
+```python
+from tdSynchManager.config import DiscoverPolicy
+```
+
+**Initialization:**
+```python
+policy = DiscoverPolicy(mode="skip")
+```
+
+**Parameter:**
+
+| Parameter | Type | Default | Values/Description |
+|-----------|------|---------|-------------------|
+| `mode` | `str` | `"skip"` | **Options:** `"skip"`, `"mild_skip"`, `"wild"` (see table below) |
+
+**Discovery Modes:**
+
+| Mode | Symbol Discovery | Date Range Extension | Use Case |
+|------|-----------------|---------------------|----------|
+| **`"skip"`** | ❌ No discovery | ❌ Use only specified dates | Precise control - download exactly what you specify |
+| **`"mild_skip"`** | ✅ Discover new symbols | ❌ Keep existing date ranges | Incremental updates - add new symbols but don't extend dates |
+| **`"wild"`** | ✅ Discover new symbols | ✅ Extend to current date | Continuous sync - auto-update to present |
+
+**Examples:**
+
+```python
+# Example 1: Strict control (skip)
+task = Task(
+    symbols=["AAPL"],
+    intervals=["1d"],
+    first_date_override="20240101",
+    end_date_override="20240131",
+    discover_policy=DiscoverPolicy(mode="skip")
+)
+# Downloads ONLY AAPL from 2024-01-01 to 2024-01-31
+
+# Example 2: Add new symbols but keep date range (mild_skip)
+task = Task(
+    symbols=["AAPL", "MSFT"],  # If MSFT is new, it will be added
+    intervals=["1d"],
+    first_date_override="20240101",
+    end_date_override="20240131",
+    discover_policy=DiscoverPolicy(mode="mild_skip")
+)
+# Downloads MSFT if not present, keeps 2024-01-01 to 2024-01-31 range
+
+# Example 3: Continuous sync (wild)
+task = Task(
+    symbols=["AAPL"],
+    intervals=["1d"],
+    discover_policy=DiscoverPolicy(mode="wild")
+)
+# Extends date range to current date on each run
+```
+
+---
+
+### 6.5 ThetaSyncManager
+
+**Purpose:** Main synchronization manager - orchestrates downloads, validation, and writes
+
+**Import:**
+```python
+from tdSynchManager import ThetaSyncManager
+```
+
+**Initialization:**
+```python
+manager = ThetaSyncManager(
+    config=my_config,      # ManagerConfig instance
+    client=my_client       # ThetaDataV3Client instance
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `config` | `ManagerConfig` | ✅ Yes | Configuration object (see 6.2) |
+| `client` | `ThetaDataV3Client` | ✅ Yes | Authenticated client instance (see 6.1) |
+
+**Main Method: `run()`**
+
+**Signature:**
+```python
+async def run(tasks: List[Task]) -> None
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tasks` | `List[Task]` | List of Task objects to execute |
+
+**Returns:** `None` (outputs to log and files)
+
+**Usage:**
+```python
+async with ThetaDataV3Client() as client:
+    manager = ThetaSyncManager(config, client=client)
+    await manager.run(tasks)
+```
+
+**What `run()` does:**
+1. Validates all task definitions
+2. Executes tasks in parallel (up to `max_concurrency`)
+3. Downloads data from ThetaData API
+4. Validates and transforms data (timestamp parsing, sort, dedup)
+5. Writes to specified sink (CSV/Parquet/InfluxDB)
+6. Performs coherence checks (if enabled)
+7. Triggers auto-recovery for gaps (if `coherence_mode="full"`)
+
+---
+
+## 7. Quick Start
 
 ### 6.1 First Working Example
 
