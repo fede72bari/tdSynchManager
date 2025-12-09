@@ -400,21 +400,31 @@ async def _load_tick_data(
         # CSV/Parquet: read from file
         files = manager._list_series_files(asset, symbol, 'tick', sink.lower())
 
-        # Filter by date
+        # Filter by date - there may be multiple _partNN files for the same date
         matching_files = [f for f in files if date_iso in f]
 
         if not matching_files:
             return None
 
-        # Read the first matching file
-        file_path = matching_files[0]
+        # Read and concatenate ALL matching files (multi-part support)
+        dfs = []
+        for file_path in matching_files:
+            if sink.lower() == "csv":
+                df_part = pd.read_csv(file_path)
+            elif sink.lower() == "parquet":
+                df_part = pd.read_parquet(file_path)
+            else:
+                continue
 
-        if sink.lower() == "csv":
-            df = pd.read_csv(file_path)
-        elif sink.lower() == "parquet":
-            df = pd.read_parquet(file_path)
-        else:
+            if not df_part.empty:
+                dfs.append(df_part)
+
+        if not dfs:
             return None
+
+        # Concatenate all parts and deduplicate
+        df = pd.concat(dfs, ignore_index=True)
+        df = df.drop_duplicates()
 
         return df
 
@@ -444,19 +454,30 @@ async def _compare_buckets(
         return results
 
     # Ensure tick data has timestamp column
-    if 'timestamp' not in tick_df.columns:
-        if 'ms_of_day' in tick_df.columns:
-            # Convert ms_of_day to timestamp
-            base_date = pd.to_datetime(date_iso)
-            tick_df = tick_df.copy()
-            tick_df['timestamp'] = base_date + pd.to_timedelta(tick_df['ms_of_day'], unit='ms')
-        else:
-            print(f"[BUCKET-ANALYSIS] Warning: no timestamp column in tick data")
-            return results
+    # Prefer quote_timestamp for options (has correct date), fallback to timestamp
+    ts_col = None
+    for col in ['quote_timestamp', 'timestamp', 'created', 'ms_of_day']:
+        if col in tick_df.columns:
+            ts_col = col
+            break
 
-    # Parse timestamps
+    if ts_col is None:
+        print(f"[BUCKET-ANALYSIS] Warning: no timestamp column in tick data")
+        return results
+
     tick_df = tick_df.copy()
-    tick_df['timestamp'] = pd.to_datetime(tick_df['timestamp'], errors='coerce', utc=True)
+
+    if ts_col == 'ms_of_day':
+        # Convert ms_of_day to timestamp
+        base_date = pd.to_datetime(date_iso)
+        tick_df['timestamp'] = base_date + pd.to_timedelta(tick_df[ts_col], unit='ms')
+    else:
+        # Use the identified timestamp column and rename to 'timestamp'
+        if ts_col != 'timestamp':
+            tick_df['timestamp'] = tick_df[ts_col]
+
+        # Parse timestamps
+        tick_df['timestamp'] = pd.to_datetime(tick_df['timestamp'], errors='coerce', utc=True)
 
     # Sort intraday by timestamp
     intraday_df = intraday_df.sort_values('timestamp').copy()
