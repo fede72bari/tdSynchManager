@@ -662,27 +662,40 @@ class CoherenceChecker:
             except Exception:
                 return None
 
-        # Use manager's file listing to find the file for this day
+        # Use manager's file listing to find ALL files for this day
         files = self.manager._list_series_files(asset, symbol, interval, sink.lower())
 
-        # Find file for this specific date
-        target_file = None
+        # Find ALL files for this specific date (there may be multiple _partNN files)
+        target_files = []
         for f in files:
             if date_iso in f:
-                target_file = f
-                break
+                target_files.append(f)
 
-        if not target_file:
+        if not target_files:
             return None
 
-        # Read the file
+        # Read and concatenate ALL part files for this day
         try:
-            if sink.lower() == "csv":
-                df = pd.read_csv(target_file)
-            elif sink.lower() == "parquet":
-                df = pd.read_parquet(target_file)
-            else:
+            dfs = []
+            for target_file in target_files:
+                if sink.lower() == "csv":
+                    df_part = pd.read_csv(target_file)
+                elif sink.lower() == "parquet":
+                    df_part = pd.read_parquet(target_file)
+                else:
+                    continue
+
+                if not df_part.empty:
+                    dfs.append(df_part)
+
+            if not dfs:
                 return None
+
+            # Concatenate all parts
+            df = pd.concat(dfs, ignore_index=True)
+
+            # Remove duplicates if any (use all columns as key for safety)
+            df = df.drop_duplicates()
 
             return df
         except Exception:
@@ -891,8 +904,9 @@ class CoherenceChecker:
         segments = []
 
         # Find timestamp column
+        # Prefer quote_timestamp for options (has correct date), fallback to others
         ts_col = None
-        for col in ['timestamp', 'created', 'ms_of_day']:
+        for col in ['quote_timestamp', 'timestamp', 'created', 'ms_of_day']:
             if col in tick_df.columns:
                 ts_col = col
                 break

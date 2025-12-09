@@ -267,36 +267,30 @@ async def _fetch_intraday_bars(
 
     from io import StringIO
 
-    # Step 1: Get available expirations for this date
-    # (cannot use expiration="*" with date parameter)
-    exp_csv, _ = await manager.client.option_list_expirations(
-        symbol=symbol,
-        format_type="csv"
-    )
+    # Step 1: OPTIMIZED - Use same method as normal run to discover expirations
+    # Query ThetaData API for all expirations that traded on this date
+    # This is independent of local DB (for coherence checking) and very fast (1 API call)
+    print(f"[BUCKET-ANALYSIS] Querying ThetaData for expirations that traded on {date_iso}...")
+    active_expirations = await manager._expirations_that_traded(symbol, date_iso, req_type="trade")
 
-    if not exp_csv or exp_csv.strip() == "":
-        return None
-
-    exp_df = pd.read_csv(StringIO(exp_csv))
-
-    if exp_df.empty or 'expiration' not in exp_df.columns:
-        return None
-
-    # Convert date to datetime for comparison
-    target_date = pd.to_datetime(date_iso)
-
-    # Filter expirations: keep only those >= target_date
-    # (options expire on expiration date, so we need expirations that were active on target_date)
-    exp_df['expiration'] = pd.to_datetime(exp_df['expiration'])
-    active_expirations = exp_df[exp_df['expiration'] >= target_date]['expiration'].dt.strftime('%Y-%m-%d').tolist()
+    # Fallback to quotes if no trades found
+    if not active_expirations:
+        active_expirations = await manager._expirations_that_traded(symbol, date_iso, req_type="quote")
 
     if not active_expirations:
+        print(f"[BUCKET-ANALYSIS] No expirations found for {symbol} on {date_iso} (neither trades nor quotes)")
         return None
+
+    # Convert from YYYYMMDD to YYYY-MM-DD format for API calls
+    active_expirations = [
+        f"{exp[:4]}-{exp[4:6]}-{exp[6:8]}" if len(exp) == 8 else exp
+        for exp in active_expirations
+    ]
 
     # Step 2: Fetch intraday data for each expiration and concatenate
     all_dfs = []
 
-    print(f"[BUCKET-ANALYSIS] Found {len(active_expirations)} active expirations for {date_iso}")
+    print(f"[BUCKET-ANALYSIS] Found {len(active_expirations)} expirations with trading activity on {date_iso}")
 
     # Process ALL expirations (no arbitrary limit)
     # We need complete data to match EOD volume
@@ -329,7 +323,10 @@ async def _fetch_intraday_bars(
                 print(f"[BUCKET-ANALYSIS] Error fetching {exp}: {e}")
             continue
 
-    print(f"[BUCKET-ANALYSIS] Successfully fetched {success_count} expirations, {no_data_count} had no data (normal)")
+    if no_data_count > 0:
+        print(f"[BUCKET-ANALYSIS] Successfully fetched {success_count} expirations, {no_data_count} had no data (normal for illiquid strikes)")
+    else:
+        print(f"[BUCKET-ANALYSIS] Successfully fetched all {success_count} expirations with data")
 
     if not all_dfs:
         return None
