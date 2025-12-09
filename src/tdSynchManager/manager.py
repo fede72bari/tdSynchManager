@@ -1365,9 +1365,10 @@ class ThetaSyncManager:
                     _edge_jump_after_retro = False
 
             # >>> CHECK COMPLETEZZA PRIMO GIORNO (UNIVERSALE) <
-            if _first_day_db and day_iso == _first_day_db:
+            # Only skip first day if ignore_existing=True (otherwise we want to resume)
+            if task.ignore_existing and _first_day_db and day_iso == _first_day_db:
                 _day_complete = False
-                
+
                 if sink_lower == "influxdb":
                     prefix = (self.cfg.influx_measure_prefix or "")
                     if task.asset == "option":
@@ -1375,15 +1376,15 @@ class ThetaSyncManager:
                     else:
                         meas = f"{prefix}{symbol}-{task.asset}-{interval}"
                     _day_complete = self._influx_day_has_any(meas, day_iso)
-                
+
                 elif sink_lower in ("csv", "parquet"):
                     st = self._day_parts_status(task.asset, symbol, interval, sink_lower, day_iso)
                     _day_complete = (
-                        (not st.get("missing")) 
-                        and (not st.get("has_mixed")) 
+                        (not st.get("missing"))
+                        and (not st.get("has_mixed"))
                         and (1 in st.get("parts", []))
                     )
-                
+
                 if _day_complete:
                     print(f"[SKIP-MODE] skip first_day (complete) day={day_iso}")
                     continue
