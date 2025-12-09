@@ -188,6 +188,93 @@ class DataConsistencyLogger:
             details=details or {}
         )
 
+    def log_error(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        date: str,
+        error_type: str,
+        error_message: str,
+        severity: str = "ERROR",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        """Record a general error event with flexible parameters.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type ("stock", "option", "index").
+        symbol : str
+            Symbol identifier.
+        interval : str
+            Time interval.
+        date : str
+            ISO date or date range affected.
+        error_type : str
+            Type/category of error (e.g., "GREEKS_DOWNLOAD_FAILED").
+        error_message : str
+            Detailed error description.
+        severity : str, optional
+            Severity level ("ERROR", "CRITICAL"). Default: "ERROR".
+        details : Dict[str, Any], optional
+            Additional context as dictionary.
+        """
+        self._log_event(
+            event_type=error_type,
+            severity=severity,
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(date, date),
+            error_message=error_message,
+            retry_attempt=0,
+            resolution_status="PENDING",
+            details=details or {}
+        )
+
+    def log_warning(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        date: str,
+        warning_type: str,
+        warning_message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        """Record a warning event.
+
+        Parameters
+        ----------
+        asset : str
+            Asset type ("stock", "option", "index").
+        symbol : str
+            Symbol identifier.
+        interval : str
+            Time interval.
+        date : str
+            ISO date or date range affected.
+        warning_type : str
+            Type/category of warning (e.g., "OI_DOWNLOAD_EMPTY").
+        warning_message : str
+            Detailed warning description.
+        details : Dict[str, Any], optional
+            Additional context as dictionary.
+        """
+        self._log_event(
+            event_type=warning_type,
+            severity="WARNING",
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(date, date),
+            error_message=warning_message,
+            retry_attempt=0,
+            resolution_status="PENDING",
+            details=details or {}
+        )
+
     def log_resolution(
         self,
         symbol: str,

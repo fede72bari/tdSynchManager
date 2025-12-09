@@ -31,6 +31,7 @@ from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
 from .retry import retry_with_policy
 from .download_retry import download_with_retry_and_validation
+from .influx_retry import InfluxWriteRetry
 # Removed influx_verification imports - InfluxDB write() is synchronous and raises exceptions on failure
 
 try:  # optional at runtime
@@ -235,6 +236,15 @@ class ThetaSyncManager:
         # Ensure sink root exists
         self._root_sink_dir = os.path.join(self.cfg.root_dir, "data")
         os.makedirs(self._root_sink_dir, exist_ok=True)
+
+        # Initialize InfluxDB retry manager
+        failed_batch_dir = os.path.join(cache_dir, "failed_influx_batches")
+        self._influx_retry_mgr = InfluxWriteRetry(
+            max_retries=getattr(cfg, "influx_max_retries", 3),
+            base_delay=getattr(cfg, "influx_retry_delay", 5.0),
+            max_delay=60.0,
+            failed_batch_dir=failed_batch_dir
+        )
 
     # -------- Log display helper --------
     def show_logs(
@@ -746,6 +756,237 @@ class ThetaSyncManager:
             await self._sync_symbol(task, symbol, interval, first_date)
             
         
+    async def _fetch_available_dates_from_api(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        use_api_discovery: bool = True
+    ) -> Optional[set]:
+        """Query ThetaData API for available trading dates for a symbol.
+
+        Returns set of ISO date strings ('YYYY-MM-DD') or None if API call fails.
+        Automatically filters by date range if start_date/end_date provided.
+
+        Parameters
+        ----------
+        use_api_discovery : bool
+            If False, skip API querying and return None (fallback to day-by-day).
+            Useful for fast updates where you don't want to download full historical date list.
+        """
+        # Early exit if API discovery is disabled
+        if not use_api_discovery:
+            print(f"[API-DATES] API date discovery disabled for {symbol} - using fallback")
+            return None
+
+        print(f"[API-DATES][ENTER] asset={asset} symbol={symbol} interval={interval} start={start_date} end={end_date}")
+
+        try:
+            api_dates = None
+
+            if asset == "stock":
+                # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
+                api_response, _ = await self.client.stock_list_dates(symbol, data_type="trade", format_type="json")
+                api_dates = api_response.get("date", api_response) if isinstance(api_response, dict) else api_response
+
+            elif asset == "index":
+                # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
+                api_response, _ = await self.client.index_list_dates(symbol, data_type="ohlc", format_type="json")
+                api_dates = api_response.get("date", api_response) if isinstance(api_response, dict) else api_response
+
+            elif asset == "option":
+                # OPTIMIZED 2-step process for options:
+                # 1. Get all expirations
+                # 2. Find ONE expiration >= end_date (or closest if none >= end_date)
+                # 3. Get dates for ONLY that expiration (trading dates are same for all expirations)
+                print(f"[API-DATES][OPTION] Step 1: Fetching expirations for {symbol}...")
+                print(f"[API-DATES][OPTION] DEBUG: About to call option_list_expirations({symbol}, format_type='json')")
+
+                # Build URL for logging
+                exp_url = f"http://localhost:25503/v3/option/list/expirations?symbol={symbol}&format=json"
+                print(f"[API-DATES][OPTION] DEBUG: URL will be: {exp_url}")
+
+                try:
+                    print(f"[API-DATES][OPTION] DEBUG: CALLING await client.option_list_expirations() NOW for {symbol}...")
+                    # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
+                    exp_response, exp_url_returned = await self.client.option_list_expirations(symbol, format_type="json")
+                    print(f"[API-DATES][OPTION] DEBUG: RETURNED from option_list_expirations for {symbol}")
+                    print(f"[API-DATES][OPTION] DEBUG: URL returned: {exp_url_returned}")
+                    print(f"[API-DATES][OPTION] DEBUG: Response type={type(exp_response)}")
+                except Exception as e:
+                    print(f"[API-DATES][OPTION] ERROR: option_list_expirations failed for {symbol}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return None
+
+                expirations = exp_response.get("expiration", exp_response) if isinstance(exp_response, dict) else exp_response
+                print(f"[API-DATES][OPTION] DEBUG: Extracted {len(expirations) if expirations else 0} expirations")
+
+                if not expirations:
+                    print(f"[API-DATES][OPTION] No expirations found for {symbol}")
+                    return None
+
+                # ITERATIVE BACKWARD COVERAGE: Query multiple expirations to cover full historical range
+                # Convert expirations to dates for comparison
+                exp_dates = []
+                for exp_str in expirations:
+                    try:
+                        exp_date = dt.fromisoformat(exp_str).date()
+                        exp_dates.append((exp_str, exp_date))
+                    except:
+                        continue
+
+                if not exp_dates:
+                    print(f"[API-DATES][OPTION] No valid expiration dates for {symbol}")
+                    return None
+
+                # Sort by expiration date
+                exp_dates.sort(key=lambda x: x[1])
+
+                # Step 2: Iteratively query expirations backward until we cover start_date
+                all_api_dates = set()  # Use set to auto-deduplicate
+                current_end = end_date if end_date else exp_dates[-1][1]
+                iteration = 0
+                max_iterations = 100  # Safety limit to prevent infinite loops (increased from 10)
+
+                print(f"[API-DATES][OPTION] Starting iterative backward coverage from {current_end} to {start_date}")
+
+                while iteration < max_iterations:
+                    iteration += 1
+
+                    # Find expiration >= current_end (or closest if none >= current_end)
+                    target_expiration = None
+                    for exp_str, exp_date in exp_dates:
+                        if exp_date >= current_end:
+                            target_expiration = exp_str
+                            break
+
+                    # If no expiration >= current_end, use the most recent (last)
+                    if not target_expiration:
+                        target_expiration = exp_dates[-1][0]
+
+                    print(f"[API-DATES][OPTION] Iteration {iteration}: Fetching dates for expiration {target_expiration}...")
+
+                    try:
+                        # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
+                        dates_response, dates_url_returned = await self.client.option_list_dates(
+                            symbol=symbol,
+                            request_type="quote",
+                            expiration=target_expiration,
+                            format_type="json"
+                        )
+
+                        dates = dates_response.get("date", dates_response) if isinstance(dates_response, dict) else dates_response
+                        if not dates:
+                            print(f"[API-DATES][OPTION] No dates found for expiration {target_expiration}")
+                            break
+
+                        # Convert to date objects and add to set
+                        iteration_dates = []
+                        for date_str in dates:
+                            try:
+                                date_obj = dt.fromisoformat(date_str).date()
+                                all_api_dates.add(date_obj.isoformat())
+                                iteration_dates.append(date_obj)
+                            except:
+                                continue
+
+                        if not iteration_dates:
+                            print(f"[API-DATES][OPTION] No valid dates from expiration {target_expiration}")
+                            break
+
+                        # Find earliest date in this batch
+                        first_date = min(iteration_dates)
+                        print(f"[API-DATES][OPTION] Collected {len(iteration_dates)} dates, earliest={first_date}, total_unique={len(all_api_dates)}")
+
+                        # Check if we've covered the start_date
+                        if not start_date or first_date <= start_date:
+                            print(f"[API-DATES][OPTION] Coverage complete: first_date={first_date} <= start_date={start_date}")
+                            break
+
+                        # Move backward to cover the gap
+                        current_end = first_date
+                        print(f"[API-DATES][OPTION] Gap remaining, moving backward to {current_end}")
+
+                    except Exception as e:
+                        print(f"[API-DATES][OPTION] Error querying expiration {target_expiration}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        break
+
+                if iteration >= max_iterations:
+                    print(f"[API-DATES][OPTION] WARNING: Reached max iterations ({max_iterations}), may not have full coverage")
+
+                # Convert set to list for api_dates
+                api_dates = list(all_api_dates)
+                print(f"[API-DATES][OPTION] Final: Collected {len(api_dates)} unique dates across {iteration} expiration(s)")
+
+                # Debug: Show all discovered dates and coverage
+                if api_dates:
+                    sorted_dates = sorted(api_dates)
+                    print(f"[API-DATES][DEBUG] Discovered dates - First 10: {sorted_dates[:10]}")
+                    print(f"[API-DATES][DEBUG] Discovered dates - Last 10: {sorted_dates[-10:]}")
+                    print(f"[API-DATES][DEBUG] Date range: {sorted_dates[0]} to {sorted_dates[-1]}")
+
+                    # Show coverage gaps (weekends/holidays are normal, show gaps > 5 days)
+                    from datetime import timedelta
+                    gaps = []
+                    for i in range(len(sorted_dates) - 1):
+                        current = dt.fromisoformat(sorted_dates[i]).date()
+                        next_date = dt.fromisoformat(sorted_dates[i+1]).date()
+                        gap_days = (next_date - current).days - 1
+                        if gap_days > 5:  # Only show gaps > 5 days (weekends are normal)
+                            gaps.append(f"{current} to {next_date} ({gap_days} days)")
+                    if gaps:
+                        print(f"[API-DATES][DEBUG] Large gaps found (>5 days): {len(gaps)} gaps")
+                        for gap in gaps[:10]:  # Show first 10 gaps
+                            print(f"[API-DATES][DEBUG]   Gap: {gap}")
+                        if len(gaps) > 10:
+                            print(f"[API-DATES][DEBUG]   ... and {len(gaps) - 10} more gaps")
+
+                    # Show expected vs actual coverage
+                    if start_date and end_date:
+                        expected_first = start_date.isoformat()
+                        expected_last = end_date.isoformat()
+                        actual_first = sorted_dates[0]
+                        actual_last = sorted_dates[-1]
+
+                        if actual_first > expected_first:
+                            print(f"[API-DATES][DEBUG] WARNING: Missing coverage at start - Expected: {expected_first}, Got: {actual_first}")
+                        if actual_last < expected_last:
+                            print(f"[API-DATES][DEBUG] WARNING: Missing coverage at end - Expected: {expected_last}, Got: {actual_last}")
+
+                        if actual_first <= expected_first and actual_last >= expected_last:
+                            print(f"[API-DATES][DEBUG] Full coverage achieved: {actual_first} to {actual_last}")
+
+            if not api_dates:
+                return None
+
+            # Filter by date range if specified
+            print(f"[API-DATES][FILTER] Filtering {len(api_dates)} dates by range start={start_date} end={end_date}")
+            if start_date or end_date:
+                valid_dates = set()
+                for date_str in api_dates:
+                    try:
+                        date_obj = dt.fromisoformat(date_str).date()
+                        if (not start_date or date_obj >= start_date) and (not end_date or date_obj <= end_date):
+                            valid_dates.add(date_obj.isoformat())
+                    except:
+                        continue
+                print(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol}")
+                return valid_dates if valid_dates else None
+
+            print(f"[API-DATES][EXIT] Returning {len(api_dates)} unfiltered dates for {symbol}")
+            return set(api_dates) if api_dates else None
+
+        except Exception as e:
+            print(f"[API-DATES][ERROR] Failed to fetch available dates for {symbol} ({asset}): {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     async def _sync_symbol(self, task: Task, symbol: str, interval: str, first_date: Optional[str]) -> None:
         """Incrementally synchronizes a single symbol's time-series data with intelligent resume logic.
 
@@ -990,55 +1231,19 @@ class ThetaSyncManager:
                 # STRATEGIA: Prima prova a ottenere le date di trading valide dall'API
                 # Se l'API fornisce le date, usa quelle (evita weekend/festivi)
                 # Se l'API fallisce, controlla ogni giorno (metodo vecchio)
-                valid_trading_dates = None
+                print(f"[MILD-SKIP][API] Fetching valid trading dates for {symbol} (asset={task.asset})...")
+                valid_trading_dates = await self._fetch_available_dates_from_api(
+                    task.asset, symbol, interval, check_start, check_end,
+                    use_api_discovery=task.use_api_date_discovery
+                )
 
-                try:
-                    print(f"[MILD-SKIP][API] Fetching valid trading dates for {symbol} (asset={task.asset})...")
-
-                    if task.asset == "stock":
-                        # Chiama l'API per ottenere le date di trading valide per stock
-                        api_response, _ = await self.client.stock_list_dates(symbol, data_type="trade", format_type="json")
-                        # Estrai l'array di date dalla risposta JSON {"date": [...]}
-                        if isinstance(api_response, dict) and "date" in api_response:
-                            api_dates = api_response["date"]
-                        else:
-                            api_dates = api_response
-                        print(f"[MILD-SKIP][API] Stock API returned {len(api_dates) if api_dates else 0} total dates")
-                        if api_dates and len(api_dates) > 0:
-                            print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {api_dates[:3] if len(api_dates) >= 3 else api_dates}")
-                        valid_trading_dates = api_dates
-
-                    elif task.asset == "index":
-                        # Chiama l'API per ottenere le date di trading valide per index
-                        api_response, _ = await self.client.index_list_dates(symbol, data_type="ohlc", format_type="json")
-                        # Estrai l'array di date dalla risposta JSON {"date": [...]}
-                        if isinstance(api_response, dict) and "date" in api_response:
-                            api_dates = api_response["date"]
-                        else:
-                            api_dates = api_response
-                        print(f"[MILD-SKIP][API] Index API returned {len(api_dates) if api_dates else 0} total dates")
-                        if api_dates and len(api_dates) > 0:
-                            print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {api_dates[:3] if len(api_dates) >= 3 else api_dates}")
-                        valid_trading_dates = api_dates
-
-                    # Filtra solo le date nel range check_start..check_end
-                    if valid_trading_dates:
-                        valid_dates_in_range = set()
-                        for date_str in valid_trading_dates:
-                            try:
-                                date_obj = dt.fromisoformat(date_str).date()
-                                if check_start <= date_obj <= check_end:
-                                    valid_dates_in_range.add(date_obj.isoformat())
-                            except:
-                                continue
-
-                        print(f"[MILD-SKIP][API] Found {len(valid_dates_in_range)} valid trading dates in range {check_start}..{check_end}")
-                        valid_trading_dates = valid_dates_in_range
-
-                except Exception as e:
-                    print(f"[MILD-SKIP][API] Failed to fetch trading dates from API: {e}")
+                if valid_trading_dates:
+                    print(f"[MILD-SKIP][API] Found {len(valid_trading_dates)} valid trading dates in range {check_start}..{check_end}")
+                    if len(valid_trading_dates) > 0:
+                        sorted_dates = sorted(valid_trading_dates)
+                        print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {sorted_dates[:3] if len(sorted_dates) >= 3 else sorted_dates}")
+                else:
                     print(f"[MILD-SKIP][API] Falling back to day-by-day checking")
-                    valid_trading_dates = None
 
                 # Trova date mancanti
                 missing_dates = []
@@ -1122,28 +1327,42 @@ class ThetaSyncManager:
             return  # done for EOD stock/index
 
         # Day-by-day loop: options and intraday
+        # Fetch available dates from ThetaData API to iterate ONLY over real dates
+        print(f"[API-DATES] Fetching available dates for {symbol} ({task.asset}/{interval})...")
+        api_available_dates = await self._fetch_available_dates_from_api(
+            task.asset, symbol, interval, cur_date, end_date,
+            use_api_discovery=task.use_api_date_discovery
+        )
 
-        while cur_date <= end_date:
-            day_iso = cur_date.isoformat()
+        # Determine iteration strategy: API dates or fallback to day-by-day
+        if api_available_dates:
+            print(f"[API-DATES] Found {len(api_available_dates)} available dates, iterating only those")
+            # ITERATE ONLY OVER AVAILABLE DATES (no weekends/holidays)
+            dates_to_process = sorted(api_available_dates)
+        else:
+            print(f"[API-DATES] API query failed, using fallback day-by-day iteration")
+            # Fallback: generate all days in range (including weekends for filtering)
+            dates_to_process = []
+            temp_date = cur_date
+            while temp_date <= end_date:
+                dates_to_process.append(temp_date.isoformat())
+                temp_date += timedelta(days=1)
 
-            # >>> WEEKEND SKIP 
-            if dt.fromisoformat(day_iso).weekday() >= 5:
-                cur_date += timedelta(days=1)
+        # Main iteration loop over dates
+        for day_iso in dates_to_process:
+            # Skip weekends ONLY if using fallback (API dates already exclude them)
+            if api_available_dates is None and dt.fromisoformat(day_iso).weekday() >= 5:
                 continue
 
-            # >>> SALTO POST-RETRO (UNIVERSALE) 
+            # >>> SALTO POST-RETRO (UNIVERSALE) - skip dates before last_db
             if _edge_jump_after_retro and _first_day_db and day_iso >= _first_day_db:
                 if _last_day_db and day_iso < _last_day_db:
-                    # Per 1d salta a last_db+1 (giorno completo), per intraday a last_db (può mancare)
-                    if interval == "1d":
-                        jump_target = dt.fromisoformat(_last_day_db).date() + timedelta(days=1)
-                        print(f"[SKIP-MODE][JUMP] {day_iso} → {_last_day_db}+1 (daily complete)")
-                    else:
-                        jump_target = dt.fromisoformat(_last_day_db).date()
-                        print(f"[SKIP-MODE][JUMP] {day_iso} → {_last_day_db} (intraday may be incomplete)")
-                    cur_date = jump_target
-                    _edge_jump_after_retro = False
+                    # Skip all dates until we reach last_db
+                    print(f"[SKIP-MODE][JUMP] Skip {day_iso} (< last_db={_last_day_db})")
                     continue
+                elif _last_day_db and day_iso >= _last_day_db:
+                    # Reached last_db, stop skipping
+                    _edge_jump_after_retro = False
 
             # >>> CHECK COMPLETEZZA PRIMO GIORNO (UNIVERSALE) <
             if _first_day_db and day_iso == _first_day_db:
@@ -1167,7 +1386,6 @@ class ThetaSyncManager:
                 
                 if _day_complete:
                     print(f"[SKIP-MODE] skip first_day (complete) day={day_iso}")
-                    cur_date += timedelta(days=1)
                     continue
 
             # >>> EARLY-SKIP MIDDLE-DAY (UNIVERSALE) <
@@ -1176,7 +1394,6 @@ class ThetaSyncManager:
                 first_last_hint=(_first_day_db, _last_day_db)
             ):
                 print(f"[SKIP-MODE] skip middle day={day_iso}")
-                cur_date += timedelta(days=1)
                 continue
 
 
@@ -1200,9 +1417,8 @@ class ThetaSyncManager:
                     
                     if has_data:
                         print(f"[MILD-SKIP] skip middle-day with existing data: {day_iso}")
-                        cur_date += timedelta(days=1)
                         continue
-                        
+
             # calcola sempre sink_lower nel loop (può non essere definito qui)
             sink_lower = (task.sink or "").lower()
 
@@ -1210,7 +1426,6 @@ class ThetaSyncManager:
             if _mild_skip_policy and _last_day_db and day_iso == _last_day_db:
                 if interval == "1d":
                     print(f"[MILD-SKIP] skip last_day (1d complete): {day_iso}")
-                    cur_date += timedelta(days=1)
                     continue
             
             try:
@@ -1246,8 +1461,6 @@ class ThetaSyncManager:
                     message=f"Download and store failed: {str(e)}",
                     details={'error': str(e), 'error_type': type(e).__name__}
                 )
-
-            cur_date += timedelta(days=1)
 
     # --------------------- DATA DOWNLOAD & STORE ---------------------
 
@@ -1402,30 +1615,73 @@ class ThetaSyncManager:
                         rate_type="sofr",
                         format_type="csv",
                     )
-                    if csv_g:
-                        dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
-                        if dg is not None and not dg.empty:
-                            # Align strike columns
-                            if "strike_price" in dg.columns and "strike" not in dg.columns:
-                                dg = dg.rename(columns={"strike_price": "strike"})
-                            if "strike_price" in df.columns and "strike" not in df.columns:
-                                df = df.rename(columns={"strike_price": "strike"})
+                    if not csv_g:
+                        # STRICT MODE: Se enrich_greeks=True e greeks mancano → SKIP
+                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks download failed, skipping to allow coherence check detection"
+                        print(error_msg)
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="GREEKS_DOWNLOAD_FAILED",
+                                error_message="Greeks EOD download returned empty/None - skipping save for coherence check",
+                                severity="ERROR"
+                            )
+                        raise ValueError("Greeks EOD download failed - strict mode requires complete data")
 
-                            # Find join keys
-                            candidate_keys = [
-                                ["option_symbol"],
-                                ["root", "expiration", "strike", "right"],
-                                ["symbol", "expiration", "strike", "right"],
-                            ]
-                            on_cols = None
-                            for keys in candidate_keys:
-                                if all(k in df.columns for k in keys) and all(k in dg.columns for k in keys):
-                                    on_cols = keys
-                                    break
-                            if on_cols is not None:
-                                dup_cols = [c for c in dg.columns if c in df.columns and c not in on_cols]
-                                dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
-                                df = df.merge(dg, on=on_cols, how="left")
+                    dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
+                    if dg is None or dg.empty:
+                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks CSV empty, skipping to allow coherence check detection"
+                        print(error_msg)
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="GREEKS_CSV_EMPTY",
+                                error_message="Greeks EOD CSV parsed to empty DataFrame - skipping save",
+                                severity="ERROR"
+                            )
+                        raise ValueError("Greeks EOD CSV empty - strict mode requires complete data")
+
+                    # Align strike columns
+                    if "strike_price" in dg.columns and "strike" not in dg.columns:
+                        dg = dg.rename(columns={"strike_price": "strike"})
+                    if "strike_price" in df.columns and "strike" not in df.columns:
+                        df = df.rename(columns={"strike_price": "strike"})
+
+                    # Find join keys
+                    candidate_keys = [
+                        ["option_symbol"],
+                        ["root", "expiration", "strike", "right"],
+                        ["symbol", "expiration", "strike", "right"],
+                    ]
+                    on_cols = None
+                    for keys in candidate_keys:
+                        if all(k in df.columns for k in keys) and all(k in dg.columns for k in keys):
+                            on_cols = keys
+                            break
+                    if on_cols is not None:
+                        dup_cols = [c for c in dg.columns if c in df.columns and c not in on_cols]
+                        dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
+                        df = df.merge(dg, on=on_cols, how="left")
+                    else:
+                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks merge failed (no common join keys), skipping"
+                        print(error_msg)
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="GREEKS_MERGE_FAILED",
+                                error_message=f"No common join keys between OHLC and Greeks. OHLC cols: {list(df.columns)[:10]}, Greeks cols: {list(dg.columns)[:10]}",
+                                severity="ERROR"
+                            )
+                        raise ValueError("Greeks EOD merge failed - no common join keys")
 
                 # 2b) last_day_OI: Previous day OI
                 try:
@@ -1446,7 +1702,36 @@ class ThetaSyncManager:
                         right="both",
                         format_type="csv",
                     )
-                    if csv_oi:
+                    if not csv_oi:
+                        # STRICT MODE: OI mancante → skip se enrich_greeks=True
+                        if enrich_greeks:
+                            error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI download failed, skipping to allow coherence check detection"
+                            print(error_msg)
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="OI_DOWNLOAD_FAILED",
+                                    error_message=f"Open Interest download for date {cur_ymd} returned empty/None - skipping save",
+                                    severity="ERROR"
+                                )
+                            raise ValueError("OI download failed - strict mode requires complete data")
+                        else:
+                            # Log warning but continue if enrich_greeks=False
+                            warn_msg = f"[WARN] EOD OI download {symbol} {day_iso}: empty response (enrich_greeks=False, continuing)"
+                            print(warn_msg)
+                            if self.logger:
+                                self.logger.log_warning(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    warning_type="OI_DOWNLOAD_EMPTY",
+                                    warning_message=f"Open Interest download empty for {cur_ymd}"
+                                )
+                    else:
                         doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
                         if doi is not None and not doi.empty:
                             oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
@@ -1479,8 +1764,50 @@ class ThetaSyncManager:
                                     keep += ["effective_date_oi"]
                                     doi = doi[keep].drop_duplicates(subset=on_cols)
                                     df = df.merge(doi, on=on_cols, how="left")
+                        elif enrich_greeks:
+                            # OI CSV empty in strict mode
+                            error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI CSV empty, skipping"
+                            print(error_msg)
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="OI_CSV_EMPTY",
+                                    error_message=f"Open Interest CSV for {cur_ymd} parsed to empty DataFrame",
+                                    severity="ERROR"
+                                )
+                            raise ValueError("OI CSV empty - strict mode requires complete data")
                 except Exception as e:
-                    print(f"[WARN] EOD OI merge {symbol} {day_iso}: {e}")
+                    # Log and re-raise if strict mode
+                    if enrich_greeks:
+                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI merge error: {e}"
+                        print(error_msg)
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="OI_MERGE_ERROR",
+                                error_message=f"OI merge exception: {str(e)}",
+                                severity="ERROR"
+                            )
+                        raise
+                    else:
+                        # Just warn if not in strict mode
+                        warn_msg = f"[WARN] EOD OI merge {symbol} {day_iso}: {e}"
+                        print(warn_msg)
+                        if self.logger:
+                            self.logger.log_warning(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                warning_type="OI_MERGE_ERROR",
+                                warning_message=str(e)
+                            )
 
                 # 3) Normalize dtypes and dedupe
                 if "expiration" in df.columns:
@@ -1875,6 +2202,10 @@ class ThetaSyncManager:
                     if df is None or df.empty:
                         continue
 
+                    # STRICT MODE: Track if greeks/IV succeed when enrich_greeks=True
+                    greeks_success = True
+                    iv_success = True
+
                     if enrich_greeks:
                         kwargs = {
                             "symbol": symbol,
@@ -1888,50 +2219,138 @@ class ThetaSyncManager:
                         }
                         if bar_start_et is not None:
                             kwargs["start_time"] = bar_start_et
-                        
+
                         csv_gr_all, _ = await self._td_get_with_retry(
                             lambda: self.client.option_history_all_greeks(**kwargs),
                             label=f"greeks/all {symbol} {exp} {ymd} {interval}"
                         )
 
-                        if csv_gr_all:
+                        if not csv_gr_all:
+                            # STRICT MODE: Greeks download failed
+                            greeks_success = False
+                            error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks download failed"
+                            print(error_msg)
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="GREEKS_DOWNLOAD_FAILED_INTRADAY",
+                                    error_message=f"Greeks download failed for expiration {exp} - skipping expiration",
+                                    severity="WARNING"
+                                )
+                        else:
                             dg = pd.read_csv(io.StringIO(csv_gr_all), dtype=str)
-                            if dg is not None and not dg.empty:
+                            if dg is None or dg.empty:
+                                greeks_success = False
+                                error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks CSV empty"
+                                print(error_msg)
+                                if self.logger:
+                                    self.logger.log_error(
+                                        asset="option",
+                                        symbol=symbol,
+                                        interval=interval,
+                                        date=day_iso,
+                                        error_type="GREEKS_CSV_EMPTY_INTRADAY",
+                                        error_message=f"Greeks CSV empty for expiration {exp} - skipping expiration",
+                                        severity="WARNING"
+                                    )
+                            else:
                                 # collect once: postpone the join to after the main concat
                                 greeks_bar_list.append(dg)
 
                     # IV bars (bid/mid/ask) — collect once, merge later
-                    try:
-                        # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
-                        iv_kwargs = {
-                            "symbol": symbol,
-                            "expiration": exp,
-                            "date": ymd,
-                            "interval": interval,
-                            "rate_type": "sofr",
-                            "format_type": "csv"
-                        }
-                        if bar_start_et is not None:
-                            iv_kwargs["start_time"] = bar_start_et
+                    if enrich_greeks:
+                        try:
+                            # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                            iv_kwargs = {
+                                "symbol": symbol,
+                                "expiration": exp,
+                                "date": ymd,
+                                "interval": interval,
+                                "rate_type": "sofr",
+                                "format_type": "csv"
+                            }
+                            if bar_start_et is not None:
+                                iv_kwargs["start_time"] = bar_start_et
 
-                        csv_iv, _ = await self._td_get_with_retry(
-                                        lambda: self.client.option_history_implied_volatility(**iv_kwargs),
-                                        label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
+                            csv_iv, _ = await self._td_get_with_retry(
+                                            lambda: self.client.option_history_implied_volatility(**iv_kwargs),
+                                            label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
+                                        )
+                            if not csv_iv:
+                                iv_success = False
+                                error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV download failed"
+                                print(error_msg)
+                                if self.logger:
+                                    self.logger.log_error(
+                                        asset="option",
+                                        symbol=symbol,
+                                        interval=interval,
+                                        date=day_iso,
+                                        error_type="IV_DOWNLOAD_FAILED_INTRADAY",
+                                        error_message=f"IV download failed for expiration {exp} - skipping expiration",
+                                        severity="WARNING"
                                     )
-                        if csv_iv:
-                            div = pd.read_csv(io.StringIO(csv_iv), dtype=str)
-                            if div is not None and not div.empty:
-                                # collect once: postpone the join to after the main concat
-                                iv_bar_list.append(div)
-                    except Exception as e:
-                        print(f"[WARN] IV bars collect {symbol} {interval} {day_iso} exp={exp}: {e}")
+                            else:
+                                div = pd.read_csv(io.StringIO(csv_iv), dtype=str)
+                                if div is None or div.empty:
+                                    iv_success = False
+                                    error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV CSV empty"
+                                    print(error_msg)
+                                    if self.logger:
+                                        self.logger.log_error(
+                                            asset="option",
+                                            symbol=symbol,
+                                            interval=interval,
+                                            date=day_iso,
+                                            error_type="IV_CSV_EMPTY_INTRADAY",
+                                            error_message=f"IV CSV empty for expiration {exp} - skipping expiration",
+                                            severity="WARNING"
+                                        )
+                                else:
+                                    # collect once: postpone the join to after the main concat
+                                    iv_bar_list.append(div)
+                        except Exception as e:
+                            iv_success = False
+                            error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV exception: {e}"
+                            print(error_msg)
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="IV_EXCEPTION_INTRADAY",
+                                    error_message=f"IV download exception for expiration {exp}: {str(e)}",
+                                    severity="WARNING"
+                                )
 
-                    dfs.append(df)
+                    # STRICT MODE: Only append OHLC if greeks/IV succeeded (or enrich_greeks=False)
+                    if not enrich_greeks or (greeks_success and iv_success):
+                        dfs.append(df)
+                    else:
+                        skip_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: OHLC not saved due to incomplete greeks/IV"
+                        print(skip_msg)
 
                 except Exception as e:
                     print(f"[WARN] option intraday {symbol} {interval} {day_iso} exp={exp}: {e}")
 
         if not dfs:
+            # STRICT MODE: All expirations failed or were skipped
+            error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: no data saved (all expirations failed/skipped)"
+            print(error_msg)
+            if self.logger:
+                self.logger.log_error(
+                    asset="option",
+                    symbol=symbol,
+                    interval=interval,
+                    date=day_iso,
+                    error_type="ALL_EXPIRATIONS_FAILED",
+                    error_message=f"All expirations failed or skipped - no data saved for entire day (enrich_greeks={enrich_greeks})",
+                    severity="ERROR"
+                )
             return
 
         df_all = pd.concat(dfs, ignore_index=True)
@@ -3789,31 +4208,47 @@ class ThetaSyncManager:
                     meas = f"{prefix}{symbol}-option-{interval}"
                 else:
                     meas = f"{prefix}{symbol}-{asset}-{interval}"
-                
+
                 try:
+                    import time
+                    from datetime import timezone
                     cli = self._ensure_influx_client()
-                    
-                    # MIN(time)
-                    q_min = f'SELECT MIN(time) AS t FROM "{meas}"'
-                    t = cli.query(q_min)
-                    df_min = t.to_pandas() if hasattr(t, "to_pandas") else t
+
+                    print(f"[INFLUX-META-QUERY][START] Querying first/last timestamp from Parquet metadata for '{meas}'...")
+                    t0 = time.time()
+
+                    # Query Parquet file metadata instead of scanning all data
+                    # This is MUCH faster: reads KB of metadata instead of GB of data
+                    sql = f"""
+                    SELECT MIN(min_time) AS start_ts, MAX(max_time) AS end_ts
+                    FROM system.parquet_files
+                    WHERE table_name = '{meas}'
+                    """
+
+                    result = cli.query(sql)
+                    df = result.to_pandas() if hasattr(result, "to_pandas") else result
+
                     first_ts = None
-                    if df_min is not None and len(df_min) and "t" in df_min.columns:
-                        v = df_min.iloc[0]["t"]
-                        first_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
-                    
-                    # MAX(time)
-                    q_max = f'SELECT MAX(time) AS t FROM "{meas}"'
-                    t = cli.query(q_max)
-                    df_max = t.to_pandas() if hasattr(t, "to_pandas") else t
                     last_ts = None
-                    if df_max is not None and len(df_max) and "t" in df_max.columns:
-                        v = df_max.iloc[0]["t"]
-                        last_ts = pd.to_datetime(v, utc=True, errors="coerce") if pd.notna(v) else None
-                    
+
+                    if df is not None and len(df) > 0:
+                        row = df.iloc[0]
+
+                        # start_ts and end_ts are in nanoseconds
+                        if pd.notna(row.get("start_ts")):
+                            start_ns = row["start_ts"]
+                            first_ts = pd.Timestamp(start_ns, unit='ns', tz='UTC')
+
+                        if pd.notna(row.get("end_ts")):
+                            end_ns = row["end_ts"]
+                            last_ts = pd.Timestamp(end_ns, unit='ns', tz='UTC')
+
                     first_day = first_ts.tz_convert("America/New_York").date().isoformat() if first_ts else None
                     last_day = last_ts.tz_convert("America/New_York").date().isoformat() if last_ts else None
-                    
+
+                    total_elapsed = time.time() - t0
+                    print(f"[INFLUX-META-QUERY][COMPLETE] Total time: {total_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
+
                     return first_day, last_day
                 except Exception as e:
                     print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
@@ -3876,7 +4311,8 @@ class ThetaSyncManager:
 
 
     def _missing_1d_days_csv(self, asset: str, symbol: str, interval: str, sink: str,
-                             first_day: str, last_day: str) -> list[str]:
+                             first_day: str, last_day: str,
+                             api_available_dates: Optional[set] = None) -> list[str]:
         """Identify missing business days in a daily (1d) time series by scanning all CSV parts.
 
         This method reads through the base CSV file and all rotated part files (_partNN) to determine
@@ -3941,8 +4377,11 @@ class ThetaSyncManager:
             df = self._influx_query_dataframe(query)
             if df.empty:
                 # No data found - all days are missing
-                expected = pd.bdate_range(first_day, last_day, freq="C")
-                return [d.date().isoformat() for d in expected]
+                if api_available_dates:
+                    return sorted(list(api_available_dates))
+                else:
+                    expected = pd.bdate_range(first_day, last_day, freq="C")
+                    return [d.date().isoformat() for d in expected]
 
             # Extract observed dates
             observed_days = set()
@@ -3955,14 +4394,22 @@ class ThetaSyncManager:
                     continue
 
             if not observed_days:
-                expected = pd.bdate_range(first_day, last_day, freq="C")
-                return [d.date().isoformat() for d in expected]
+                if api_available_dates:
+                    return sorted(list(api_available_dates))
+                else:
+                    expected = pd.bdate_range(first_day, last_day, freq="C")
+                    return [d.date().isoformat() for d in expected]
 
-            # Compare with expected business days
+            # Compare with expected business days (or API available dates)
             observed = pd.DatetimeIndex(pd.to_datetime(sorted(observed_days))).normalize()
-            expected = pd.bdate_range(first_day, last_day, freq="C")
-            missing = expected.difference(observed)
-            return [d.date().isoformat() for d in missing]
+            if api_available_dates:
+                # Use API dates instead of business days
+                missing = api_available_dates - set(observed_days)
+                return sorted(list(missing))
+            else:
+                expected = pd.bdate_range(first_day, last_day, freq="C")
+                missing = expected.difference(observed)
+                return [d.date().isoformat() for d in missing]
 
         # Original file-based logic for CSV/Parquet
         series_dir = os.path.join(self.cfg.root_dir, "data", asset, symbol, interval, sink_lower)
@@ -3998,11 +4445,17 @@ class ThetaSyncManager:
     
         if not observed_days:
             return []
-    
-        observed = pd.DatetimeIndex(pd.to_datetime(sorted(observed_days))).normalize()
-        expected = pd.bdate_range(first_day, last_day, freq="C")  # Mon-Fri (festività escluse)
-        missing = expected.difference(observed)
-        return [d.date().isoformat() for d in missing]
+
+        # Compare with expected business days (or API available dates)
+        if api_available_dates:
+            # Use API dates instead of business days
+            missing = api_available_dates - observed_days
+            return sorted(list(missing))
+        else:
+            observed = pd.DatetimeIndex(pd.to_datetime(sorted(observed_days))).normalize()
+            expected = pd.bdate_range(first_day, last_day, freq="C")  # Mon-Fri (festività escluse)
+            missing = expected.difference(observed)
+            return [d.date().isoformat() for d in missing]
                 
 
     def _debug_log_resume(self, task, symbol: str, interval: str, sink: str,
@@ -4809,8 +5262,14 @@ class ThetaSyncManager:
         if not hasattr(self, "_influx_seen_measurements"):
             self._influx_seen_measurements = set()
         if measurement not in self._influx_seen_measurements:
-            if self._influx_last_timestamp(measurement) is None:
-                print(f"[INFLUX] creating new table {measurement}")
+            try:
+                if self._influx_last_timestamp(measurement) is None:
+                    print(f"[INFLUX] creating new table {measurement}")
+            except Exception as e:
+                # Connection/timeout errors re-raised from _influx_last_timestamp
+                print(f"[INFLUX][FATAL] Cannot connect to InfluxDB server: {e}")
+                print(f"[INFLUX][FATAL] Please check that InfluxDB is running and accessible at {self.cfg.influx_url}")
+                raise RuntimeError(f"InfluxDB connection failed: {e}") from e
             self._influx_seen_measurements.add(measurement)
     
         # 1) Individua la colonna tempo e normalizza ET-naive -> UTC-aware
@@ -4933,39 +5392,40 @@ class ThetaSyncManager:
         if not lines:
             return 0
     
-        # 6) Scrittura (nessun cutoff): scriviamo tutto ciò che resta dopo il dedup
+        # 6) Scrittura con retry automatico
         batch = int(max(1, getattr(self.cfg, "influx_write_batch", 5000)))
         written = 0
         total = len(lines)
+        total_batches = (total + batch - 1) // batch
+
         for i in range(0, total, batch):
             chunk = lines[i:i+batch]
-            try:
-                ret = cli.write(record=chunk)
-                warn = getattr(ret, "warnings", None) if ret is not None else None
-                errs = getattr(ret, "errors", None)   if ret is not None else None
-                stats = getattr(ret, "stats", None)   if ret is not None else None
+            batch_idx = i // batch + 1
 
-                print(f"[INFLUX][WRITE] measurement={measurement} "
-                      f"batch={i//batch+1}/{(total+batch-1)//batch} points={len(chunk)} "
-                      f"status={'ok' if not errs else 'partial/error'}")
+            # Metadata per recovery
+            metadata = {
+                'measurement': measurement,
+                'total_lines': total,
+                'batch_size': len(chunk)
+            }
 
-                if stats is not None:
-                    print(f"[INFLUX][STATS] {stats}")
-                if warn:
-                    try:
-                        print(f"[INFLUX][WARN] {warn}")
-                    except Exception:
-                        pass
+            # Usa retry manager
+            success = self._influx_retry_mgr.write_with_retry(
+                client=cli,
+                lines=chunk,
+                measurement=measurement,
+                batch_idx=batch_idx,
+                metadata=metadata
+            )
 
+            if success:
                 written += len(chunk)
-            except Exception as e:
-                # Check for InfluxDB auth errors (401/403)
-                err_msg = str(e).lower()
-                if 'unauthorized' in err_msg or '401' in err_msg or '403' in err_msg or 'forbidden' in err_msg:
-                    print(f"[INFLUX][FATAL] Authentication/authorization failed: {e}")
-                    raise InfluxDBAuthError(f"InfluxDB write failed - auth error: {e}") from e
-                print(f"[INFLUX][ERROR] write failed batch={i//batch+1}: {type(e).__name__}: {e}")
-    
+                print(f"[INFLUX][WRITE] measurement={measurement} "
+                      f"batch={batch_idx}/{total_batches} points={len(chunk)} status=ok")
+            else:
+                print(f"[INFLUX][WRITE] measurement={measurement} "
+                      f"batch={batch_idx}/{total_batches} points={len(chunk)} status=FAILED (saved for recovery)")
+
         return written
     
 
@@ -5159,29 +5619,39 @@ class ThetaSyncManager:
         - For InfluxDB sink, queries the database for MIN(time) and MAX(time).
         """
 
-        # Handle InfluxDB sink by querying the database
+        # Handle InfluxDB sink by querying Parquet metadata (FAST)
         if sink_lower == "influxdb":
-            measurement = f"{symbol}-{asset}-{interval}"
-            query = f"""
-                SELECT MIN(time) AS min_time, MAX(time) AS max_time
-                FROM "{measurement}"
+            prefix = (self.cfg.influx_measure_prefix or "")
+            if asset == "option":
+                measurement = f"{prefix}{symbol}-option-{interval}"
+            else:
+                measurement = f"{prefix}{symbol}-{asset}-{interval}"
+
+            # Query Parquet file metadata instead of scanning all data
+            # This is MUCH faster: reads KB of metadata instead of GB of data
+            sql = f"""
+            SELECT MIN(min_time) AS start_ts, MAX(max_time) AS end_ts
+            FROM system.parquet_files
+            WHERE table_name = '{measurement}'
             """
 
-            df = self._influx_query_dataframe(query)
+            df = self._influx_query_dataframe(sql)
             if df.empty:
                 return None, None, []
 
-            # Extract min and max timestamps
-            min_time = self._extract_scalar_from_df(df, ["min_time", "MIN", "min"])
-            max_time = self._extract_scalar_from_df(df, ["max_time", "MAX", "max"])
+            # Extract min and max timestamps (in nanoseconds)
+            start_ns = self._extract_scalar_from_df(df, ["start_ts"])
+            end_ns = self._extract_scalar_from_df(df, ["end_ts"])
 
-            if min_time is None or max_time is None:
+            if start_ns is None or end_ns is None:
                 return None, None, []
 
-            # Convert to date strings (YYYY-MM-DD)
+            # Convert nanoseconds to date strings (YYYY-MM-DD)
             try:
-                earliest_date = pd.to_datetime(min_time).strftime("%Y-%m-%d")
-                latest_date = pd.to_datetime(max_time).strftime("%Y-%m-%d")
+                first_ts = pd.Timestamp(start_ns, unit='ns', tz='UTC')
+                last_ts = pd.Timestamp(end_ns, unit='ns', tz='UTC')
+                earliest_date = first_ts.strftime("%Y-%m-%d")
+                latest_date = last_ts.strftime("%Y-%m-%d")
                 return earliest_date, latest_date, []
             except Exception:
                 return None, None, []
@@ -6151,7 +6621,21 @@ class ThetaSyncManager:
                     v = df.iloc[0][col]
                     ts = pd.to_datetime(v, utc=True) if pd.notna(v) else None
                     return ts
-        except Exception:
+        except Exception as e:
+            # Discriminate between connection/timeout errors vs table-not-found
+            err_msg = str(e).lower()
+
+            # Connection/timeout errors → Re-raise (don't create table)
+            if any(x in err_msg for x in ['timeout', 'connection', 'unavailable', 'failed to connect', 'unreachable']):
+                print(f"[INFLUX][ERROR] Connection/timeout error checking table {measurement}: {e}")
+                raise  # Re-raise to signal server is down
+
+            # Table not found errors → Return None (OK to create table)
+            if any(x in err_msg for x in ['not found', 'does not exist', 'unknown table', 'no such table']):
+                return None  # Table doesn't exist, OK to create
+
+            # Other errors → Return None but log warning
+            print(f"[INFLUX][WARN] Unexpected error checking table {measurement}: {e}")
             return None
         return None
 

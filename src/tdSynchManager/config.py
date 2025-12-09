@@ -152,6 +152,10 @@ class Task:
         Controls discovery behavior (auto/force/skip, request type, fallbacks).
     ignore_existing: bool
         Ignore last datetime in the database and restart from the given date.
+    use_api_date_discovery : bool
+        If True (default), query ThetaData API for available trading dates to avoid
+        querying non-existent dates. Set to False for fast updates (skip->last_date to now)
+        to avoid downloading full historical date list (useful for options with many expirations).
     """
 
     asset: str
@@ -165,6 +169,7 @@ class Task:
     end_date_override: Optional[str] = None
     discover_policy: DiscoverPolicy = field(default_factory=DiscoverPolicy)
     ignore_existing: bool = False
+    use_api_date_discovery: bool = True
 
 
 _TRUE_VALUES = {"1", "true", "t", "y", "yes", "on"}

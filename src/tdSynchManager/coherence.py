@@ -211,13 +211,29 @@ class CoherenceChecker:
         check_start = start_date or local_range[0]
         check_end = end_date or local_range[1]
 
+        # Fetch available dates from ThetaData API
+        from datetime import datetime as dt
+        start_dt = dt.fromisoformat(check_start).date() if check_start else None
+        end_dt = dt.fromisoformat(check_end).date() if check_end else None
+
+        print(f"[COHERENCE][API-DATES] Fetching available dates for {symbol} ({asset}/{interval})...")
+        api_available_dates = await self.manager._fetch_available_dates_from_api(
+            asset, symbol, interval, start_dt, end_dt,
+            use_api_discovery=True  # Always use API discovery for coherence checks
+        )
+
+        if api_available_dates:
+            print(f"[COHERENCE][API-DATES] Found {len(api_available_dates)} available dates for coherence check")
+        else:
+            print(f"[COHERENCE][API-DATES] API query failed, using fallback date generation")
+
         # Perform interval-specific checks
         if interval == "1d":
-            await self._check_eod_completeness(report, check_start, check_end)
+            await self._check_eod_completeness(report, check_start, check_end, api_available_dates)
         elif interval != "tick":
-            await self._check_intraday_completeness(report, check_start, check_end)
+            await self._check_intraday_completeness(report, check_start, check_end, api_available_dates)
         else:
-            await self._check_tick_completeness(report, check_start, check_end)
+            await self._check_tick_completeness(report, check_start, check_end, api_available_dates)
 
         # Update coherence status
         report.is_coherent = len(report.issues) == 0
@@ -228,7 +244,8 @@ class CoherenceChecker:
         self,
         report: CoherenceReport,
         start_date: str,
-        end_date: str
+        end_date: str,
+        api_available_dates: Optional[set] = None
     ):
         """Check EOD data completeness.
 
@@ -240,6 +257,8 @@ class CoherenceChecker:
             Start date (YYYY-MM-DD).
         end_date : str
             End date (YYYY-MM-DD).
+        api_available_dates : Optional[set]
+            Set of available dates from ThetaData API (if fetched).
         """
         # Get missing days from Manager
         missing_days = self.manager._missing_1d_days_csv(
@@ -248,7 +267,8 @@ class CoherenceChecker:
             report.interval,
             report.sink,
             start_date,
-            end_date
+            end_date,
+            api_available_dates
         )
 
         if not missing_days:
@@ -275,7 +295,8 @@ class CoherenceChecker:
         self,
         report: CoherenceReport,
         start_date: str,
-        end_date: str
+        end_date: str,
+        api_available_dates: Optional[set] = None
     ):
         """Check intraday data completeness.
 
@@ -293,17 +314,23 @@ class CoherenceChecker:
             Start date (YYYY-MM-DD).
         end_date : str
             End date (YYYY-MM-DD).
+        api_available_dates : Optional[set]
+            Set of available dates from ThetaData API (if fetched).
         """
         from .validator import DataValidator
 
-        # Generate date range
-        dates = self._generate_date_range(start_date, end_date)
+        # Determine which dates to check
+        if api_available_dates:
+            dates = sorted(list(api_available_dates))
+        else:
+            dates = self._generate_date_range(start_date, end_date)
 
         for date_iso in dates:
-            # Skip weekends
-            date_obj = datetime.fromisoformat(date_iso)
-            if date_obj.weekday() >= 5:  # Saturday or Sunday
-                continue
+            # Skip weekends (only if using fallback date generation)
+            if api_available_dates is None:
+                date_obj = datetime.fromisoformat(date_iso)
+                if date_obj.weekday() >= 5:  # Saturday or Sunday
+                    continue
 
             # Try to read data for this day from local storage
             # Use Manager's methods to access local data
@@ -378,7 +405,8 @@ class CoherenceChecker:
         self,
         report: CoherenceReport,
         start_date: str,
-        end_date: str
+        end_date: str,
+        api_available_dates: Optional[set] = None
     ):
         """Check tick data completeness vs EOD volumes.
 
@@ -394,17 +422,23 @@ class CoherenceChecker:
             Start date (YYYY-MM-DD).
         end_date : str
             End date (YYYY-MM-DD).
+        api_available_dates : Optional[set]
+            Set of available dates from ThetaData API (if fetched).
         """
         from .validator import DataValidator
 
-        # Generate date range
-        dates = self._generate_date_range(start_date, end_date)
+        # Determine which dates to check
+        if api_available_dates:
+            dates = sorted(list(api_available_dates))
+        else:
+            dates = self._generate_date_range(start_date, end_date)
 
         for date_iso in dates:
-            # Skip weekends
-            date_obj = datetime.fromisoformat(date_iso)
-            if date_obj.weekday() >= 5:
-                continue
+            # Skip weekends (only if using fallback date generation)
+            if api_available_dates is None:
+                date_obj = datetime.fromisoformat(date_iso)
+                if date_obj.weekday() >= 5:
+                    continue
 
             try:
                 # Read tick data for this day

@@ -158,7 +158,14 @@ class ThetaDataV3Client:
             # At this point, __aenter__ has been called and the session is ready
             data, url = await client.stock_snapshot_ohlc("AAPL")
         """
-        self.session = aiohttp.ClientSession(timeout=self._timeout)
+        # Create TCPConnector with limits that support concurrent requests safely
+        connector = aiohttp.TCPConnector(
+            limit=100,  # Total connection limit
+            limit_per_host=30,  # Connections per host
+            force_close=False,  # Reuse connections
+            enable_cleanup_closed=True  # Clean up closed connections
+        )
+        self.session = aiohttp.ClientSession(timeout=self._timeout, connector=connector)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
