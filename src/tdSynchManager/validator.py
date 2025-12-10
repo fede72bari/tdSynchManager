@@ -397,10 +397,36 @@ class DataValidator:
             # Both must be within tolerance
             is_valid = diff_call_pct <= tolerance and diff_put_pct <= tolerance
 
-            # Log volume validation results
+            # Log volume validation results (console + structured log)
             print(f"[TICK-VOLUME] {date_iso} Call: sum({volume_col})={int(tick_call_volume)} eod_volume={int(eod_volume_call)} diff={diff_call_pct:.2%}")
             print(f"[TICK-VOLUME] {date_iso} Put: sum({volume_col})={int(tick_put_volume)} eod_volume={int(eod_volume_put)} diff={diff_put_pct:.2%}")
             print(f"[TICK-VOLUME] {date_iso} Total: tick={int(tick_call_volume + tick_put_volume)} eod={int(eod_volume_call + eod_volume_put)} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
+
+            # Structured log for volume validation statistics
+            from .logging_utils import get_global_logger
+            logger = get_global_logger()
+            if logger:
+                logger.log_info(
+                    symbol="",
+                    asset=asset,
+                    interval="tick",
+                    date_range=(date_iso, date_iso),
+                    message=f"VOLUME_VALIDATION: {'PASS' if is_valid else 'FAIL'}",
+                    details={
+                        'tick_call_volume': int(tick_call_volume),
+                        'tick_put_volume': int(tick_put_volume),
+                        'tick_total': int(tick_call_volume + tick_put_volume),
+                        'eod_call_volume': int(eod_volume_call),
+                        'eod_put_volume': int(eod_volume_put),
+                        'eod_total': int(eod_volume_call + eod_volume_put),
+                        'diff_call_pct': round(diff_call_pct * 100, 2),
+                        'diff_put_pct': round(diff_put_pct * 100, 2),
+                        'diff_call_abs': int(abs(tick_call_volume - eod_volume_call)),
+                        'diff_put_abs': int(abs(tick_put_volume - eod_volume_put)),
+                        'tolerance_pct': round(tolerance * 100, 2),
+                        'result': 'PASS' if is_valid else 'FAIL'
+                    }
+                )
 
             return ValidationResult(
                 valid=is_valid,
@@ -434,8 +460,28 @@ class DataValidator:
 
             is_valid = diff_pct <= tolerance
 
-            # Log volume validation results
+            # Log volume validation results (console + structured log)
             print(f"[TICK-VOLUME] {date_iso} sum({volume_col})={int(tick_volume)} eod_volume={int(eod_volume)} diff={diff_pct:.2%} diff_abs={int(abs(tick_volume - eod_volume))} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
+
+            # Structured log for volume validation statistics
+            from .logging_utils import get_global_logger
+            logger = get_global_logger()
+            if logger:
+                logger.log_info(
+                    symbol="",
+                    asset=asset,
+                    interval="tick",
+                    date_range=(date_iso, date_iso),
+                    message=f"VOLUME_VALIDATION: {'PASS' if is_valid else 'FAIL'}",
+                    details={
+                        'tick_volume': int(tick_volume),
+                        'eod_volume': int(eod_volume),
+                        'diff_pct': round(diff_pct * 100, 2),
+                        'diff_abs': int(abs(tick_volume - eod_volume)),
+                        'tolerance_pct': round(tolerance * 100, 2),
+                        'result': 'PASS' if is_valid else 'FAIL'
+                    }
+                )
 
             return ValidationResult(
                 valid=is_valid,

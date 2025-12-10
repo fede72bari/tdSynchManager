@@ -225,7 +225,7 @@ async def analyze_tick_buckets(
                 print(f"  Difference: {total_diff_pct:.1%}")
                 print(f"  This suggests incomplete intraday data (missing expirations or strikes)")
 
-        # Log summary
+        # Log summary (console + structured log)
         print(f"\n[BUCKET-ANALYSIS] {date_iso} - Summary:")
         print(f"  Total buckets: {len(report.buckets)}")
         print(f"  Coherent buckets: {sum(1 for b in report.buckets if b.is_coherent)}")
@@ -241,6 +241,36 @@ async def analyze_tick_buckets(
             for b in problematic:
                 print(f"  [{b.bucket_start}-{b.bucket_end}] tick={int(b.tick_volume)} "
                       f"intraday={int(b.intraday_volume)} diff={b.diff_pct:.2%} ticks={b.tick_count}")
+
+        # Structured log for bucket analysis statistics
+        from .logging_utils import get_global_logger
+        logger = get_global_logger()
+        if logger:
+            logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval="tick",
+                date_range=(date_iso, date_iso),
+                message=f"BUCKET_ANALYSIS_SUMMARY: {'COHERENT' if report.is_coherent else 'INCOHERENT'}",
+                details={
+                    'total_buckets': len(report.buckets),
+                    'coherent_buckets': sum(1 for b in report.buckets if b.is_coherent),
+                    'problematic_buckets': sum(1 for b in report.buckets if not b.is_coherent),
+                    'total_tick_volume': int(report.total_tick_volume),
+                    'total_intraday_volume': int(report.total_intraday_volume),
+                    'overall_coherent': report.is_coherent,
+                    'problematic_bucket_details': [
+                        {
+                            'bucket': f"{b.bucket_start}-{b.bucket_end}",
+                            'tick_volume': int(b.tick_volume),
+                            'intraday_volume': int(b.intraday_volume),
+                            'diff_pct': round(b.diff_pct * 100, 2),
+                            'tick_count': b.tick_count
+                        }
+                        for b in problematic
+                    ] if problematic else []
+                }
+            )
 
     except Exception as e:
         print(f"[BUCKET-ANALYSIS] Error during analysis: {e}")

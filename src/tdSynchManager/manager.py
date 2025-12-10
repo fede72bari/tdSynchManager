@@ -523,9 +523,25 @@ class ThetaSyncManager:
 
         # If we got here and validation_passed is still True, or non-strict mode
         if validation_passed:
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message="VALIDATION_DECISION: All checks passed - data will be saved",
+                details={"strict_mode": strict_mode, "decision": "SAVE", "reason": "validation_passed"}
+            )
             return True
         else:
             # Non-strict mode: warnings logged but allow save
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message="VALIDATION_DECISION: Validation warnings - data saved with warnings (non-strict mode)",
+                details={"strict_mode": strict_mode, "decision": "SAVE_WITH_WARNINGS", "reason": "non_strict_mode_allows_save"}
+            )
             return True
 
     async def _get_eod_volume_for_validation(
@@ -1553,7 +1569,7 @@ class ThetaSyncManager:
           when possible.
         """
 
-        # Log start of download (console + parquet)
+        # Log start of download (console + parquet with ALL parameters)
         print(f"[DOWNLOAD-START] {symbol} option/{interval} day={day_iso} sink={sink} enrich_greeks={enrich_greeks}")
         self.logger.log_info(
             symbol=symbol,
@@ -1561,7 +1577,18 @@ class ThetaSyncManager:
             interval=interval,
             date_range=(day_iso, day_iso),
             message=f"DOWNLOAD_START: sink={sink} enrich_greeks={enrich_greeks}",
-            details={"sink": sink, "enrich_greeks": enrich_greeks, "enrich_tick_greeks": enrich_tick_greeks}
+            details={
+                "sink": sink,
+                "enrich_greeks": enrich_greeks,
+                "enrich_tick_greeks": enrich_tick_greeks,
+                "validation_enabled": self.cfg.enable_data_validation,
+                "validation_strict_mode": self.cfg.validation_strict_mode,
+                "tick_eod_volume_tolerance": self.cfg.tick_eod_volume_tolerance,
+                "intraday_bucket_tolerance": self.cfg.intraday_bucket_tolerance,
+                "max_concurrency": self.cfg.max_concurrency,
+                "max_file_mb": self.cfg.max_file_mb,
+                "overlap_seconds": self.cfg.overlap_seconds
+            }
         )
 
         sink_lower = sink.lower()
@@ -10376,14 +10403,23 @@ class ThetaSyncManager:
         # Initialize checker
         checker = CoherenceChecker(self)
 
-        # Log coherence check start
+        # Log coherence check start with ALL parameters
         self.logger.log_info(
             symbol=symbol,
             asset=asset,
             interval=interval,
             date_range=(start_date or "", end_date or ""),
             message=f"COHERENCE_CHECK_START: checking data completeness for {symbol} {asset}/{interval}",
-            details={"sink": sink, "start_date": start_date, "end_date": end_date}
+            details={
+                "sink": sink,
+                "start_date": start_date,
+                "end_date": end_date,
+                "validation_enabled": self.cfg.enable_data_validation,
+                "validation_strict_mode": self.cfg.validation_strict_mode,
+                "tick_eod_volume_tolerance": self.cfg.tick_eod_volume_tolerance,
+                "intraday_bucket_tolerance": self.cfg.intraday_bucket_tolerance,
+                "enable_bucket_analysis": getattr(self.cfg, 'enable_bucket_analysis', True)
+            }
         )
 
         # Perform coherence check
