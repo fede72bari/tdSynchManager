@@ -6640,7 +6640,7 @@ class ResilientThetaClient:
     Example Usage
     -------------
     ```python
-    from tdSynchManager.client import ThetaDataV3Client, ResilientThetaClient
+    from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client, ResilientThetaClient
     from tdSynchManager.logger import DataConsistencyLogger
 
     # Initialize logger and base client

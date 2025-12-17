@@ -25,7 +25,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .client import Interval, ThetaDataV3Client, ResilientThetaClient
+from .ThetaDataV3Client import Interval, ThetaDataV3Client, ResilientThetaClient
 from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
 from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
@@ -113,7 +113,7 @@ def install_td_server_error_logger(client):
     Example Usage
     -------------
     # Enable detailed error logging for ThetaData API requests
-    from tdSynchManager.client import ThetaDataV3Client
+    from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
     client = ThetaDataV3Client(base_url="http://localhost:25503/v3")
     install_td_server_error_logger(client)
     # Now all failed requests will log detailed error information
@@ -196,7 +196,7 @@ class ThetaSyncManager:
         -------------
         # Initialize the sync manager with configuration and client
         from tdSynchManager import ManagerConfig, ThetaSyncManager
-        from tdSynchManager.client import ThetaDataV3Client
+        from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
         cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
         async with ThetaDataV3Client(base_url="http://localhost:25503/v3") as client:
@@ -719,7 +719,7 @@ class ThetaSyncManager:
         -------------
         # Run synchronization tasks for multiple symbols and intervals
         from tdSynchManager import Task, ThetaSyncManager, ManagerConfig
-        from tdSynchManager.client import ThetaDataV3Client
+        from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
         cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
         async with ThetaDataV3Client() as client:
@@ -1893,6 +1893,9 @@ class ThetaSyncManager:
                 return
             # ===== /DOWNLOAD WITH RETRY AND VALIDATION =====
 
+            # Normalizza timestamp a UTC per tutte le colonne temporali
+            df = self._normalize_ts_to_utc(df)
+
 
             # 3) persist + written rows counting
             st = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
@@ -1900,8 +1903,9 @@ class ThetaSyncManager:
 
             wrote = 0
             if sink_lower == "csv":
-                await self._append_csv_text(base_path, df.to_csv(index=False), asset="option", interval=interval)
-                wrote = len(df)
+                df_out = self._format_dt_columns_isoz(df)
+                await self._append_csv_text(base_path, df_out.to_csv(index=False), asset="option", interval=interval)
+                wrote = len(df_out)
             elif sink_lower == "parquet":
                 wrote = self._append_parquet_df(base_path, df, asset="option", interval=interval)
             elif sink_lower == "influxdb":
@@ -2103,6 +2107,7 @@ class ThetaSyncManager:
                         continue                 
                         
                     df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
+                    df = self._normalize_ts_to_utc(df)
                     df = self._normalize_df_types(df)
                     if df is None or df.empty:
                         continue
@@ -2112,14 +2117,7 @@ class ThetaSyncManager:
                     if "timestamp" not in df.columns:
                         if "trade_timestamp" not in df.columns:
                             raise RuntimeError("Expected 'trade_timestamp' in tick TQ response.")
-                        df["timestamp"] = pd.to_datetime(df["trade_timestamp"], errors="coerce")
-                        # Ensure ET-naive timestamps (manager expects ET-naive everywhere).
-                        if getattr(df["timestamp"].dtype, "tz", None) is not None:
-                            df["timestamp"] = (
-                                df["timestamp"]
-                                .dt.tz_convert(ZoneInfo("America/New_York"))
-                                .dt.tz_localize(None)
-                            )
+                        df["timestamp"] = pd.to_datetime(df["trade_timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
                     # ### <<< TICK — CANONICAL TIMESTAMP FROM trade_timestamp — END
 
 
@@ -2136,6 +2134,7 @@ class ThetaSyncManager:
                             )
                             if csv_tg:
                                 dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
+                                dg = self._normalize_ts_to_utc(dg)
                                 dg = self._normalize_df_types(dg)
                                 if dg is not None and not dg.empty:
 
@@ -2172,6 +2171,7 @@ class ThetaSyncManager:
                             )
                             if csv_tiv:
                                 divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
+                                divt = self._normalize_ts_to_utc(divt)
                                 divt = self._normalize_df_types(divt)
                                 if divt is not None and not divt.empty:
                                     # prefer a clear name to avoid confusion with bar-level IV
@@ -2229,6 +2229,7 @@ class ThetaSyncManager:
                     df = pd.read_csv(io.StringIO(csv_ohlc), dtype=str)
                     if df is None or df.empty:
                         continue
+                    df = self._normalize_ts_to_utc(df)
 
                     # STRICT MODE: Track if greeks/IV succeed when enrich_greeks=True
                     greeks_success = True
@@ -2285,6 +2286,7 @@ class ThetaSyncManager:
                                         severity="WARNING"
                                     )
                             else:
+                                dg = self._normalize_ts_to_utc(dg)
                                 # collect once: postpone the join to after the main concat
                                 greeks_bar_list.append(dg)
 
@@ -2338,6 +2340,7 @@ class ThetaSyncManager:
                                             severity="WARNING"
                                         )
                                 else:
+                                    div = self._normalize_ts_to_utc(div)
                                     # collect once: postpone the join to after the main concat
                                     iv_bar_list.append(div)
                         except Exception as e:
@@ -2383,6 +2386,10 @@ class ThetaSyncManager:
 
         df_all = pd.concat(dfs, ignore_index=True)
 
+        # NOTE: Timestamps are already normalized to UTC by _normalize_ts_to_utc()
+        # called on each individual df before concat (line 2239), so NO need to call again here
+        # to avoid double conversion (ET->UTC->UTC which would add +5 hours twice)
+
         # DEBUG: righe totali e conteggio per scadenza
         try:
             n_rows = len(df_all)
@@ -2401,6 +2408,7 @@ class ThetaSyncManager:
             # 1) Greeks (all)
             if greeks_bar_list:
                 dg_all = pd.concat(greeks_bar_list, ignore_index=True)
+                # NOTE: Already normalized at line 2296, no need to convert again
                 # normalizza colonne per join robusto
                 if "strike_price" in dg_all.columns and "strike" not in dg_all.columns:
                     dg_all = dg_all.rename(columns={"strike_price": "strike"})
@@ -2426,6 +2434,7 @@ class ThetaSyncManager:
             # 2) IV bar (endpoint implied_volatility returns 'implied_vol' column)
             if iv_bar_list:
                 div_all = pd.concat(iv_bar_list, ignore_index=True)
+                # NOTE: Already normalized at line 2350, no need to convert again
                 # ThetaData V3 API returns 'implied_vol' not 'implied_volatility'
                 if "implied_vol" in div_all.columns and "bar_iv" not in div_all.columns:
                     div_all = div_all.rename(columns={"implied_vol": "bar_iv"})
@@ -2592,11 +2601,9 @@ class ThetaSyncManager:
         time_candidates = ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"]
         tcol = next((c for c in time_candidates if c in df_all.columns), None)
         if tcol:
-            # Parse as ET-naive; if any tz-aware values exist, convert to ET and drop tz.
-            tmp = pd.to_datetime(df_all[tcol], errors="coerce")
-            if getattr(tmp.dtype, "tz", None) is not None:
-                tmp = tmp.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-            df_all[tcol] = tmp
+            # Parse as UTC-naive; if any tz-aware values exist, convert to UTC and drop tz.
+            tmp = pd.to_datetime(df_all[tcol], errors="coerce", utc=True)
+            df_all[tcol] = tmp.dt.tz_convert("UTC").dt.tz_localize(None)
             order_cols = [tcol] + [c for c in ["expiration","right","strike","root","option_symbol","symbol"] if c in df_all.columns]
             # mergesort => stabile: mantiene l’ordine relativo dentro stesso ts
             df_all = df_all.sort_values(order_cols, kind="mergesort").reset_index(drop=True)
@@ -2698,9 +2705,7 @@ class ThetaSyncManager:
                     d = _read_minimal(path, [tcol])
                     if tcol not in d.columns:
                         return None
-                    ts = pd.to_datetime(d[tcol], errors="coerce")
-                    if getattr(ts.dtype, "tz", None) is not None:
-                        ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                    ts = pd.to_datetime(d[tcol], errors="coerce", utc=True).dt.tz_convert("UTC").dt.tz_localize(None)
                     return ts.max() if ts.notna().any() else None
                 except Exception:
                     return None
@@ -2716,12 +2721,10 @@ class ThetaSyncManager:
         
         # >>> FILTER + BOUNDARY DEDUP 
         if cutoff is not None:
-            # Normalizza left side (df_all) a ET-naive
-            ts_all = pd.to_datetime(df_all[tcol_df], errors="coerce")
-            if getattr(ts_all.dtype, "tz", None) is not None:
-                ts_all = ts_all.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+            # Normalizza left side (df_all) a UTC-naive
+            ts_all = pd.to_datetime(df_all[tcol_df], errors="coerce", utc=True).dt.tz_convert("UTC").dt.tz_localize(None)
             
-            cutoff_naive = pd.to_datetime(cutoff).tz_localize(None) if hasattr(cutoff, 'tz') else cutoff
+            cutoff_naive = pd.to_datetime(cutoff, utc=True).tz_convert("UTC").tz_localize(None) if hasattr(cutoff, 'tz') else cutoff
             
             # Filtro > cutoff (mantiene solo nuovi dati)
             df_tail = df_all.loc[ts_all > cutoff_naive].copy()
@@ -2743,7 +2746,7 @@ class ThetaSyncManager:
                         # Normalizza timestamp chunk
                         ts_chunk = pd.to_datetime(last_chunk[tcol_df], errors="coerce")
                         if getattr(ts_chunk.dtype, "tz", None) is not None:
-                            ts_chunk = ts_chunk.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                            ts_chunk = ts_chunk.dt.tz_convert("UTC").dt.tz_localize(None)
                         last_chunk[tcol_df] = ts_chunk
                         
                         # Prendi solo ultime 1000 righe
@@ -2789,9 +2792,8 @@ class ThetaSyncManager:
         if "timestamp" not in df_all.columns:
             raise RuntimeError("Manca la colonna 'timestamp' nel df_all (opzioni intraday).")
         
-        ts = pd.to_datetime(df_all["timestamp"], errors="coerce")   # NO utc=True
-        if getattr(ts.dtype, "tz", None) is not None:
-            ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+        ts = pd.to_datetime(df_all["timestamp"], errors="coerce", utc=True)
+        ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
         df_all["timestamp"] = ts
         order_cols = ["timestamp"] + [c for c in ["expiration","right","strike","root","option_symbol","symbol"] if c in df_all.columns]
         df_all = df_all.sort_values(order_cols, kind="mergesort").reset_index(drop=True)
@@ -2853,8 +2855,13 @@ class ThetaSyncManager:
         # --- scrittura "normale" ---
         wrote = 0
         if sink_lower == "csv":
-            await self._append_csv_text(base_path, df_all.to_csv(index=False), asset="option", interval=interval)
-            wrote = len(df_all)
+            df_out = self._format_dt_columns_isoz(df_all)
+            print(f"[WRITE-CSV] About to write {len(df_out)} rows to base_path={base_path}")
+            csv_text = df_out.to_csv(index=False)
+            print(f"[WRITE-CSV] CSV text size: {len(csv_text)} bytes, first 200 chars: {csv_text[:200]}")
+            await self._append_csv_text(base_path, csv_text, asset="option", interval=interval)
+            print(f"[WRITE-CSV] _append_csv_text() completed")
+            wrote = len(df_out)
         elif sink_lower == "parquet":
             wrote = self._append_parquet_df(base_path, df_all, asset="option", interval=interval)
         elif sink_lower == "influxdb":
@@ -3136,6 +3143,9 @@ class ThetaSyncManager:
         if df_day is None or df_day.empty:
             return
 
+        # Normalize timestamps to UTC (naive) right after download
+        df_day = self._normalize_ts_to_utc(df_day)
+
         # -------------------------------
         # 3) RESOLVE SERIES BASE PATH
         # -------------------------------
@@ -3235,9 +3245,8 @@ class ThetaSyncManager:
             )
             if tcol:
                 # Normalizza timestamp (ET-naive)
-                ts = pd.to_datetime(df_day[tcol], errors="coerce")
-                if getattr(ts.dtype, "tz", None) is not None:
-                    ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                ts = pd.to_datetime(df_day[tcol], errors="coerce", utc=True)
+                ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
                 df_day[tcol] = ts
 
                 dedupe_cols = [tcol]
@@ -3274,11 +3283,11 @@ class ThetaSyncManager:
         # -------------------------------
         wrote = 0
         if sink_lower == "csv":
-            await self._append_csv_text(base_path, csv_txt, asset=asset, interval=interval)
-            wrote = len(df_day)
+            df_out = self._format_dt_columns_isoz(df_day)
+            await self._append_csv_text(base_path, df_out.to_csv(index=False), asset=asset, interval=interval)
+            wrote = len(df_out)
         elif sink_lower == "parquet":
-            self._write_parquet_from_csv(base_path, csv_txt, asset=asset, interval=interval)
-            wrote = len(df_day)
+            wrote = self._append_parquet_df(base_path, df_day, asset=asset, interval=interval)
         elif sink_lower == "influxdb":
             # InfluxDB write with verification and retry
             measurement = self._influx_measurement_from_base(base_path)
@@ -4840,11 +4849,13 @@ class ThetaSyncManager:
                 continue
     
             # scrivi header (se serve) + chunk
+            print(f"[_append_csv_text] Writing to target={target}, write_header={write_header}, chunk_size={len(chunk)}")
             with open(target, "a", encoding="utf-8", newline="") as f:
                 if write_header:
                     f.write(header + "\n")
                 if chunk:
                     f.write("\n".join(chunk) + "\n")
+            print(f"[_append_csv_text] Write completed, file size now={os.path.getsize(target)}")
     
             # rimuovi dal body ciò che è stato scritto; se finito -> stop
             body = body[len(chunk):]
@@ -5013,9 +5024,7 @@ class ThetaSyncManager:
                             try:
                                 tail_df = pd.read_parquet(latest_part).tail(500)
                                 if ts_col in tail_df.columns:
-                                    tail_ts = pd.to_datetime(tail_df[ts_col], errors="coerce")
-                                    if getattr(tail_ts.dtype, "tz", None) is not None:
-                                        tail_ts = tail_ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                                    tail_ts = pd.to_datetime(tail_df[ts_col], errors="coerce", utc=True).dt.tz_convert("UTC").dt.tz_localize(None)
                                     existing_ts = set(tail_ts.dropna())
                                     if existing_ts:
                                         use_seq = (interval == "tick" and "sequence" in df_new.columns and "sequence" in tail_df.columns)
@@ -5135,11 +5144,9 @@ class ThetaSyncManager:
         if df_new.empty:
             return
 
-        # Normalizza tipi chiave come nel writer Parquet
+        # Normalizza tipi chiave come nel writer Parquet (timestamp già in UTC naive/string)
         if "timestamp" in df_new.columns:
-            df_new["timestamp"] = pd.to_datetime(df_new["timestamp"], errors="coerce")
-            if getattr(df_new["timestamp"].dtype, "tz", None) is not None:
-                df_new["timestamp"] = df_new["timestamp"].dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+            df_new["timestamp"] = pd.to_datetime(df_new["timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
 
         if "expiration" in df_new.columns:
             df_new["expiration"] = pd.to_datetime(df_new["expiration"], errors="coerce").dt.date
@@ -5160,6 +5167,77 @@ class ThetaSyncManager:
         return written
 
 
+    def _normalize_ts_to_utc(
+        self,
+        df: pd.DataFrame,
+        *,
+        datetime_cols: Iterable[str] | None = None,
+        date_only_cols: Iterable[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Convert all datetime-like columns from ET to UTC (naive) preserving ns precision.
+
+        ThetaData API restituisce timestamp in ET (America/New_York timezone).
+        Questa funzione converte ET → UTC.
+        """
+        if df is None or df.empty:
+            return df
+
+        dt_cols = list(datetime_cols) if datetime_cols else [
+            "timestamp", "trade_timestamp", "bar_timestamp", "datetime",
+            "created", "last_trade", "quote_timestamp", "timestamp_oi",
+            "underlying_timestamp", "time", "date"
+        ]
+        date_cols = list(date_only_cols) if date_only_cols else ["expiration", "effective_date_oi"]
+
+        out = df.copy()
+
+        for col in dt_cols:
+            if col in out.columns:
+                s = pd.to_datetime(out[col], errors="coerce")
+
+                # Timestamps are in ET - convert to UTC
+                if getattr(s.dtype, "tz", None) is None:
+                    # Naive timestamp: assume ET, convert to UTC
+                    try:
+                        s = s.dt.tz_localize("US/Eastern", nonexistent="shift_forward", ambiguous="NaT")
+                    except:
+                        # Fallback if pandas has issues
+                        s = s.dt.tz_localize("US/Eastern", nonexistent="shift_forward")
+                else:
+                    # Already has timezone: convert to ET first
+                    s = s.dt.tz_convert("US/Eastern")
+
+                # Convert to UTC and remove timezone info
+                out[col] = s.dt.tz_convert("UTC").dt.tz_localize(None)
+
+        for col in date_cols:
+            if col in out.columns:
+                out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
+
+        return out
+
+
+    def _format_dt_columns_isoz(self, df: pd.DataFrame, datetime_cols: Iterable[str] | None = None) -> pd.DataFrame:
+        """
+        Convert datetime columns (already UTC-naive or UTC tz-aware) to ISO-8601 strings with trailing 'Z'.
+        Preserves sub-second precision up to ns as provided by pandas Timestamp.isoformat().
+        """
+        if df is None or df.empty:
+            return df
+        cols = list(datetime_cols) if datetime_cols else [
+            "timestamp", "trade_timestamp", "bar_timestamp", "datetime",
+            "created", "last_trade", "quote_timestamp", "timestamp_oi",
+            "underlying_timestamp", "time", "date"
+        ]
+        out = df.copy()
+        for col in cols:
+            if col in out.columns:
+                s = pd.to_datetime(out[col], errors="coerce", utc=True)
+                out[col] = s.apply(lambda x: x.isoformat().replace("+00:00", "Z") if pd.notna(x) else None)
+        return out
+
+
     def _normalize_df_types(
         self,
         df: pd.DataFrame,
@@ -5170,13 +5248,17 @@ class ThetaSyncManager:
         Heuristic normalization: parse timestamps/dates, convert numerics where safe,
         and leave known categorical columns as strings. Designed to avoid arithmetic
         on stringified numbers (e.g., mixed-format CSV payloads).
+
+        NOTE: Timezone conversion is handled by _normalize_ts_to_utc() which should be
+        called BEFORE this function. This function only ensures proper dtype parsing.
         """
         if df is None or df.empty:
             return df
 
         df_norm = df.copy()
 
-        # Known timestamp-like columns (parse to UTC-aware, keep NaT on failure)
+        # Known timestamp-like columns - just ensure they're datetime type, NO timezone conversion
+        # (timezone conversion is already handled by _normalize_ts_to_utc())
         ts_candidates = [
             "timestamp", "trade_timestamp", "bar_timestamp", "datetime",
             "created", "last_trade", "date", "time", "timestamp_oi",
@@ -5184,10 +5266,9 @@ class ThetaSyncManager:
         ]
         for col in ts_candidates:
             if col in df_norm.columns:
-                df_norm[col] = pd.to_datetime(df_norm[col], errors="coerce", utc=True)
-                # Normalize to ET-naive when the rest of the pipeline expects ET
-                if getattr(df_norm[col].dtype, "tz", None) is not None:
-                    df_norm[col] = df_norm[col].dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
+                # Only parse to datetime if not already datetime type, no timezone operations
+                if not pd.api.types.is_datetime64_any_dtype(df_norm[col]):
+                    df_norm[col] = pd.to_datetime(df_norm[col], errors="coerce")
 
         # Date-only columns
         date_cols = ["expiration", "effective_date_oi"]
@@ -5255,9 +5336,10 @@ class ThetaSyncManager:
             raise RuntimeError("No time column found while preparing data for Influx verification.")
 
         series = pd.to_datetime(df_ts[tcol], errors="coerce")
-        if getattr(series.dtype, "tz", None) is not None:
-            series = series.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-        series = series.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
+        if getattr(series.dtype, "tz", None) is None:
+            series = series.dt.tz_localize("UTC")
+        else:
+            series = series.dt.tz_convert("UTC")
         df_ts["__ts_utc"] = series
         return df_ts
 
@@ -5300,7 +5382,7 @@ class ThetaSyncManager:
                 raise RuntimeError(f"InfluxDB connection failed: {e}") from e
             self._influx_seen_measurements.add(measurement)
     
-        # 1) Individua la colonna tempo e normalizza ET-naive -> UTC-aware
+        # 1) Individua la colonna tempo e normalizza in UTC
         t_candidates = ["timestamp","trade_timestamp","bar_timestamp","datetime","created","last_trade","date","time"]
         tcol = next((c for c in t_candidates if c in df_new.columns), None)
         if not tcol:
@@ -5308,10 +5390,10 @@ class ThetaSyncManager:
 
         # Let pandas infer timestamp format automatically
         s = pd.to_datetime(df_new[tcol], errors="coerce")
-        # se già tz-aware, portala a ET naive per coerenza e poi rilocalizza
-        if getattr(s.dtype, "tz", None) is not None:
-            s = s.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-        s = s.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
+        if getattr(s.dtype, "tz", None) is None:
+            s = s.dt.tz_localize("UTC")
+        else:
+            s = s.dt.tz_convert("UTC")
     
         df = df_new.copy()
         df["__ts_utc"] = s
@@ -5346,9 +5428,10 @@ class ThetaSyncManager:
             if _c in df.columns:
                 # Let pandas infer timestamp format automatically
                 _ts = pd.to_datetime(df[_c], errors="coerce")
-                if getattr(_ts.dtype, "tz", None) is not None:
-                    _ts = _ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-                _ts = _ts.dt.tz_localize(ZoneInfo("America/New_York"), nonexistent="shift_forward", ambiguous="NaT").dt.tz_convert("UTC")
+                if getattr(_ts.dtype, "tz", None) is None:
+                    _ts = _ts.dt.tz_localize("UTC")
+                else:
+                    _ts = _ts.dt.tz_convert("UTC")
                 try:
                     ns = _ts.astype("int64", copy=False).astype("float64")
                 except Exception:
@@ -6223,8 +6306,7 @@ class ThetaSyncManager:
 
     def _last_csv_timestamp(self, path: str) -> Optional[str]:
         """
-        Return the last timestamp of the CSV **as naive ET string** ("YYYY-MM-DD HH:MM:SS").
-        ThetaData intraday history CSVs carry ET times without timezone info.
+        Return the last timestamp of the CSV as ISO UTC string with Z.
         """
 
         if not os.path.exists(path):
@@ -6242,21 +6324,12 @@ class ThetaSyncManager:
     
         try:
             s = pd.read_csv(path, usecols=[tcol], dtype=str)[tcol]
-            # Parse **without** assuming UTC; treat values as naive ET.
-            ts = pd.to_datetime(s, errors="coerce")
-    
-            # If any timezone-aware values slip in, convert to ET and drop tz.
-            if getattr(ts.dtype, "tz", None) is not None:
-                try:
-                    ts = ts.dt.tz_convert(ZoneInfo("America/New_York")).dt.tz_localize(None)
-                except Exception:
-                    ts = ts.dt.tz_localize(None)
-    
+            ts = pd.to_datetime(s, errors="coerce", utc=True)
+            ts = ts.dt.tz_convert("UTC")
             ts = ts.dropna()
             if ts.empty:
                 return None
-            # Return as naive ET string (no 'Z')
-            return ts.iloc[-1].strftime("%Y-%m-%d %H:%M:%S")
+            return ts.iloc[-1].isoformat().replace("+00:00", "Z")
         except Exception:
             return None
 

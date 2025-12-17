@@ -417,10 +417,10 @@ class ResilientThetaClient:
 ```
 
 **Verifica Codice**:
-- ✅ **WRAPPER CREATO**: `client.py:47-120` (`ResilientThetaClient`)
-- ✅ **RECONNECT LOGIC**: `client.py:76-107`
+- ✅ **WRAPPER CREATO**: `ThetaDataV3Client.py:47-120` (`ResilientThetaClient`)
+- ✅ **RECONNECT LOGIC**: `ThetaDataV3Client.py:76-107`
 - ✅ **MAX ATTEMPTS**: Configurabile `session_closed_max_attempts` (default 1)
-- ✅ **LOGGING**: `client.py:92-95, 102-107`
+- ✅ **LOGGING**: `ThetaDataV3Client.py:92-95, 102-107`
 - ❌ **NON USATO**: Manager usa `ThetaDataV3Client` direttamente, NON wrapper
 
 **Stato**: ⚠️ **PARZIALE** (wrapper esiste ma non usato in manager)

@@ -174,13 +174,10 @@ class DataValidator:
                 details={'expected': 'N/A', 'actual': 0}
             )
 
-        ts_series = pd.to_datetime(df[ts_col], errors="coerce")
-        ts_series = ts_series.dropna()
-        # Porta i timestamp in ET (ThetaData intraday è in ET) e gestisci DST in modo tollerante
-        ts_series = ts_series.dt.tz_localize(
-            "America/New_York",
-            nonexistent="shift_forward",
-            ambiguous="NaT"
+        ts_series = pd.to_datetime(df[ts_col], errors="coerce", utc=True).dropna()
+        # Converti a ET per contare i bucket di mercato, gestendo DST
+        ts_series = ts_series.dt.tz_convert(
+            "America/New_York"
         ).dropna()
 
         if ts_series.empty:
@@ -403,8 +400,9 @@ class DataValidator:
             print(f"[TICK-VOLUME] {date_iso} Total: tick={int(tick_call_volume + tick_put_volume)} eod={int(eod_volume_call + eod_volume_put)} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             # Structured log for volume validation statistics
-            from .logging_utils import get_global_logger
-            logger = get_global_logger()
+            # Note: DataValidator is stateless and doesn't have access to manager.logger
+            # Print statements above already provide detailed output
+            logger = None
             if logger:
                 logger.log_info(
                     symbol="",
@@ -464,8 +462,9 @@ class DataValidator:
             print(f"[TICK-VOLUME] {date_iso} sum({volume_col})={int(tick_volume)} eod_volume={int(eod_volume)} diff={diff_pct:.2%} diff_abs={int(abs(tick_volume - eod_volume))} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             # Structured log for volume validation statistics
-            from .logging_utils import get_global_logger
-            logger = get_global_logger()
+            # Note: DataValidator is stateless and doesn't have access to manager.logger
+            # Print statements above already provide detailed output
+            logger = None
             if logger:
                 logger.log_info(
                     symbol="",
@@ -638,7 +637,7 @@ class DataValidator:
 
         # Sort by timestamp
         df_sorted = df.sort_values('timestamp').copy()
-        timestamps = pd.to_datetime(df_sorted['timestamp']).dropna().drop_duplicates()
+        timestamps = pd.to_datetime(df_sorted['timestamp'], errors="coerce", utc=True).dropna().drop_duplicates()
 
         # Calculate expected delta
         if interval.endswith('m'):

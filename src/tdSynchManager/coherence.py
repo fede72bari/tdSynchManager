@@ -446,6 +446,7 @@ class CoherenceChecker:
 
                 if tick_df is None or tick_df.empty:
                     report.is_coherent = False
+                    report.missing_days.append(date_iso)  # Add to missing_days so recovery can handle it
                     report.issues.append(CoherenceIssue(
                         issue_type="MISSING_TICK_DATA",
                         severity="ERROR",
@@ -813,15 +814,15 @@ class CoherenceChecker:
 
         try:
             if ts_col == 'ms_of_day':
-                # Convert ms_of_day to datetime
+                # Convert ms_of_day to datetime (ms_of_day represents ET time)
                 base_date = pd.to_datetime(date_iso)
-                df['_parsed_time'] = base_date + pd.to_timedelta(df[ts_col], unit='ms')
+                df['_parsed_time'] = (base_date + pd.to_timedelta(df[ts_col], unit='ms')).dt.tz_localize("America/New_York")
             else:
-                df['_parsed_time'] = pd.to_datetime(df[ts_col], errors='coerce')
+                df['_parsed_time'] = pd.to_datetime(df[ts_col], errors='coerce', utc=True).dt.tz_convert("America/New_York")
 
             # Market hours: 9:30 AM - 4:00 PM ET
-            market_start = pd.to_datetime(f"{date_iso} 09:30:00")
-            market_end = pd.to_datetime(f"{date_iso} 16:00:00")
+            market_start = pd.Timestamp(f"{date_iso} 09:30:00", tz="America/New_York")
+            market_end = pd.Timestamp(f"{date_iso} 16:00:00", tz="America/New_York")
 
             # Create 30-minute segments
             segment_duration = timedelta(minutes=30)
@@ -923,14 +924,15 @@ class CoherenceChecker:
             tick_df = tick_df.copy()
 
             if ts_col == 'ms_of_day':
+                # ms_of_day represents ET time, not UTC
                 base_date = pd.to_datetime(date_iso)
-                tick_df['_parsed_time'] = base_date + pd.to_timedelta(tick_df[ts_col], unit='ms')
+                tick_df['_parsed_time'] = (base_date + pd.to_timedelta(tick_df[ts_col], unit='ms')).dt.tz_localize("America/New_York")
             else:
-                tick_df['_parsed_time'] = pd.to_datetime(tick_df[ts_col], errors='coerce')
+                tick_df['_parsed_time'] = pd.to_datetime(tick_df[ts_col], errors='coerce', utc=True).dt.tz_convert("America/New_York")
 
             # Market hours: 9:30 AM - 4:00 PM ET
-            market_start = pd.to_datetime(f"{date_iso} 09:30:00")
-            market_end = pd.to_datetime(f"{date_iso} 16:00:00")
+            market_start = pd.Timestamp(f"{date_iso} 09:30:00", tz="America/New_York")
+            market_end = pd.Timestamp(f"{date_iso} 16:00:00", tz="America/New_York")
 
             # Create segments (default 30 minutes, configurable)
             # Use manager config if available, otherwise default to 30 minutes
@@ -1127,7 +1129,7 @@ class IncoherenceRecovery:
                     return True
 
         try:
-            self.manager._purge_day_files(asset, symbol, 'tick', sink, date_iso)
+            self.manager._purge_day_files(asset, symbol, interval, sink, date_iso)
             # Download with validation enabled to ensure data quality
             await self.manager._download_and_store_options(
                 symbol=symbol,

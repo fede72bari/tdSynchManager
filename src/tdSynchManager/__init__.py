@@ -33,7 +33,7 @@ __version__ = _detect_version()
 # === >>> VERSION METADATA — END
 
 # === >>> PUBLIC API RE-EXPORTS — BEGIN
-from .client import ThetaDataV3Client
+from .ThetaDataV3Client import ThetaDataV3Client
 from .manager import ThetaSyncManager
 from .config import ManagerConfig
 from .tick_bucket_analysis import analyze_tick_buckets, DayBucketAnalysisReport, BucketAnalysisResult

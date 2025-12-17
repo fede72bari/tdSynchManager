@@ -33,7 +33,7 @@ Sistema completo di validazione e recovery per garantire coerenza dati tra stora
 | File | Modifiche | Descrizione |
 |------|-----------|-------------|
 | `config.py` | +34 righe | RetryPolicy dataclass, parametri validazione in ManagerConfig |
-| `client.py` | +275 righe | ResilientThetaClient wrapper con auto-reconnect |
+| `ThetaDataV3Client.py` | +275 righe | ResilientThetaClient wrapper con auto-reconnect |
 | `manager.py` | +566 righe | Integrazione validazione, metodi helper, check_and_recover_coherence() |
 
 ---
@@ -136,7 +136,7 @@ class RetryPolicy:
 
 ### 5. Session Recovery
 
-**Wrapper**: `ResilientThetaClient` (in `client.py`)
+**Wrapper**: `ResilientThetaClient` (in `ThetaDataV3Client.py`)
 
 **Funzionalità**:
 - Detect "session closed" errors
@@ -172,7 +172,7 @@ config.py (no dependencies)
     │                   │
     │                   └─► coherence.py
     │
-    └─► client.py (ResilientThetaClient)
+    └─► ThetaDataV3Client.py (ResilientThetaClient)
          │
          └─► manager.py (orchestrator)
 ```

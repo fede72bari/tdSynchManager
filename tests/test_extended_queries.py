@@ -14,7 +14,7 @@ import pandas as pd
 import asyncio
 from tdSynchManager.config import ManagerConfig
 from tdSynchManager.manager import ThetaSyncManager
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 
 def display_result(title, df, warnings):

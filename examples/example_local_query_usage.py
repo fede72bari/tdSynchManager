@@ -11,7 +11,7 @@ Date: 2025-11-14
 
 import asyncio
 from tdSynchManager import ManagerConfig, ThetaSyncManager
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 
 async def example_usage():

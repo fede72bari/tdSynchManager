@@ -4,7 +4,7 @@ Verify actual column names returned by ThetaData API for EOD option data
 
 import asyncio
 import pandas as pd
-from src.tdSynchManager.client import ThetaDataV3Client
+from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from datetime import datetime
 
 async def main():

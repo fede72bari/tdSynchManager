@@ -243,8 +243,7 @@ async def analyze_tick_buckets(
                       f"intraday={int(b.intraday_volume)} diff={b.diff_pct:.2%} ticks={b.tick_count}")
 
         # Structured log for bucket analysis statistics
-        from .logging_utils import get_global_logger
-        logger = get_global_logger()
+        logger = manager.logger if hasattr(manager, 'logger') else None
         if logger:
             logger.log_info(
                 symbol=symbol,
@@ -373,8 +372,16 @@ async def _fetch_intraday_bars(
 
     # Parse timestamp
     # ThetaData returns ISO format strings for intraday (e.g., '2025-08-21T09:30:00')
-    # Times are in America/New_York (ET) timezone
-    combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'], utc=True)
+    # Times are in America/New_York (ET) timezone - must convert to UTC
+    combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+
+    # Convert ET → UTC (same as _normalize_ts_to_utc does for saved data)
+    combined_df['timestamp'] = (
+        combined_df['timestamp']
+        .dt.tz_localize("US/Eastern", nonexistent="shift_forward")
+        .dt.tz_convert("UTC")
+        .dt.tz_localize(None)
+    )
 
     # IMPORTANT: Aggregate bars by timestamp
     # Each timestamp has multiple bars (one per contract: strike/expiration/right)
@@ -498,16 +505,24 @@ async def _compare_buckets(
     tick_df = tick_df.copy()
 
     if ts_col == 'ms_of_day':
-        # Convert ms_of_day to timestamp
+        # Convert ms_of_day to timestamp (ms_of_day is in ET, convert to UTC)
         base_date = pd.to_datetime(date_iso)
         tick_df['timestamp'] = base_date + pd.to_timedelta(tick_df[ts_col], unit='ms')
+
+        # ms_of_day represents ET time, convert to UTC
+        tick_df['timestamp'] = (
+            tick_df['timestamp']
+            .dt.tz_localize("US/Eastern", nonexistent="shift_forward")
+            .dt.tz_convert("UTC")
+            .dt.tz_localize(None)
+        )
     else:
         # Use the identified timestamp column and rename to 'timestamp'
         if ts_col != 'timestamp':
             tick_df['timestamp'] = tick_df[ts_col]
 
-        # Parse timestamps
-        tick_df['timestamp'] = pd.to_datetime(tick_df['timestamp'], errors='coerce', utc=True)
+        # Parse timestamps as UTC then remove timezone info to match intraday bars (which are tz-naive)
+        tick_df['timestamp'] = pd.to_datetime(tick_df['timestamp'], errors='coerce', utc=True).dt.tz_localize(None)
 
     # Sort intraday by timestamp
     intraday_df = intraday_df.sort_values('timestamp').copy()

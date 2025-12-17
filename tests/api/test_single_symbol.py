@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from tdSynchManager.manager import ThetaSyncManager, install_td_server_error_logger
 from tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 
 async def main():

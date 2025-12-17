@@ -12,7 +12,7 @@ sys.path.insert(0, 'path/to/src')  # Adatta al tuo path
 from tdSynchManager.output_manager import AutoClearOutputManager
 from tdSynchManager.manager import ThetaSyncManager
 from tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 ```
 
 ### 2. Uso Più Semplice (Copy-Paste Ready)

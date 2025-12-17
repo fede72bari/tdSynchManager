@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 import asyncio
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 async def main():
     print("=" * 80)

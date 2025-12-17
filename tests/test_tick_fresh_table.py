@@ -4,7 +4,7 @@ Test TICK data on fresh/non-existent table to verify table creation handling
 
 import asyncio
 import pandas as pd
-from src.tdSynchManager.client import ThetaDataV3Client
+from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from src.tdSynchManager.manager import ThetaSyncManager, install_td_server_error_logger
 from src.tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
 from influxdb_client_3 import InfluxDBClient3

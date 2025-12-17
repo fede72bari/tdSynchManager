@@ -3,7 +3,7 @@ Minimal test to trace the total_seconds error with full traceback
 """
 import asyncio
 import traceback
-from src.tdSynchManager.client import ThetaDataV3Client
+from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from src.tdSynchManager.manager import ThetaSyncManager
 from src.tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
 

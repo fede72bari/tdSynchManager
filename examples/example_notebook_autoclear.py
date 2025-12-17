@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 import asyncio
 from tdSynchManager.manager import ThetaSyncManager
 from tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from tdSynchManager.output_manager import AutoClearOutputManager
 
 # =============================================================================

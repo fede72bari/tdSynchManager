@@ -274,7 +274,7 @@ await manager.run(tasks)  # Idempotent - safe to re-run
 tdSynchManager/
 ├── src/tdSynchManager/
 │   ├── __init__.py          # Public API exports
-│   ├── client.py            # ThetaDataV3Client implementation
+│   ├── ThetaDataV3Client.py # ThetaDataV3Client implementation
 │   ├── manager.py           # ThetaSyncManager core logic
 │   ├── config.py            # ManagerConfig, Task, DiscoverPolicy
 │   ├── validator.py         # Coherence validation logic

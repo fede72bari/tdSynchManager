@@ -5,7 +5,7 @@ sys.path.insert(0, 'src')
 
 from tdSynchManager.manager import ThetaSyncManager
 from tdSynchManager.config import ManagerConfig
-from tdSynchManager.client import ThetaDataV3Client
+from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 
 async def test_list_and_query():
