@@ -72,6 +72,8 @@ Thumbs.db
 data/
 *.log
 *.txt
+*.csv
+!.credentials.json.example
 
 # Jupyter Notebook
 .ipynb_checkpoints/
