@@ -15,7 +15,7 @@ async def test_api_timestamp_format():
     print("=== Testing ThetaData API Timestamp Format ===\n")
 
     # Create client
-    cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads", max_concurrency=1)
+    cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
     client = ThetaDataV3Client()
     await client.connect()
 

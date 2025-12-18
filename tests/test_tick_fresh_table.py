@@ -18,7 +18,7 @@ influx_bucket = influx.get('bucket', 'ThetaData')
 symbols = ["TLRY"]
 
 cfg = ManagerConfig(
-    root_dir=r"C:\Users\Federico\Downloads",
+    root_dir=r"tests/data",
     max_concurrency=80,
     max_file_mb=16,
     overlap_seconds=60,

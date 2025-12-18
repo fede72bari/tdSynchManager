@@ -11,7 +11,7 @@ import io
 
 print("=== Test Timezone Auto-Detection ===\n")
 
-cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads", max_concurrency=1)
+cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
 manager = ThetaSyncManager(cfg, client=None)
 
 # Test Case 1: Simulated data with UTC timestamps (14-21 range)
@@ -57,7 +57,7 @@ print("\n\nTest 3: Real CSV file (timestamp attuali errati)")
 print("-" * 60)
 
 try:
-    real_file = r'C:\Users\Federico\Downloads\data\option\QQQ\5m\csv\2025-12-08T00-00-00Z-QQQ-option-5m_part01.csv'
+    real_file = r'tests/data\data\option\QQQ\5m\csv\2025-12-08T00-00-00Z-QQQ-option-5m_part01.csv'
     df_real = pd.read_csv(real_file, dtype=str)
 
     print(f"File: part01.csv")

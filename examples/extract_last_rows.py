@@ -10,7 +10,7 @@ from tdSynchManager.config import ManagerConfig
 
 # Create minimal config
 cfg = ManagerConfig(
-    root_dir=r"C:\Users\Federico\Downloads",
+    root_dir="examples/data",
     max_concurrency=1
 )
 
@@ -61,7 +61,7 @@ if last_rows:
     print(f"Date range: {result_df['file_date'].min()} to {result_df['file_date'].max()}")
     
     # Save to CSV
-    output_file = "qqq_5m_last_rows.csv"
+    output_file = "examples/data/qqq_5m_last_rows.csv"
     result_df.to_csv(output_file, index=False)
     print(f"\nSaved to: {output_file}")
     

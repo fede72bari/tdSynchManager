@@ -9,7 +9,7 @@ manager_module = importlib.util.module_from_spec(spec)
 
 # Mock the imports that manager needs
 class MockConfig:
-    root_dir = r"C:\Users\Federico\Downloads"
+    root_dir = r"tests/data"
     cache_dir_name = ".cache"
     cache_file_name = "first_date_cache.json"
     max_concurrency = 5

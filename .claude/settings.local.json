@@ -13,7 +13,13 @@
       "Bash(git commit:*)",
       "Bash(git push)",
       "Bash(git grep:*)",
-      "Bash(ls test_*.py analyze_strikes.py extract_last_rows*.py)"
+      "Bash(ls test_*.py analyze_strikes.py extract_last_rows*.py)",
+      "Bash(ls:*)",
+      "Bash(git mv:*)",
+      "Bash(for file in test_trace_error.py test_tick_fresh_table.py test_extraction_display.py test_extended_queries.py test_expiration_chains_fixed.py test_comprehensive_fixed.py test_notebook_logic.py test_extract_filtered.py test_extract_notebook.py test_list_direct.py test_list_data.py influx/test_influx_minmax.py timezone/test_api_timezone.py timezone/test_timezone_detection.py timezone/test_csv_timestamps.py timezone/test_timezone_fix.py)",
+      "Bash(do if [ -f \"$file\" ])",
+      "Bash(then python -c \"\nimport sys\nwith open(''$file'', ''r'', encoding=''utf-8'') as f:\n    content = f.read()\ncontent = content.replace(r''C:\\Users\\Federico\\Downloads'', ''tests/data'')\ncontent = content.replace(r''C:\\Users\\Federico\\Downloads'', ''tests/data'')\nwith open(''$file'', ''w'', encoding=''utf-8'') as f:\n    f.write(content)\nprint(''Updated $file'')\n\")",
+      "Bash(fi)"
     ],
     "deny": [],
     "ask": []

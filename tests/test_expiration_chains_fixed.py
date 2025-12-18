@@ -54,7 +54,7 @@ def get_available_trading_days(manager, asset, symbol, interval, sink):
 # CONFIGURAZIONE
 # ================================================================================
 cfg = ManagerConfig(
-    root_dir=r'C:\Users\Federico\Downloads',
+    root_dir=r'tests/data',
     max_concurrency=5,
     influx_url='http://127.0.0.1:8181',
     influx_bucket='ThetaData',

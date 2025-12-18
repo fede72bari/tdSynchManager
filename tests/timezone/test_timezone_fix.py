@@ -14,7 +14,7 @@ import io
 print("=== Test Timezone Conversion Fix ===\n")
 
 # Create manager instance
-cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads", max_concurrency=1)
+cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
 manager = ThetaSyncManager(cfg, client=None)
 
 # Test Case 1: Simulate API response with ET timestamps (expected format)

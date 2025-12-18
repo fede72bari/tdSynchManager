@@ -14,7 +14,7 @@ from tdSynchManager.manager import ThetaSyncManager
 from tdSynchManager.config import ManagerConfig
 
 # Config matching user's setup
-cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads")
+cfg = ManagerConfig(root_dir=r"tests/data")
 manager = ThetaSyncManager(cfg, MockClient())
 
 print("=" * 70)

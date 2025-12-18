@@ -8,7 +8,7 @@ import pandas as pd
 
 print("=== TEST 1: Create manager ===")
 cfg = ManagerConfig(
-    root_dir=r"C:\Users\Federico\Downloads",
+    root_dir=r"tests/data",
     max_concurrency=1
 )
 manager = ThetaSyncManager(cfg, client=None)

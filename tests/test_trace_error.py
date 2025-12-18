@@ -15,7 +15,7 @@ influx_url = influx.get('url', 'http://127.0.0.1:8181')
 influx_bucket = influx.get('bucket', 'ThetaData')
 
 cfg = ManagerConfig(
-    root_dir=r"C:\Users\Federico\Downloads",
+    root_dir=r"tests/data",
     max_concurrency=1,  # Single thread for clearer tracing
     influx_url=influx_url,
     influx_bucket=influx_bucket,

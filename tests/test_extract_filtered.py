@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 print("=== Setup ===")
-cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads", max_concurrency=1)
+cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
 manager = ThetaSyncManager(cfg, client=None)
 
 print("\n=== List files ===")

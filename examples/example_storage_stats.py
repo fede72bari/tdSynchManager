@@ -22,22 +22,19 @@ except Exception:  # pragma: no cover
 
 from tdSynchManager.config import ManagerConfig
 from tdSynchManager.manager import ThetaSyncManager
+from tdSynchManager.credentials import get_influx_credentials
 
 # ---------------------------------------------------------------------------
 # Configuration (copy of your production settings)
 # ---------------------------------------------------------------------------
-ROOT_DIR = r"C:\Users\Federico\Downloads"
-INFLUX_DIR = r"C:\Users\Federico\Downloads\data\influxdb3"
-INFLUX_URL = "http://127.0.0.1:8181"
-INFLUX_BUCKET = "ThetaData"
-INFLUX_TOKEN = (
-    os.environ.get("TDSYNCH_INFLUX_TOKEN")
-    or globals().get("influx_token")
-    or (
-        "apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bk"
-        "Y1IPM_PQEzHn5b1DVwZc2w"
-    )
-)
+ROOT_DIR = "examples/data"
+INFLUX_DIR = "examples/data/influxdb3"
+
+# Load credentials from .credentials.json
+influx = get_influx_credentials()
+INFLUX_URL = influx['url']
+INFLUX_BUCKET = influx['bucket']
+INFLUX_TOKEN = influx['token']
 
 cfg = ManagerConfig(
     root_dir=ROOT_DIR,

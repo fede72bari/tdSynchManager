@@ -11,7 +11,7 @@ import os
 
 print("=== Check Existing CSV Timestamps ===\n")
 
-cfg = ManagerConfig(root_dir=r"C:\Users\Federico\Downloads", max_concurrency=1)
+cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
 manager = ThetaSyncManager(cfg, client=None)
 
 # List CSV files

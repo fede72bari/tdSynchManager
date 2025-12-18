@@ -74,7 +74,7 @@ async def main():
 
     # Create manager
     cfg = ManagerConfig(
-        root_dir=r'C:\Users\Federico\Downloads',
+        root_dir=r'tests/data',
         max_concurrency=5,
         influx_url='http://127.0.0.1:8181',
         influx_bucket='ThetaData',

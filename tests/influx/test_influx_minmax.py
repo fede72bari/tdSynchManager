@@ -25,7 +25,7 @@ def main():
     influx_bucket = influx.get('bucket', 'ThetaData')
 
     cfg = ManagerConfig(
-        root_dir=r"C:\Users\Federico\Downloads",
+        root_dir=r"tests/data",
         influx_url=influx_url,
         influx_bucket=influx_bucket,
         influx_token=influx_token,
