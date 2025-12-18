@@ -159,6 +159,128 @@ class ThetaSyncManager:
 
     This class wires together: first-date discovery, robust resume logic, file size capping,
     and direct usage of your ThetaDataV3Client for HTTP I/O.
+
+    Public API
+    ----------
+    The ThetaSyncManager provides a comprehensive set of public methods organized by functionality:
+
+    **Data Download Methods**
+        run(tasks)
+            Main entry point for downloading and synchronizing market data. Execute a batch of
+            synchronization tasks concurrently for multiple symbols and intervals.
+
+    **Coherence & Validation Methods**
+        check_and_recover_coherence(symbol, asset, interval, sink, ...)
+            Check data coherence and optionally recover missing data. Performs post-hoc validation
+            to identify missing data, gaps in coverage, and inconsistencies.
+
+        generate_duplicate_report(asset, symbol, intervals, sinks, ...)
+            Generate a comprehensive duplicate detection report across multiple intervals and sinks.
+            Provides a holistic view of data quality across all dimensions.
+
+        check_duplicates_multi_day(asset, symbol, interval, sink, ...)
+            Check for duplicate records across multiple trading days in the specified data sink.
+            Performs comprehensive duplicate detection analysis across a date range.
+
+        check_duplicates_in_sink(asset, symbol, interval, sink, day_iso, ...)
+            Check for duplicate records in a specific sink for a single day or entire dataset.
+            Returns detailed statistics about duplication rates and sample duplicate keys.
+
+        duplication_and_strike_checks(asset, symbol, interval, sink, ...)
+            Perform detailed per-day auditing: duplicate detection on composite keys and
+            strike×expiration accounting. Builds overlap matrices between file parts.
+
+    **Query & Data Access Methods**
+        query_local_data(asset, symbol, interval, sink, start_date, ...)
+            Query and extract data from local sinks (CSV, Parquet, InfluxDB) within a date/time
+            range. Returns both the data DataFrame and a list of warnings/errors encountered.
+
+        list_available_data(asset, symbol, interval, sink)
+            List all available data series in local sinks with date range information. Scans
+            the local sink directories and returns a summary of all available time series.
+
+        available_expiration_chains(symbol, interval, sink, ...)
+            Get available option expiration chains for a given symbol. Returns which expiration
+            dates are available in the historical data.
+
+        available_strikes_by_expiration(symbol, interval, sink, expirations)
+            Get available strike prices for each expiration chain. Returns a mapping of
+            expiration → strikes from local data storage.
+
+    **Storage & Statistics Methods**
+        get_storage_stats(asset, symbol, interval, sink)
+            Get storage statistics for local databases including file counts, sizes, and date
+            ranges. Returns detailed statistics grouped by asset, symbol, interval, and sink.
+
+        get_storage_summary()
+            Get aggregated storage summary statistics across all databases. Returns totals
+            by sink, asset, interval, and top symbols by storage size.
+
+    **Screening & Analysis Methods**
+        screen_option_oi_concentration(symbols, day_iso, threshold_pct, ...)
+            Screen for abnormal open interest concentration by symbol and expiration.
+            Identifies strikes/contracts with unusually high OI concentration.
+
+        screen_option_volume_concentration(symbols, day_iso, threshold_pct, ...)
+            Screen for abnormal daily volume concentration by symbol and expiration.
+            Flags rows where volume concentration exceeds specified thresholds.
+
+    **Logging & Utility Methods**
+        show_logs(symbol, asset, interval, start_ts, end_ts, ...)
+            Convenience wrapper to fetch and print recent logger entries for a data series.
+            Useful for debugging and monitoring synchronization progress.
+
+        clear_first_date_cache(asset, symbol, req_type)
+            Delete a specific first-date cache entry from memory and persist to disk.
+            Forces fresh discovery on the next sync operation.
+
+    Example Usage
+    -------------
+    Initialize and run basic synchronization:
+
+        >>> from tdSynchManager import ManagerConfig, ThetaSyncManager, Task
+        >>> from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+        >>>
+        >>> cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
+        >>> async with ThetaDataV3Client() as client:
+        ...     manager = ThetaSyncManager(cfg, client)
+        ...     tasks = [
+        ...         Task(asset="stock", symbols=["AAPL", "MSFT"], intervals=["1d"], sink="parquet"),
+        ...         Task(asset="option", symbols=["SPY"], intervals=["5m"], sink="csv")
+        ...     ]
+        ...     await manager.run(tasks)
+
+    Check data coherence and recover missing data:
+
+        >>> report = await manager.check_and_recover_coherence(
+        ...     symbol="AAPL",
+        ...     asset="stock",
+        ...     interval="1d",
+        ...     sink="parquet",
+        ...     start_date="2024-01-01",
+        ...     auto_recover=True
+        ... )
+        >>> if report.is_coherent:
+        ...     print("Data is complete!")
+
+    Query local data:
+
+        >>> df, warnings = manager.query_local_data(
+        ...     asset="stock",
+        ...     symbol="AAPL",
+        ...     interval="1d",
+        ...     sink="parquet",
+        ...     start_date="2024-01-01",
+        ...     end_date="2024-12-31"
+        ... )
+
+    Notes
+    -----
+    - All async methods (run, check_and_recover_coherence, screen_*) must be awaited
+    - Date parameters typically use ISO format "YYYY-MM-DD"
+    - Available assets: "stock", "option", "index"
+    - Available sinks: "csv", "parquet", "influxdb"
+    - See individual method docstrings for detailed parameter descriptions and examples
     """
 
 
@@ -257,13 +379,59 @@ class ThetaSyncManager:
         limit: int = 50,
         print_full: bool = False
     ):
-        """Convenience wrapper to fetch/print recent logger entries for a series.
+        """Fetch and display logger entries for a data series.
+
+        This method retrieves log entries from the data consistency logger for a specific
+        symbol, asset type, and interval combination. It provides options for limiting the
+        number of results and controlling display formatting.
 
         Parameters
         ----------
-        print_full : bool
-            If True, uses display() with unlimited rows and column width.
-            If False, returns a truncated DataFrame.
+        symbol : str
+            The ticker symbol or root symbol to query (e.g., "AAPL", "SPY").
+        asset : str
+            The asset type: "stock", "option", or "index".
+        interval : str
+            The time interval (e.g., "tick", "1m", "5m", "1h", "1d").
+        start_ts : str or datetime
+            Start timestamp for log query. Can be ISO format string or datetime object.
+        end_ts : str or datetime, optional
+            End timestamp for log query. If None, queries up to the most recent logs.
+            Can be ISO format string or datetime object.
+        limit : int, optional
+            Maximum number of log entries to retrieve (default: 50).
+            Applied after date filtering.
+        print_full : bool, optional
+            Default: False
+            If True, displays all rows and columns with unlimited width using IPython display
+            (or print if IPython not available) and returns None.
+            If False, returns a truncated DataFrame subject to pandas display options.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            If print_full=False: Returns a pandas DataFrame with log entries.
+            If print_full=True: Displays the logs and returns None.
+
+        Example Usage
+        -------------
+        # Get last 50 logs for AAPL stock 1d data
+        logs = manager.show_logs(
+            symbol="AAPL",
+            asset="stock",
+            interval="1d",
+            start_ts="2024-01-01"
+        )
+
+        # Display all logs with full formatting for SPY options
+        manager.show_logs(
+            symbol="SPY",
+            asset="option",
+            interval="5m",
+            start_ts="2024-11-01",
+            end_ts="2024-11-30",
+            print_full=True
+        )
         """
         df = self.logger.get_logs(
             symbol=symbol,
@@ -7087,21 +7255,68 @@ class ThetaSyncManager:
         min_contract_oi: int = 500,
         min_chain_contracts: Optional[int] = None,
     ) -> pd.DataFrame:
-        """
-        Screen for abnormal OI concentration by (symbol, expiration).
-    
-        Rules
-        -----
-        - Pull prior-day OI for the requested trading date via /option/history/open_interest (expiration="*").
-        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
-        - For each expiration, flag rows where share >= threshold_pct AND
-          contract_oi >= min_contract_oi AND chain_oi >= min_chain_oi AND distinct contracts >= min_chain_contracts.
-    
+        """Screen for abnormal open interest concentration by symbol and expiration.
+
+        This method identifies strikes or contracts with unusually high open interest concentration
+        within their expiration chains. It pulls prior-day OI data from the ThetaData API and flags
+        positions that exceed concentration thresholds, which may indicate large institutional
+        positions, hedging activity, or potential market-moving events.
+
+        Parameters
+        ----------
+        symbols : list[str]
+            List of ticker symbols to screen (e.g., ["SPY", "AAPL", "TLRY"]).
+        day_iso : str
+            The trading date for the screening in ISO format "YYYY-MM-DD".
+            This pulls prior-day OI data for this date.
+        threshold_pct : float, optional
+            Minimum concentration percentage to flag (default: 0.30 = 30%).
+            Rows where (contract_oi / chain_oi) >= threshold_pct are flagged.
+        scope : Literal["strike", "strike_and_right"], optional
+            Default: "strike"
+            - "strike": Aggregate calls and puts together (C+P summed per strike)
+            - "strike_and_right": Keep calls and puts separate (analyze each contract)
+        right : Literal["call", "put", "both"], optional
+            Default: "both"
+            Filter by option type: "call", "put", or "both".
+        min_chain_oi : int, optional
+            Minimum total open interest for the entire expiration chain (default: 5,000).
+            Chains below this threshold are excluded from screening.
+        min_contract_oi : int, optional
+            Minimum open interest for individual contracts/strikes to be flagged (default: 500).
+        min_chain_contracts : int, optional
+            Minimum number of distinct contracts in the chain (default: 5 for strike scope,
+            10 for strike_and_right scope). Helps filter out illiquid/thin chains.
+
         Returns
         -------
-        pd.DataFrame with columns:
-            ['symbol','expiration','strike','right','contract_oi','chain_oi','share_pct',
-             'contracts_in_chain','rank_in_expiration','source_url']
+        pd.DataFrame
+            DataFrame with columns:
+            - symbol : str - Ticker symbol
+            - expiration : str - Expiration date (ISO format)
+            - strike : float - Strike price
+            - right : str - Option type ("call" or "put")
+            - contract_oi : int - Open interest for this contract/strike
+            - chain_oi : int - Total OI for the entire expiration chain
+            - share_pct : float - Concentration percentage (contract_oi / chain_oi * 100)
+            - contracts_in_chain : int - Number of distinct contracts in this expiration
+            - rank_in_expiration : int - Rank by OI within this expiration (1 = highest)
+            - source_url : str - API URL used to fetch the data
+
+        Example Usage
+        -------------
+        # Screen for high OI concentration in SPY and QQQ
+        df = await manager.screen_option_oi_concentration(
+            symbols=["SPY", "QQQ"],
+            day_iso="2025-11-07",
+            threshold_pct=0.25,
+            scope="strike",
+            min_chain_oi=10_000
+        )
+
+        # Find strikes with >30% OI concentration
+        high_concentration = df[df['share_pct'] >= 30.0]
+        print(high_concentration[['symbol', 'expiration', 'strike', 'share_pct']])
         """
         async def _fetch_oi(sym: str):
             csv_txt, url = await self.client.option_history_open_interest(
@@ -7224,22 +7439,68 @@ class ThetaSyncManager:
         min_contract_volume: int = 500,
         min_chain_contracts: Optional[int] = None,
     ) -> pd.DataFrame:
-        """
-        Screen for abnormal daily VOLUME concentration by (symbol, expiration).
-    
-        Rules
-        -----
-        - Pull EOD daily rows for all expirations via /option/history/eod (expiration="*").
-        - Aggregate either by strike (C+P summed) or by contract (C/P separate).
-        - For each expiration, flag rows where share >= threshold_pct AND
-          contract_volume >= min_contract_volume AND chain_volume >= min_chain_volume
-          AND distinct contracts >= min_chain_contracts.
-    
+        """Screen for abnormal daily volume concentration by symbol and expiration.
+
+        This method identifies strikes or contracts with unusually high trading volume concentration
+        within their expiration chains. It pulls end-of-day (EOD) volume data from the ThetaData API
+        and flags positions that exceed concentration thresholds, which may indicate unusual trading
+        activity, large institutional trades, or significant market interest.
+
+        Parameters
+        ----------
+        symbols : list[str]
+            List of ticker symbols to screen (e.g., ["SPY", "AAPL", "TLRY"]).
+        day_iso : str
+            The trading date for the screening in ISO format "YYYY-MM-DD".
+            Pulls EOD data for this specific date.
+        threshold_pct : float, optional
+            Minimum concentration percentage to flag (default: 0.25 = 25%).
+            Rows where (contract_volume / chain_volume) >= threshold_pct are flagged.
+        scope : Literal["strike", "contract"], optional
+            Default: "strike"
+            - "strike": Aggregate calls and puts together (C+P summed per strike)
+            - "contract": Keep calls and puts separate (analyze each contract individually)
+        right : Literal["call", "put", "both"], optional
+            Default: "both"
+            Filter by option type: "call", "put", or "both".
+        min_chain_volume : int, optional
+            Minimum total daily volume for the entire expiration chain (default: 5,000).
+            Chains below this threshold are excluded from screening.
+        min_contract_volume : int, optional
+            Minimum daily volume for individual contracts/strikes to be flagged (default: 500).
+        min_chain_contracts : int, optional
+            Minimum number of distinct contracts in the chain (default: 5 for strike scope,
+            10 for contract scope). Helps filter out illiquid/thin chains.
+
         Returns
         -------
-        pd.DataFrame with columns:
-            ['symbol','expiration','strike','right','contract_volume','chain_volume','share_pct',
-             'contracts_in_chain','rank_in_expiration','source_url']
+        pd.DataFrame
+            DataFrame with columns:
+            - symbol : str - Ticker symbol
+            - expiration : str - Expiration date (ISO format)
+            - strike : float - Strike price
+            - right : str - Option type ("call" or "put")
+            - contract_volume : int - Daily volume for this contract/strike
+            - chain_volume : int - Total daily volume for the entire expiration chain
+            - share_pct : float - Concentration percentage (contract_volume / chain_volume * 100)
+            - contracts_in_chain : int - Number of distinct contracts in this expiration
+            - rank_in_expiration : int - Rank by volume within this expiration (1 = highest)
+            - source_url : str - API URL used to fetch the data
+
+        Example Usage
+        -------------
+        # Screen for high volume concentration in SPY and QQQ
+        df = await manager.screen_option_volume_concentration(
+            symbols=["SPY", "QQQ"],
+            day_iso="2025-11-07",
+            threshold_pct=0.20,
+            scope="strike",
+            min_chain_volume=10_000
+        )
+
+        # Find strikes with >25% volume concentration
+        high_volume = df[df['share_pct'] >= 25.0]
+        print(high_volume[['symbol', 'expiration', 'strike', 'contract_volume', 'share_pct']])
         """
         async def _fetch_eod(sym: str):
             csv_txt, url = await self.client.option_history_eod(
@@ -7689,19 +7950,70 @@ class ThetaSyncManager:
         end_date: str = None,
         show: bool = False,
     ):
-        """
-        Audit per giorno: duplicazioni su chiave e contabilità strike×expiration.
-        - Key = timestamp + symbol + expiration + strike (+ right se presente).
-        - Conta le coppie uniche (strike, expiration) per giorno.
-        - Costruisce la matrice di overlap tra TUTTI i part del giorno:
-            * Diagonale  = duplicati INTRA-file (stesso part) sulla chiave
-            * Off-diagonale = intersezione tra chiavi di file diversi (inter-file)
-        Ritorna: (results_by_day: dict, summary_df: pd.DataFrame)
-    
+        """Perform detailed per-day audit: duplicate detection and strike×expiration accounting.
+
+        This method performs comprehensive daily audits of option data quality by analyzing:
+        1. Duplicate records based on composite keys
+        2. Unique (strike, expiration) pair counting per day
+        3. Overlap matrices between file parts within each day
+
+        The composite key is: timestamp + symbol + expiration + strike (+ right if present).
+        For each day, it builds an overlap matrix showing:
+        - Diagonal: Intra-file duplicates (within the same part file)
+        - Off-diagonal: Inter-file key intersections (between different part files)
+
+        Parameters
+        ----------
+        asset : str
+            The asset type: "option", "stock", or "index".
+        symbol : str
+            The ticker symbol or root symbol (e.g., "TLRY", "SPY").
+        interval : str
+            The time interval (e.g., "tick", "5m", "1h", "1d").
+        sink : str, optional
+            The storage backend: "csv" or "parquet" (default: "csv").
+            Note: This method does not support InfluxDB.
+        start_date : str, optional
+            Start date in ISO format "YYYY-MM-DD". If None, starts from earliest available data.
+        end_date : str, optional
+            End date in ISO format "YYYY-MM-DD". If None, goes to latest available data.
+        show : bool, optional
+            If True, displays detailed results for each day (default: False).
+
+        Returns
+        -------
+        tuple[dict, pd.DataFrame]
+            A tuple containing:
+            - results_by_day : dict
+                Dictionary keyed by date (ISO string), with detailed daily analysis including
+                overlap matrices, duplicate counts, and unique strike×expiration pairs.
+            - summary_df : pd.DataFrame
+                Summary DataFrame with one row per day containing aggregated statistics:
+                date, total_records, unique_keys, intra_file_duplicates, inter_file_overlaps,
+                unique_strikes, unique_expirations, etc.
+
         Notes
         -----
-        * Timestamps are normalized to naive UTC to avoid aware/naive mismatches.
-        * Intra-file duplicate count ignores rows with NaN in any key column.
+        - Timestamps are normalized to naive UTC to avoid aware/naive mismatches
+        - Intra-file duplicate count ignores rows with NaN in any key column
+        - The overlap matrix helps identify whether duplicates come from within files
+          or across multiple part files for the same day
+
+        Example Usage
+        -------------
+        # Audit TLRY tick data for November 2025
+        results, summary = manager.duplication_and_strike_checks(
+            asset="option",
+            symbol="TLRY",
+            interval="tick",
+            sink="csv",
+            start_date="2025-11-01",
+            end_date="2025-11-30",
+            show=True
+        )
+
+        # Check summary statistics
+        print(summary[['date', 'total_records', 'intra_file_duplicates', 'unique_strikes']])
         """
 
     
@@ -7959,25 +8271,69 @@ class ThetaSyncManager:
         day_iso: Optional[str] = None,
         sample_limit: int = 10
     ) -> dict:
-        """
-        Verifica la presenza di duplicati nel sink specificato.
-        
-        Args:
-            asset: "option", "stock", o "index"
-            symbol: simbolo (es. "TLRY", "AAPL")
-            interval: timeframe (es. "tick", "1m", "1d")
-            sink: "influxdb", "csv", o "parquet"
-            day_iso: giorno specifico (es. "2025-11-07"), o None per tutto
-            sample_limit: numero max di chiavi duplicate da restituire come esempio
-            
-        Returns:
-            dict con:
-                - total_rows: numero totale righe
-                - unique_rows: numero righe uniche
-                - duplicates: numero duplicati
-                - duplicate_rate: percentuale duplicati
-                - duplicate_keys: lista primi N esempi di chiavi duplicate
-                - key_columns: colonne usate come chiave
+        """Check for duplicate records in a specific sink for a single day or entire dataset.
+
+        This method verifies the presence of duplicate records in the specified storage sink
+        by checking composite key uniqueness. The key columns vary by asset type and sink.
+        Returns detailed statistics about duplication rates and sample duplicate keys.
+
+        Parameters
+        ----------
+        asset : str
+            The asset type: "option", "stock", or "index".
+            Determines which columns are used as the composite key.
+        symbol : str
+            The ticker symbol or root symbol (e.g., "TLRY", "AAPL", "SPY").
+        interval : str
+            The timeframe (e.g., "tick", "1m", "5m", "1h", "1d").
+        sink : str
+            The storage backend: "influxdb", "csv", or "parquet".
+            Different sinks may use different duplicate detection strategies.
+        day_iso : str, optional
+            Specific trading day in ISO format "YYYY-MM-DD" (e.g., "2025-11-07").
+            If None, checks the entire dataset across all available days.
+        sample_limit : int, optional
+            Maximum number of duplicate key examples to return (default: 10).
+            Limits the size of the duplicate_keys list in the result.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+            - total_rows : int
+                Total number of rows in the dataset
+            - unique_rows : int
+                Number of unique rows (distinct composite keys)
+            - duplicates : int
+                Number of duplicate rows (total_rows - unique_rows)
+            - duplicate_rate : float
+                Percentage of duplicate rows (0-100)
+            - duplicate_keys : list
+                List of the first N duplicate key examples (limited by sample_limit)
+            - key_columns : list
+                List of column names used as the composite key for duplicate detection
+
+        Example Usage
+        -------------
+        # Check for duplicates in a specific day
+        result = manager.check_duplicates_in_sink(
+            asset="option",
+            symbol="TLRY",
+            interval="tick",
+            sink="csv",
+            day_iso="2025-11-07",
+            sample_limit=5
+        )
+        print(f"Found {result['duplicates']} duplicates ({result['duplicate_rate']:.2f}%)")
+
+        # Check entire dataset for duplicates
+        result = manager.check_duplicates_in_sink(
+            asset="stock",
+            symbol="AAPL",
+            interval="1d",
+            sink="parquet",
+            day_iso=None
+        )
         """
         sink_lower = sink.lower()
         

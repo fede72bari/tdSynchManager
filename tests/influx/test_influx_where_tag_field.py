@@ -2,15 +2,22 @@
 Test query performance with WHERE on tag and field
 """
 
+import os
 import time
+from dotenv import load_dotenv
 from influxdb_client_3 import InfluxDBClient3
 
-influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+# Load environment variables
+load_dotenv()
+
+influx_token = os.getenv('INFLUX_TOKEN')
+if not influx_token:
+    raise ValueError("INFLUX_TOKEN environment variable is required. Please set it in your .env file.")
 
 client = InfluxDBClient3(
-    host="http://127.0.0.1:8181",
+    host=os.getenv('INFLUX_URL', 'http://127.0.0.1:8181'),
     token=influx_token,
-    database="ThetaData"
+    database=os.getenv('INFLUX_BUCKET', 'ThetaData')
 )
 
 measurement = "XOM-option-5m"

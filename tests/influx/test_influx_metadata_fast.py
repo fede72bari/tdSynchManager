@@ -3,15 +3,24 @@ Test the new fast metadata query approach
 """
 
 import time
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+
+from tdSynchManager.credentials import get_influx_credentials
 from influxdb_client_3 import InfluxDBClient3
 import pandas as pd
 
-influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+# Get InfluxDB credentials
+influx = get_influx_credentials()
+influx_token = influx['token']
+influx_url = influx.get('url', 'http://127.0.0.1:8181')
+influx_bucket = influx.get('bucket', 'ThetaData')
 
 client = InfluxDBClient3(
-    host="http://127.0.0.1:8181",
+    host=influx_url,
     token=influx_token,
-    database="ThetaData"
+    database=influx_bucket
 )
 
 # Test on both large (XOM-option-5m) and small (AAL-option-1d) tables

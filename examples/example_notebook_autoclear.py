@@ -66,15 +66,19 @@ async def run_sync_with_autoclear(cfg, tasks, max_output_lines=100):
 
 async def simple_autoclear_example():
     """Esempio semplice con auto-pulizia."""
+    from tdSynchManager.credentials import get_influx_credentials
 
-    # Configurazione
-    influx_token = 'your_token_here'
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     cfg = ManagerConfig(
         root_dir=r"C:\\Users\\Federico\\Downloads",
         max_concurrency=80,
-        influx_url="http://127.0.0.1:8181",
-        influx_bucket="ThetaData",
+        influx_url=influx_url,
+        influx_bucket=influx_bucket,
         influx_token=influx_token,
     )
 
@@ -125,17 +129,23 @@ async def notebook_friendly_sync(cfg, tasks):
 # =============================================================================
 
 async def test_autoclear():
+    from tdSynchManager.credentials import get_influx_credentials
+
     print("=" * 80)
     print("TEST: ThetaSyncManager con AutoClearOutputManager")
     print("=" * 80)
 
-    influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     cfg = ManagerConfig(
         root_dir=r"C:\\Users\\Federico\\Downloads",
         max_concurrency=80,
-        influx_url="http://127.0.0.1:8181",
-        influx_bucket="ThetaData",
+        influx_url=influx_url,
+        influx_bucket=influx_bucket,
         influx_token=influx_token,
     )
 

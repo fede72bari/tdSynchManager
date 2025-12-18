@@ -12,12 +12,17 @@ from tdSynchManager.influx_retry import InfluxWriteRetry, recover_failed_batches
 
 def test_retry_logic():
     """Test del retry logic con batch simulati."""
+    from tdSynchManager.credentials import get_influx_credentials
 
     print("=" * 80)
     print("TEST: InfluxDB Retry Logic")
     print("=" * 80)
 
-    token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     # Crea retry manager
     retry_mgr = InfluxWriteRetry(
@@ -28,9 +33,9 @@ def test_retry_logic():
 
     # Connetti a InfluxDB
     client = InfluxDBClient3(
-        host="http://127.0.0.1:8181",
-        token=token,
-        database="ThetaData"
+        host=influx_url,
+        token=influx_token,
+        database=influx_bucket
     )
 
     # Simula scrittura di 5 batch

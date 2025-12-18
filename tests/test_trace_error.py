@@ -6,13 +6,20 @@ import traceback
 from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from src.tdSynchManager.manager import ThetaSyncManager
 from src.tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
+from src.tdSynchManager.credentials import get_influx_credentials
+
+# Get InfluxDB credentials
+influx = get_influx_credentials()
+influx_token = influx['token']
+influx_url = influx.get('url', 'http://127.0.0.1:8181')
+influx_bucket = influx.get('bucket', 'ThetaData')
 
 cfg = ManagerConfig(
     root_dir=r"C:\Users\Federico\Downloads",
     max_concurrency=1,  # Single thread for clearer tracing
-    influx_url="http://127.0.0.1:8181",
-    influx_bucket="ThetaData",
-    influx_token='apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w',
+    influx_url=influx_url,
+    influx_bucket=influx_bucket,
+    influx_token=influx_token,
     enable_data_validation=True,
     validation_strict_mode=True,
 )

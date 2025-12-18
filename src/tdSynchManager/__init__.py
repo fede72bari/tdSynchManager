@@ -37,6 +37,7 @@ from .ThetaDataV3Client import ThetaDataV3Client
 from .manager import ThetaSyncManager
 from .config import ManagerConfig
 from .tick_bucket_analysis import analyze_tick_buckets, DayBucketAnalysisReport, BucketAnalysisResult
+from .credentials import load_credentials, get_influx_credentials, get_thetadata_credentials
 
 __all__ = [
     "ThetaDataV3Client",
@@ -45,6 +46,9 @@ __all__ = [
     "analyze_tick_buckets",
     "DayBucketAnalysisReport",
     "BucketAnalysisResult",
+    "load_credentials",
+    "get_influx_credentials",
+    "get_thetadata_credentials",
     "new_manager",
     "__version__",
 ]

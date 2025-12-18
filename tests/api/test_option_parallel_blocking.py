@@ -3,8 +3,10 @@ Test parallel option API calls (AAL + XOM) to reproduce blocking issue
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -12,18 +14,23 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from tdSynchManager import ThetaDataV3Client, ManagerConfig, ThetaSyncManager, Task
 from tdSynchManager.config import DiscoverPolicy
 
+# Load environment variables
+load_dotenv()
+
 async def main():
     print("=" * 80)
     print("TEST: Parallel Option Processing (AAL + XOM)")
     print("=" * 80)
 
-    influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    influx_token = os.getenv('INFLUX_TOKEN')
+    if not influx_token:
+        raise ValueError("INFLUX_TOKEN environment variable is required. Please set it in your .env file.")
 
     cfg = ManagerConfig(
         root_dir=r"C:\\Users\\Federico\\Downloads",
         max_concurrency=80,
-        influx_url="http://127.0.0.1:8181",
-        influx_bucket="ThetaData",
+        influx_url=os.getenv('INFLUX_URL', 'http://127.0.0.1:8181'),
+        influx_bucket=os.getenv('INFLUX_BUCKET', 'ThetaData'),
         influx_token=influx_token,
         influx_write_batch=5000,
     )

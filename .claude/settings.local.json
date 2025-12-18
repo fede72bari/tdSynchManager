@@ -1,26 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" -m py_compile \"src/tdSynchManager/manager.py\")",
-      "Bash(\"/c/Users/Federico/anaconda3/python.exe\" test_influx_debug.py)",
-      "Bash(conda env list:*)",
-      "Bash(source:*)",
-      "Bash(conda activate:*)",
-      "Bash(git merge:*)",
-      "Bash(git stash:*)",
+      "Bash(python:*)",
+      "Bash(cat:*)",
+      "Bash(done)",
+      "Bash(dir \"C:\\Users\\Federico\\Downloads\\data\\option\\QQQ\\5m\\csv\\2025-12-08*.csv\" /B)",
+      "Bash(test:*)",
+      "Bash(dir \"C:\\Users\\Federico\\Downloads\\data\\option\\QQQ\\tick\\csv\\2025-12-10*.csv\" /B)",
+      "Bash(cmd /c \"dir C:\\Users\\Federico\\Downloads\\data\\option\\QQQ\\tick\\csv\\2025-12-10*.csv /B 2>nul\")",
+      "Bash(git add:*)",
       "Bash(git restore:*)",
       "Bash(git commit:*)",
-      "Bash(/c/Users/Federico/anaconda3/python.exe -m py_compile:*)",
-      "Bash(/c/Users/Federico/anaconda3/Scripts/jupyter nbconvert:*)",
-      "Bash(git push:*)",
-      "Bash(git branch:*)",
-      "Bash(/c/Users/Federico/anaconda3/python.exe:*)",
-      "Bash(/c/Users/Federico/anaconda3/Scripts/pip install:*)",
-      "Bash(tee:*)",
-      "Bash(while read f)",
-      "Bash(do echo \"=== $f ===\")",
-      "Bash(done)",
-      "Bash(find:*)"
+      "Bash(git push)",
+      "Bash(git grep:*)",
+      "Bash(ls test_*.py analyze_strikes.py extract_last_rows*.py)"
     ],
     "deny": [],
     "ask": []

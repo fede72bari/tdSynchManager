@@ -11,18 +11,23 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from tdSynchManager.config import ManagerConfig
 from tdSynchManager.manager import ThetaSyncManager
+from tdSynchManager.credentials import get_influx_credentials
 
 def main():
     print("=" * 80)
     print("TEST: InfluxDB MIN/MAX Query Performance")
     print("=" * 80)
 
-    influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     cfg = ManagerConfig(
         root_dir=r"C:\Users\Federico\Downloads",
-        influx_url="http://127.0.0.1:8181",
-        influx_bucket="ThetaData",
+        influx_url=influx_url,
+        influx_bucket=influx_bucket,
         influx_token=influx_token,
     )
 

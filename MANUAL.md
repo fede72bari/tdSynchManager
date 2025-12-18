@@ -708,17 +708,19 @@ influx auth create \
 
 **Token format:**
 ```
-apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w
+apiv3_<YOUR_ACTUAL_TOKEN_HERE>
 ```
 
-**Store securely:**
+**Store securely in .env file:**
 ```ini
-# .env file
-INFLUX_URL=http://localhost:8086
-INFLUX_TOKEN=apiv3_your_token_here
+# .env file (DO NOT commit to git)
+INFLUX_URL=http://127.0.0.1:8181
+INFLUX_TOKEN=apiv3_your_actual_token_here
 INFLUX_ORG=YourOrg
 INFLUX_BUCKET=ThetaData
 ```
+
+**IMPORTANT:** Never commit your actual InfluxDB token to version control. Always use environment variables loaded from a .env file.
 
 ---
 

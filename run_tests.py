@@ -9,13 +9,14 @@ from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from src.tdSynchManager.manager import ThetaSyncManager, install_td_server_error_logger
 from src.tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
 from src.tdSynchManager.coherence import CoherenceChecker
+from src.tdSynchManager.credentials import get_influx_credentials
 from influxdb_client_3 import InfluxDBClient3
 
-
-# Configuration
-influx_url = "http://127.0.0.1:8181"
-influx_bucket = "ThetaData"
-influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+# Load credentials from .credentials.json
+influx = get_influx_credentials()
+influx_url = influx['url']
+influx_bucket = influx['bucket']
+influx_token = influx['token']
 symbols = ["TLRY"]
 
 cfg = ManagerConfig(

@@ -120,12 +120,18 @@ def check_influx_health(host="http://127.0.0.1:8181", token="your_token", databa
 
 
 if __name__ == "__main__":
-    token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    from tdSynchManager.credentials import get_influx_credentials
+
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     healthy = check_influx_health(
-        host="http://127.0.0.1:8181",
-        token=token,
-        database="ThetaData"
+        host=influx_url,
+        token=influx_token,
+        database=influx_bucket
     )
 
     if healthy:

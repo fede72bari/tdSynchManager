@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from tdSynchManager.manager import ThetaSyncManager, install_td_server_error_logger
 from tdSynchManager.config import ManagerConfig, Task, DiscoverPolicy
 from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+from tdSynchManager.credentials import get_influx_credentials
 
 
 async def main():
@@ -19,7 +20,11 @@ async def main():
     print("TEST: User Tasks (AAL + XOM, options 1d + 5m, mild_skip)")
     print("=" * 80)
 
-    influx_token = 'apiv3_reUhe6AEm4FjG4PHtLEW5wbt8MVUtiRtHPgm3Qw487pJFpVj6DlPTRxR1tvcW8bkY1IPM_PQEzHn5b1DVwZc2w'
+    # Get InfluxDB credentials
+    influx = get_influx_credentials()
+    influx_token = influx['token']
+    influx_url = influx.get('url', 'http://127.0.0.1:8181')
+    influx_bucket = influx.get('bucket', 'ThetaData')
 
     symbols = ["AAL", "XOM"]
 
@@ -28,8 +33,8 @@ async def main():
         max_concurrency=80,
         max_file_mb=16,
         overlap_seconds=60,
-        influx_url="http://127.0.0.1:8181",
-        influx_bucket="ThetaData",
+        influx_url=influx_url,
+        influx_bucket=influx_bucket,
         influx_token=influx_token,
         influx_org=None,
         influx_precision="nanosecond",
