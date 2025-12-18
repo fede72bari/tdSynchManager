@@ -47,6 +47,9 @@ coverage.xml
 
 # Environments
 .env
+.env.local
+*.env
+!.env.example
 .venv
 env/
 venv/
@@ -75,6 +78,10 @@ data/
 
 # Claude Code
 .claude/settings.local.json
+
+# Credentials (keep .example files)
+.credentials.json
+!.credentials.json.example
 
 # Archive and backup files
 .archive/
