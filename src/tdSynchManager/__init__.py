@@ -33,9 +33,9 @@ __version__ = _detect_version()
 # === >>> VERSION METADATA — END
 
 # === >>> PUBLIC API RE-EXPORTS — BEGIN
-from .ThetaDataV3Client import ThetaDataV3Client
+from clients.ThetaDataV3Client import ThetaDataV3Client
 from .manager import ThetaSyncManager
-from .config import ManagerConfig
+from .config import ManagerConfig, Task, DiscoverPolicy
 from .tick_bucket_analysis import analyze_tick_buckets, DayBucketAnalysisReport, BucketAnalysisResult
 from .credentials import load_credentials, get_influx_credentials, get_thetadata_credentials
 
@@ -43,6 +43,8 @@ __all__ = [
     "ThetaDataV3Client",
     "ThetaSyncManager",
     "ManagerConfig",
+    "Task",
+    "DiscoverPolicy",
     "analyze_tick_buckets",
     "DayBucketAnalysisReport",
     "BucketAnalysisResult",

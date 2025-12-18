@@ -25,7 +25,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .ThetaDataV3Client import Interval, ThetaDataV3Client, ResilientThetaClient
+from clients.ThetaDataV3Client import Interval, ThetaDataV3Client, ResilientThetaClient
 from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
 from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
@@ -113,7 +113,7 @@ def install_td_server_error_logger(client):
     Example Usage
     -------------
     # Enable detailed error logging for ThetaData API requests
-    from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+    from clients.ThetaDataV3Client import ThetaDataV3Client
     client = ThetaDataV3Client(base_url="http://localhost:25503/v3")
     install_td_server_error_logger(client)
     # Now all failed requests will log detailed error information
@@ -239,7 +239,7 @@ class ThetaSyncManager:
     Initialize and run basic synchronization:
 
         >>> from tdSynchManager import ManagerConfig, ThetaSyncManager, Task
-        >>> from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+        >>> from clients.ThetaDataV3Client import ThetaDataV3Client
         >>>
         >>> cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
         >>> async with ThetaDataV3Client() as client:
@@ -318,7 +318,7 @@ class ThetaSyncManager:
         -------------
         # Initialize the sync manager with configuration and client
         from tdSynchManager import ManagerConfig, ThetaSyncManager
-        from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+        from clients.ThetaDataV3Client import ThetaDataV3Client
 
         cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
         async with ThetaDataV3Client(base_url="http://localhost:25503/v3") as client:
@@ -887,7 +887,7 @@ class ThetaSyncManager:
         -------------
         # Run synchronization tasks for multiple symbols and intervals
         from tdSynchManager import Task, ThetaSyncManager, ManagerConfig
-        from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
+        from clients.ThetaDataV3Client import ThetaDataV3Client
 
         cfg = ManagerConfig(root_dir="./data", max_concurrency=5)
         async with ThetaDataV3Client() as client:
