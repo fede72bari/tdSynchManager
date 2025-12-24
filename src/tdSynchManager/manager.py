@@ -2127,20 +2127,34 @@ class ThetaSyncManager:
                 if wrote == 0 and len(df) > 0:
                     print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                           "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
+                    write_success = False
             else:
                 raise ValueError(f"Unsupported sink: {sink_lower}")
-            
+
             print(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
 
-            print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} EOD branch completed successfully")
-            self.logger.log_info(
-                symbol=symbol,
-                asset="option",
-                interval=interval,
-                date_range=(day_iso, day_iso),
-                message=f"DOWNLOAD_SUCCESS: rows={len(df)} wrote={wrote}",
-                details={"rows": len(df), "wrote": wrote, "sink": sink_lower, "branch": "EOD"}
-            )
+            # Check if write actually succeeded
+            if sink_lower == "influxdb" and wrote == 0:
+                print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} EOD branch FAILED - wrote 0 rows to InfluxDB")
+                self.logger.log_failure(
+                    symbol=symbol,
+                    asset="option",
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"DOWNLOAD_FAILURE: Downloaded {len(df)} rows but wrote 0 to InfluxDB",
+                    details={"rows": len(df), "wrote": wrote, "sink": sink_lower, "branch": "EOD", "reason": "influx_write_zero"}
+                )
+                raise RuntimeError(f"InfluxDB write failed: downloaded {len(df)} rows but wrote 0")
+            else:
+                print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} EOD branch completed successfully")
+                self.logger.log_info(
+                    symbol=symbol,
+                    asset="option",
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"DOWNLOAD_SUCCESS: rows={len(df)} wrote={wrote}",
+                    details={"rows": len(df), "wrote": wrote, "sink": sink_lower, "branch": "EOD"}
+                )
 
             return  # end EOD branch
 
@@ -3086,20 +3100,35 @@ class ThetaSyncManager:
             if wrote == 0 and len(df_all) > 0:
                 print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                       "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
+                write_success = False
 
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
         print(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
-        print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} intraday branch completed successfully")
-        self.logger.log_info(
-            symbol=symbol,
-            asset="option",
-            interval=interval,
-            date_range=(day_iso, day_iso),
-            message=f"DOWNLOAD_SUCCESS: rows={len(df_all)} wrote={wrote}",
-            details={"rows": len(df_all), "wrote": wrote, "sink": sink_lower, "branch": "intraday", "expirations_count": len(expirations)}
-        )
+
+        # Check if write actually succeeded
+        if sink_lower == "influxdb" and wrote == 0:
+            print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} intraday branch FAILED - wrote 0 rows to InfluxDB")
+            self.logger.log_failure(
+                symbol=symbol,
+                asset="option",
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"DOWNLOAD_FAILURE: Downloaded {len(df_all)} rows but wrote 0 to InfluxDB",
+                details={"rows": len(df_all), "wrote": wrote, "sink": sink_lower, "branch": "intraday", "expirations_count": len(expirations), "reason": "influx_write_zero"}
+            )
+            raise RuntimeError(f"InfluxDB write failed: downloaded {len(df_all)} rows but wrote 0")
+        else:
+            print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} intraday branch completed successfully")
+            self.logger.log_info(
+                symbol=symbol,
+                asset="option",
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"DOWNLOAD_SUCCESS: rows={len(df_all)} wrote={wrote}",
+                details={"rows": len(df_all), "wrote": wrote, "sink": sink_lower, "branch": "intraday", "expirations_count": len(expirations)}
+            )
 
 
 
