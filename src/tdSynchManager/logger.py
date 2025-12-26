@@ -16,7 +16,15 @@ class DataConsistencyLogger:
 
     Logs are saved to dedicated files following the pattern:
         {root_dir}/data/{asset}/{symbol}/{interval}/logs/
-            log_{YYYY-MM-DD}T00-00-00Z-{symbol}-{asset}-{interval}.parquet
+            log_{YYYY-MM-DD}_{symbol}-{asset}-{interval}_part001.parquet
+            log_{YYYY-MM-DD}_{symbol}-{asset}-{interval}_part002.parquet
+            ...
+
+    File Rotation:
+        - Each part file is limited to 300 rows maximum
+        - When a part file reaches 300 rows, a new part is created with incremented number
+        - Part numbers are zero-padded to 3 digits (001, 002, ..., 999)
+        - All parts for the same date are automatically combined when querying logs
 
     Schema:
         - timestamp: datetime (UTC when error occurred)
@@ -586,22 +594,67 @@ class DataConsistencyLogger:
         log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Log filename: log_YYYY-MM-DD_symbol-asset-interval.parquet
+        # Log filename base: log_YYYY-MM-DD_symbol-asset-interval
         log_date = log_entry["timestamp"].strftime("%Y-%m-%d")
-        log_filename = f"log_{log_date}_{symbol}-{asset}-{interval}.parquet"
-        log_path = log_dir / log_filename
+        log_base = f"log_{log_date}_{symbol}-{asset}-{interval}"
 
-        # Append to existing file or create new
+        # Max rows per part file
+        MAX_ROWS_PER_PART = 300
+
+        # Find all existing part files for this date
+        pattern = f"{log_base}_part*.parquet"
+        existing_parts = sorted(log_dir.glob(pattern))
+
+        # Determine target file
+        target_part_num = 1
+        target_path = None
+
+        if existing_parts:
+            # Get the last part file
+            last_part_path = existing_parts[-1]
+
+            # Extract part number from filename: log_..._part001.parquet
+            last_part_name = last_part_path.stem  # removes .parquet
+            if "_part" in last_part_name:
+                try:
+                    last_num_str = last_part_name.split("_part")[-1]
+                    last_part_num = int(last_num_str)
+                except (ValueError, IndexError):
+                    last_part_num = 1
+            else:
+                last_part_num = 1
+
+            # Check if last part is full
+            try:
+                df_last = pd.read_parquet(last_part_path)
+                rows_in_last = len(df_last)
+            except Exception:
+                rows_in_last = 0
+
+            if rows_in_last < MAX_ROWS_PER_PART:
+                # Append to existing last part
+                target_part_num = last_part_num
+                target_path = last_part_path
+            else:
+                # Create new part
+                target_part_num = last_part_num + 1
+                target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+        else:
+            # First log for this date - create part001
+            target_part_num = 1
+            target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+
+        # Append to target file or create new
         df_new = pd.DataFrame([log_entry])
 
-        if log_path.exists():
-            df_existing = pd.read_parquet(log_path)
+        if target_path.exists():
+            df_existing = pd.read_parquet(target_path)
             df_combined = pd.concat([df_existing, df_new], ignore_index=True)
         else:
             df_combined = df_new
 
         # Write
-        df_combined.to_parquet(log_path, index=False)
+        df_combined.to_parquet(target_path, index=False)
 
     # -------- Query/Display Helpers --------
     def get_logs(
@@ -613,13 +666,22 @@ class DataConsistencyLogger:
         end_ts=None,
         limit: int = 100
     ) -> pd.DataFrame:
-        """Return logs for the given series filtered by timestamp range."""
+        """Return logs for the given series filtered by timestamp range.
+
+        Automatically reads and combines all part files (e.g., _part001, _part002, ...)
+        for the requested date range.
+        """
         # Normalize interval name for filesystem (eod -> 1d to match data directories)
         interval_dir = "1d" if interval == "eod" else interval
         log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
+
+        # Pattern matches both legacy files and new part files
+        # e.g., log_2024-12-25_AAL-option-1d_part001.parquet
         files = sorted(log_dir.glob("log_*_*.parquet")) if log_dir.exists() else []
         if not files:
             return pd.DataFrame()
+
+        # Read and combine all part files
         dfs = []
         for f in files:
             try:
