@@ -6641,7 +6641,18 @@ class ThetaSyncManager:
         if not (host and database and token):
             raise RuntimeError("Config v3 incompleta (influx_url/host, influx_bucket=database, influx_token).")
 
-        self._influx = InfluxDBClient3(host=host, token=token, database=database)
+        timeout_env = os.environ.get("INFLUXDB_WRITE_TIMEOUT_MS") or os.environ.get("INFLUXDB_V2_TIMEOUT")
+        try:
+            timeout_ms = int(timeout_env) if timeout_env else 60000
+        except ValueError:
+            timeout_ms = 60000
+
+        self._influx = InfluxDBClient3(
+            host=host,
+            token=token,
+            database=database,
+            timeout=timeout_ms
+        )
         self.influx_client = self._influx  # Assegna anche a influx_client per check_duplicates
         return self._influx
 
