@@ -183,7 +183,12 @@ class InfluxWriteRetry:
         print("=" * 80)
 
 
-def recover_failed_batches(failed_batch_dir: str, client, dry_run: bool = False):
+def recover_failed_batches(
+    failed_batch_dir: str,
+    client,
+    dry_run: bool = False,
+    delete_recovered: bool = True
+):
     """
     Recupera batch falliti da disco.
 
@@ -195,6 +200,8 @@ def recover_failed_batches(failed_batch_dir: str, client, dry_run: bool = False)
         Client InfluxDB per scrivere
     dry_run : bool
         Se True, mostra solo cosa farebbe senza scrivere
+    delete_recovered : bool
+        Se True, elimina il file dopo un recovery riuscito. Se False, rinomina a .recovered.
     """
     print("=" * 80)
     print(f"RECOVERING FAILED BATCHES from {failed_batch_dir}")
@@ -233,15 +240,21 @@ def recover_failed_batches(failed_batch_dir: str, client, dry_run: bool = False)
             # Tentativo di recovery
             try:
                 client.write(record=lines)
-                print(f"[RECOVERY]   ✓ SUCCESS - Batch recovered!")
+                print("[RECOVERY]   SUCCESS - Batch recovered!")
 
-                # Rinomina file per marcarlo come recuperato
-                recovered_path = filepath.with_suffix('.recovered')
-                filepath.rename(recovered_path)
+                if delete_recovered:
+                    try:
+                        filepath.unlink()
+                    except Exception as e:
+                        print(f"[RECOVERY]   WARN - Could not delete {filepath.name}: {e}")
+                else:
+                    recovered_path = filepath.with_suffix('.recovered')
+                    filepath.rename(recovered_path)
+
                 recovered += 1
 
             except Exception as e:
-                print(f"[RECOVERY]   ✗ STILL FAILING: {type(e).__name__}: {e}")
+                print(f"[RECOVERY]   STILL FAILING: {type(e).__name__}: {e}")
                 still_failed += 1
 
         except Exception as e:
@@ -256,3 +269,102 @@ def recover_failed_batches(failed_batch_dir: str, client, dry_run: bool = False)
     print(f"Still failing:    {still_failed}")
     print(f"Skipped (dry):    {len(failed_files) - recovered - still_failed if dry_run else 0}")
     print("=" * 80)
+
+
+def delete_failed_batch(
+    failed_batch_dir: str,
+    measurement: Optional[str] = None,
+    batch_idx: Optional[int] = None,
+    timestamp: Optional[str] = None,
+    filename: Optional[str] = None,
+    only_recovered: bool = False
+) -> bool:
+    """
+    Elimina un file di batch fallito specifico (failed_*.json o .recovered).
+
+    Parametri
+    ----------
+    failed_batch_dir : str
+        Directory contenente i file JSON dei batch falliti
+    measurement : str, optional
+        Nome measurement (parte del filename)
+    batch_idx : int, optional
+        Indice batch (parte del filename)
+    timestamp : str, optional
+        Timestamp del file (YYYYMMDD_HHMMSS). Se fornito, match esatto.
+    filename : str, optional
+        Filename o path del file da eliminare. Se fornito, ignora gli altri parametri.
+    only_recovered : bool
+        Se True, elimina solo file marcati .recovered.
+
+    Returns
+    -------
+    bool
+        True se il file e' stato eliminato, False se non trovato.
+    """
+    base_dir = Path(failed_batch_dir)
+
+    if filename:
+        path = Path(filename)
+        if not path.is_absolute():
+            path = base_dir / filename
+        if only_recovered and path.suffix != ".recovered":
+            return False
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
+    if measurement is None or batch_idx is None:
+        raise ValueError("measurement and batch_idx are required when filename is not provided")
+
+    if not base_dir.exists():
+        return False
+
+    if timestamp:
+        candidates = []
+        if not only_recovered:
+            candidates.append(base_dir / f"failed_{measurement}_batch{batch_idx}_{timestamp}.json")
+        candidates.append(base_dir / f"failed_{measurement}_batch{batch_idx}_{timestamp}.recovered")
+        for path in candidates:
+            if path.exists():
+                if only_recovered and path.suffix != ".recovered":
+                    return False
+                path.unlink()
+                return True
+        return False
+
+    patterns = []
+    if not only_recovered:
+        patterns.append(f"failed_{measurement}_batch{batch_idx}_*.json")
+    patterns.append(f"failed_{measurement}_batch{batch_idx}_*.recovered")
+
+    matches = []
+    for pattern in patterns:
+        matches.extend(base_dir.glob(pattern))
+
+    if not matches:
+        return False
+    if len(matches) > 1:
+        raise ValueError("Multiple matching batch files found; specify timestamp or filename.")
+
+    matches[0].unlink()
+    return True
+
+
+def list_failed_batches(failed_batch_dir: str) -> tuple[list[str], list[str]]:
+    """
+    Restituisce due elenchi: batch falliti non trattati e batch gia' recovered.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        (pending_json, recovered_files)
+    """
+    base_dir = Path(failed_batch_dir)
+    if not base_dir.exists():
+        return [], []
+
+    pending = sorted(p.as_posix() for p in base_dir.glob("failed_*.json"))
+    recovered = sorted(p.as_posix() for p in base_dir.glob("failed_*.recovered"))
+    return pending, recovered
