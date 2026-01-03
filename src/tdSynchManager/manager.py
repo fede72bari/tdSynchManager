@@ -1240,34 +1240,6 @@ class ThetaSyncManager:
                 return None
             return s if "-" in s else f"{s[:4]}-{s[4:6]}-{s[6:]}"
 
-        # --- helper: calcola l'HMS di partenza allineato al bucket ---
-        def _force_start_hms_from_max_ts(_max_ts_utc, interval, overlap_seconds=60, bars_back=None):
-            """
-            - tick/secondi: usa solo overlap_seconds.
-            - minuti/ore  : floor in ET al bucket e arretra di N barre.
-            Ritorna 'HH:MM:SS' in ET.
-            """
-            iv = (interval or "").strip().lower()
-        
-            if iv == "tick" or iv.endswith("s"):
-                et = _max_ts_utc.tz_convert("America/New_York")
-                et2 = (et - pd.Timedelta(seconds=int(overlap_seconds or 60))).replace(microsecond=0)
-                return et2.strftime("%H:%M:%S")
-        
-            m = 1
-            if iv.endswith("m") and iv[:-1].isdigit():
-                m = max(1, int(iv[:-1]))
-            elif iv.endswith("h") and iv[:-1].isdigit():
-                m = max(1, int(iv[:-1]) * 60)
-        
-            n = int(bars_back if bars_back is not None else getattr(self.cfg, "resume_bars_back", 1) or 1)
-            n = max(1, n)
-        
-            floored_utc = self._floor_to_interval_et(_max_ts_utc.to_pydatetime(), m)  # <-- usa il tuo helper
-            start_et = floored_utc.astimezone(self.ET) - pd.Timedelta(minutes=m * n)
-            return start_et.strftime("%H:%M:%S")
-
-    
         first_date_iso = _norm_ymd(first_date)
     
         # Discover earliest and latest days across ALL series files (handles rotations / multiple files)
@@ -1511,12 +1483,21 @@ class ThetaSyncManager:
             return  # done for EOD stock/index
 
         # Day-by-day loop: options and intraday
-        # Fetch available dates from ThetaData API to iterate ONLY over real dates
-        print(f"[API-DATES] Fetching available dates for {symbol} ({task.asset}/{interval})...")
-        api_available_dates = await self._fetch_available_dates_from_api(
-            task.asset, symbol, interval, cur_date, end_date,
-            use_api_discovery=task.use_api_date_discovery
-        )
+        # OPTIMIZATION: Skip API date fetch for single-day downloads (real-time intraday)
+        # The API call is expensive and unnecessary when downloading only one specific day
+        is_single_day = (cur_date == end_date)
+
+        if is_single_day:
+            # Single-day download (real-time intraday): skip API fetch, use the specific date
+            print(f"[API-DATES] Single-day download ({cur_date.isoformat()}), skipping API date fetch")
+            api_available_dates = None
+        else:
+            # Multi-day range: fetch available dates from ThetaData API to iterate ONLY over real dates
+            print(f"[API-DATES] Fetching available dates for {symbol} ({task.asset}/{interval})...")
+            api_available_dates = await self._fetch_available_dates_from_api(
+                task.asset, symbol, interval, cur_date, end_date,
+                use_api_discovery=task.use_api_date_discovery
+            )
 
         # Determine iteration strategy: API dates or fallback to day-by-day
         if api_available_dates:
@@ -2699,47 +2680,95 @@ class ThetaSyncManager:
                 prev = prev - timedelta(days=1)
             elif prev.weekday() == 6:
                 prev = prev - timedelta(days=2)
-                
+
             cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
-            
+
             # >>> Current-Day Fix: Per-Expiration Fallback <
             today_utc = dt.now(timezone.utc).date().isoformat()
             is_current_day = (day_iso == today_utc)
-            
+
+            # >>> OI CACHE OPTIMIZATION (INTRADAY) <<<
+            # OI changes only at EOD, so we cache it to avoid redundant API calls
+            # Check cache first, download only if cache miss
             doi = None
-            if is_current_day and expirations:
-                # Current day: must use per-expiration (expiration="*" fails with 400)
-                print(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
-                oi_dfs = []
-                for exp in expirations:
-                    try:
-                        csv_oi_exp, _ = await self.client.option_history_open_interest(
-                            symbol=symbol,
-                            expiration=exp,
-                            date=cur_ymd,
-                            strike="*",
-                            right="both",
-                            format_type="csv",
-                        )
-                        if csv_oi_exp:
-                            oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp), dtype=str))
-                    except Exception as e:
-                        print(f"[WARN] OI exp={exp} day={day_iso}: {e}")
-                
-                if oi_dfs:
-                    doi = pd.concat(oi_dfs, ignore_index=True)
-            else:
-                # Historical: single call works
-                csv_oi, _ = await self.client.option_history_open_interest(
-                    symbol=symbol,
-                    expiration="*",
-                    date=cur_ymd,
-                    strike="*",
-                    right="both",
-                    format_type="csv",
-                )
-                if csv_oi:
-                    doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
+            oi_from_cache = False
+
+            print(f"[OI-CACHE] Checking local DB for {symbol} date={cur_ymd}...")
+            if self.cfg.influx_url and self._check_oi_cache(symbol, cur_ymd):
+                # Cache HIT: Load OI from InfluxDB cache
+                print(f"[OI-CACHE] ✓ Found current date OI in local DB - retrieving from cache")
+                doi = self._load_oi_from_cache(symbol, cur_ymd)
+                if doi is not None and not doi.empty:
+                    oi_from_cache = True
+                    print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local DB (no remote API call)")
+                else:
+                    print(f"[OI-CACHE][WARN] Cache indicated data present but load returned empty - falling back to remote")
+
+            if not oi_from_cache:
+                # Cache MISS: Download OI from API
+                if not self.cfg.influx_url:
+                    print(f"[OI-CACHE] InfluxDB not configured - fetching from remote data source")
+                else:
+                    print(f"[OI-CACHE] ✗ Current date OI not found in local DB - starting remote data source fetching")
+
+                if is_current_day and expirations:
+                    # Current day: must use per-expiration (expiration="*" fails with 400)
+                    print(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
+                    oi_dfs = []
+                    for exp in expirations:
+                        try:
+                            csv_oi_exp, _ = await self.client.option_history_open_interest(
+                                symbol=symbol,
+                                expiration=exp,
+                                date=cur_ymd,
+                                strike="*",
+                                right="both",
+                                format_type="csv",
+                            )
+                            if csv_oi_exp:
+                                oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp), dtype=str))
+                        except Exception as e:
+                            print(f"[WARN] OI exp={exp} day={day_iso}: {e}")
+
+                    if oi_dfs:
+                        doi = pd.concat(oi_dfs, ignore_index=True)
+                else:
+                    # Historical: single call works
+                    csv_oi, _ = await self.client.option_history_open_interest(
+                        symbol=symbol,
+                        expiration="*",
+                        date=cur_ymd,
+                        strike="*",
+                        right="both",
+                        format_type="csv",
+                    )
+                    if csv_oi:
+                        doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
+
+                # Save to cache for future reuse (only if we have data)
+                if doi is not None and not doi.empty and self.cfg.influx_url:
+                    print(f"[OI-CACHE] Saving current date OI to local DB for future reuse...")
+                    # Need to add timestamp_oi and effective_date_oi before caching
+                    oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
+                    if oi_col:
+                        doi_cache = doi.copy()
+                        doi_cache = doi_cache.rename(columns={oi_col: "last_day_OI"})
+
+                        ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi_cache.columns), None)
+                        if ts_col:
+                            doi_cache = doi_cache.rename(columns={ts_col: "timestamp_oi"})
+                        if "timestamp_oi" in doi_cache.columns:
+                            _eff = pd.to_datetime(doi_cache["timestamp_oi"], errors="coerce")
+                            doi_cache["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
+                        else:
+                            doi_cache["effective_date_oi"] = prev.date().isoformat()
+
+                        # Save to cache
+                        saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
+                        if saved:
+                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local DB (measurement: OI-{symbol})")
+                        else:
+                            print(f"[OI-CACHE][WARN] Failed to save OI to local DB - check InfluxDB connection")
             
             if doi is not None and not doi.empty:
                 # Normalize types before merge (avoid object/float mismatch on strike, etc.)
@@ -4690,53 +4719,6 @@ class ThetaSyncManager:
             expected = pd.bdate_range(first_day, last_day, freq="C")  # Mon-Fri (festività escluse)
             missing = expected.difference(observed)
             return [d.date().isoformat() for d in missing]
-                
-
-    def _debug_log_resume(self, task, symbol: str, interval: str, sink: str,
-                          latest_path: Optional[str],
-                          resume_anchor_dt: Optional[datetime],
-                          computed_start_dt: Optional[datetime]) -> None:
-        """
-        Print a compact, explicit resume snapshot:
-          1) requested start date from task,
-          2) latest file path used for resume,
-          3) last saved day/timestamp and the computed resume start.
-        """
-        # 1) "data di partenza indicata nel task"
-        requested_start = getattr(task, "first_date", None) or getattr(task, "start_date", None)
-        # Allow str/None; pretty print
-        requested_start_s = str(requested_start) if requested_start is not None else "None"
-    
-        # 2) "il nome file con i dati più recenti"
-        latest_path_s = latest_path or "None"
-    
-        # 3) "l'ultima data utile ... e da dove dovrebbe ripartire"
-        last_saved_s = resume_anchor_dt.isoformat() if resume_anchor_dt else "None"
-        will_start_s  = computed_start_dt.isoformat() if computed_start_dt else "None"
-    
-        # Expected "should start" (esplicito nel log, non altero la logica)
-        should_start_dt = None
-        try:
-            if resume_anchor_dt is not None:
-                if interval == "1d":
-                    # ripartenza dal giorno successivo alle 00:00:00Z
-                    next_day = (resume_anchor_dt.astimezone(timezone.utc).date() + timedelta(days=1))
-                    should_start_dt = dt.combine(next_day, dt.min.time(), tzinfo=timezone.utc)
-                else:
-                    # intraday: piccolo overlap configurato
-                    ov = max(0, getattr(self.cfg, "overlap_seconds", 60))
-                    should_start_dt = resume_anchor_dt - timedelta(seconds=ov)
-        except Exception:
-            pass
-        should_start_s = should_start_dt.isoformat() if should_start_dt else "None"
-    
-        # Stampa finale (3 righe, chiare)
-        print(f"[RESUME-DEBUG] asset={getattr(task,'asset',None)} symbol={symbol} interval={interval} sink={sink}")
-        print(f"[RESUME-DEBUG] requested_start={requested_start_s}  latest_file={latest_path_s}")
-        print(f"[RESUME-DEBUG] resume_anchor={last_saved_s}  should_start_from={should_start_s}  computed_start={will_start_s}")
-
-
-   
 
     def _compute_intraday_window_et(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -7069,6 +7051,203 @@ class ThetaSyncManager:
         except Exception as ex:
             print(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
             return None
+
+    # ----------------------- OI CACHE METHODS (INTRADAY OPTIMIZATION) -----------------------
+
+    def _check_oi_cache(self, symbol: str, date_ymd: str) -> bool:
+        """
+        Check if Open Interest data for the given symbol and date is already cached in InfluxDB.
+
+        OI data is cached in a dedicated measurement "OI-{symbol}" to avoid redundant API calls
+        during intraday downloads. Since OI only changes at EOD, the same data can be reused
+        throughout the trading day.
+
+        Parameters
+        ----------
+        symbol : str
+            Ticker symbol (e.g., "AAPL", "SPY")
+        date_ymd : str
+            Date in YYYYMMDD format (e.g., "20250102")
+
+        Returns
+        -------
+        bool
+            True if OI data for this date is cached, False otherwise
+        """
+        if not self.cfg.influx_url:
+            return False
+
+        measurement = f"OI-{symbol}"
+
+        try:
+            client = self._ensure_influx_client()
+
+            # Query to check if any OI data exists for this date
+            # We use effective_date_oi field as the filter
+            query = f'''
+                SELECT COUNT(*) as count
+                FROM "{measurement}"
+                WHERE effective_date_oi = '{date_ymd}'
+                LIMIT 1
+            '''
+
+            result = client.query(query)
+            df = result.to_pandas() if hasattr(result, "to_pandas") else None
+
+            if df is not None and not df.empty and "count" in df.columns:
+                count = df["count"].iloc[0]
+                has_cache = count > 0
+                print(f"[OI-CACHE][CHECK] {symbol} date={date_ymd} cached={has_cache} (count={count})")
+                return has_cache
+
+            return False
+
+        except Exception as e:
+            print(f"[OI-CACHE][CHECK][WARN] Failed to check cache for {symbol}/{date_ymd}: {e}")
+            return False
+
+    def _load_oi_from_cache(self, symbol: str, date_ymd: str) -> Optional[pd.DataFrame]:
+        """
+        Load cached Open Interest data from InfluxDB for the given symbol and date.
+
+        Retrieves previously cached OI data to avoid redundant API calls during intraday
+        downloads. The cache is populated during the first download of the day and reused
+        for subsequent intraday updates.
+
+        Parameters
+        ----------
+        symbol : str
+            Ticker symbol (e.g., "AAPL", "SPY")
+        date_ymd : str
+            Date in YYYYMMDD format (e.g., "20250102")
+
+        Returns
+        -------
+        pd.DataFrame or None
+            DataFrame with OI data including columns: last_day_OI, expiration, strike, right,
+            effective_date_oi, timestamp_oi. Returns None if cache miss or error.
+        """
+        if not self.cfg.influx_url:
+            return None
+
+        measurement = f"OI-{symbol}"
+
+        try:
+            client = self._ensure_influx_client()
+
+            # Query all OI records for this date
+            query = f'''
+                SELECT *
+                FROM "{measurement}"
+                WHERE effective_date_oi = '{date_ymd}'
+            '''
+
+            result = client.query(query)
+            df = result.to_pandas() if hasattr(result, "to_pandas") else None
+
+            if df is None or df.empty:
+                print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - No cached data")
+                return None
+
+            # Rename 'time' column to 'timestamp_oi' for consistency
+            if 'time' in df.columns:
+                df = df.rename(columns={'time': 'timestamp_oi'})
+
+            print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Loaded {len(df)} OI records from cache")
+            return df
+
+        except Exception as e:
+            print(f"[OI-CACHE][LOAD][WARN] Failed to load cache for {symbol}/{date_ymd}: {e}")
+            return None
+
+    def _save_oi_to_cache(self, symbol: str, date_ymd: str, oi_df: pd.DataFrame) -> bool:
+        """
+        Save Open Interest data to InfluxDB cache for reuse during intraday downloads.
+
+        Caches OI data in a dedicated measurement "OI-{symbol}" to avoid redundant API calls
+        throughout the trading day. Since OI only changes at EOD, this significantly reduces
+        API load and improves performance for real-time intraday synchronization.
+
+        Parameters
+        ----------
+        symbol : str
+            Ticker symbol (e.g., "AAPL", "SPY")
+        date_ymd : str
+            Date in YYYYMMDD format (e.g., "20250102")
+        oi_df : pd.DataFrame
+            DataFrame with OI data including columns: last_day_OI, expiration, strike, right,
+            effective_date_oi, timestamp_oi
+
+        Returns
+        -------
+        bool
+            True if save succeeded, False otherwise
+        """
+        if not self.cfg.influx_url or oi_df is None or oi_df.empty:
+            return False
+
+        measurement = f"OI-{symbol}"
+
+        try:
+            client = self._ensure_influx_client()
+
+            # Prepare DataFrame for InfluxDB write
+            df_cache = oi_df.copy()
+
+            # Ensure required columns exist
+            required_cols = ['last_day_OI']
+            if not all(col in df_cache.columns for col in required_cols):
+                print(f"[OI-CACHE][SAVE][WARN] Missing required columns in OI DataFrame")
+                return False
+
+            # Add effective_date_oi if not present
+            if 'effective_date_oi' not in df_cache.columns:
+                df_cache['effective_date_oi'] = date_ymd
+
+            # Use timestamp_oi as the time column, or create from effective_date_oi
+            if 'timestamp_oi' in df_cache.columns:
+                df_cache['time'] = pd.to_datetime(df_cache['timestamp_oi'], errors='coerce', utc=True)
+            else:
+                # Create timestamp from date (EOD of previous day, 4pm ET = 21:00 UTC)
+                df_cache['time'] = pd.to_datetime(date_ymd, format='%Y%m%d', errors='coerce') + pd.Timedelta(hours=21)
+                df_cache['time'] = df_cache['time'].dt.tz_localize('UTC')
+
+            # Ensure time column is timezone-aware UTC
+            if df_cache['time'].dt.tz is None:
+                df_cache['time'] = df_cache['time'].dt.tz_localize('UTC')
+            elif str(df_cache['time'].dt.tz) != 'UTC':
+                df_cache['time'] = df_cache['time'].dt.tz_convert('UTC')
+
+            # Identify tag columns (identifiers) and field columns (measurements)
+            tag_cols = []
+            for col in ['expiration', 'strike', 'right', 'option_symbol', 'root', 'symbol']:
+                if col in df_cache.columns:
+                    tag_cols.append(col)
+
+            field_cols = ['last_day_OI', 'effective_date_oi']
+            if 'timestamp_oi' in df_cache.columns:
+                field_cols.append('timestamp_oi')
+
+            # Keep only necessary columns
+            keep_cols = ['time'] + tag_cols + field_cols
+            df_cache = df_cache[[col for col in keep_cols if col in df_cache.columns]]
+
+            # Write to InfluxDB
+            client.write(
+                database=self.cfg.influx_bucket,
+                record=df_cache,
+                data_frame_measurement_name=measurement,
+                data_frame_tag_columns=tag_cols if tag_cols else None
+            )
+
+            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(df_cache)} OI records")
+            return True
+
+        except Exception as e:
+            print(f"[OI-CACHE][SAVE][WARN] Failed to save cache for {symbol}/{date_ymd}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def _get_cached_first_date(self, asset: str, symbol: str, req_type: str) -> Optional[str]:
         key = self._cache_key(asset, symbol, req_type)
@@ -10523,29 +10702,7 @@ class ThetaSyncManager:
             # Fallback filename-safe se era una stringa bizzarra
             return str(ts).replace(":", "-").replace(" ", "T")
         return ts.strftime("%Y-%m-%dT%H-%M-%SZ")
-    
-    def _et_hms_from_iso_utc(iso: str, minus_seconds: int = 0) -> str:
-        """
-        Build ET 'HH:MM:SS' from either:
-        - UTC ISO (ending with 'Z' or explicit offset)  -> convert to ET, minus overlap
-        - naive ET string ("YYYY-MM-DD HH:MM:SS")      -> treat as ET, minus overlap
-        """
-        try:
-            txt = str(iso).strip()
-            if ("Z" in txt) or (len(txt) >= 6 and txt[-6] in "+-"):
-                # UTC input -> convert to ET
-                dt = dt.fromisoformat(txt.replace("Z", "+00:00")).astimezone(ZoneInfo("America/New_York"))
-            else:
-                # Naive ET input -> attach ET tz without shifting the clock
-                dt = dt.fromisoformat(txt).replace(tzinfo=ZoneInfo("America/New_York"))
-    
-            if minus_seconds and int(minus_seconds) > 0:
-                dt = dt - timedelta(seconds=int(minus_seconds))
-            return dt.strftime("%H:%M:%S")
-        except Exception:
-            return "00:00:00"
 
-    
     def _min_ts_from_df(self, df) -> Optional[str]:
         """Best-effort extraction of the minimum timestamp column from a DataFrame."""
         for col in ("timestamp","TIMESTAMP","datetime","DATETIME","QUOTE_DATETIME"):
