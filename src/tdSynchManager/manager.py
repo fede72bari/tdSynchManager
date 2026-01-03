@@ -2748,30 +2748,15 @@ class ThetaSyncManager:
                         doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
 
                 # Save to cache for future reuse (only if we have data and caching is enabled)
+                # Save RAW data from API without transformations for cache transparency
                 if doi is not None and not doi.empty and self.cfg.enable_oi_caching:
                     print(f"[OI-CACHE] Saving current date OI to local cache for future reuse...")
-                    # Need to add timestamp_oi and effective_date_oi before caching
-                    oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
-                    if oi_col:
-                        doi_cache = doi.copy()
-                        doi_cache = doi_cache.rename(columns={oi_col: "last_day_OI"})
-
-                        ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi_cache.columns), None)
-                        if ts_col:
-                            doi_cache = doi_cache.rename(columns={ts_col: "timestamp_oi"})
-                        if "timestamp_oi" in doi_cache.columns:
-                            _eff = pd.to_datetime(doi_cache["timestamp_oi"], errors="coerce")
-                            doi_cache["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
-                        else:
-                            doi_cache["effective_date_oi"] = prev.date().isoformat()
-
-                        # Save to cache (Parquet file)
-                        saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
-                        if saved:
-                            cache_path = self._get_oi_cache_path(symbol, cur_ymd)
-                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
-                        else:
-                            print(f"[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
+                    saved = self._save_oi_to_cache(symbol, cur_ymd, doi)
+                    if saved:
+                        cache_path = self._get_oi_cache_path(symbol, cur_ymd)
+                        print(f"[OI-CACHE][SAVED] Successfully saved {len(doi)} OI records to local cache: {cache_path}")
+                    else:
+                        print(f"[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
             
             if doi is not None and not doi.empty:
                 # Normalize types before merge (avoid object/float mismatch on strike, etc.)
@@ -7101,9 +7086,9 @@ class ThetaSyncManager:
         """
         Load cached Open Interest data from local Parquet file for the given symbol and date.
 
-        Retrieves previously cached OI data to avoid redundant API calls during intraday
-        downloads. The cache is populated during the first download of the day and reused
-        for subsequent intraday updates.
+        Returns RAW data exactly as ThetaData API would return it for cache transparency.
+        When requesting OI for date X, returns OI from previous trading session with
+        original API column names (timestamp, open_interest, expiration, strike, right, etc.).
 
         Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
@@ -7112,13 +7097,13 @@ class ThetaSyncManager:
         symbol : str
             Ticker symbol (e.g., "AAPL", "SPY")
         date_ymd : str
-            Date in YYYYMMDD format (e.g., "20250102")
+            Date in YYYYMMDD format (e.g., "20250102") - the requested date
 
         Returns
         -------
         pd.DataFrame or None
-            DataFrame with OI data including columns: last_day_OI, expiration, strike, right,
-            effective_date_oi, timestamp_oi. Returns None if cache miss or error.
+            RAW DataFrame with columns: timestamp, open_interest, expiration, strike, right,
+            symbol, root, option_symbol. Returns None if cache miss or error.
         """
         if not self.cfg.enable_oi_caching:
             return None
@@ -7147,9 +7132,9 @@ class ThetaSyncManager:
         """
         Save Open Interest data to local Parquet file for reuse during intraday downloads.
 
-        Caches OI data in Parquet format to avoid redundant API calls throughout the trading day.
-        Since OI only changes at EOD, this significantly reduces API load and improves performance
-        for real-time intraday synchronization.
+        Saves RAW data exactly as returned by ThetaData API for cache transparency.
+        When querying cache for date X, it returns the same data ThetaData would return
+        (OI from previous trading session with original timestamp and column names).
 
         Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
@@ -7158,10 +7143,10 @@ class ThetaSyncManager:
         symbol : str
             Ticker symbol (e.g., "AAPL", "SPY")
         date_ymd : str
-            Date in YYYYMMDD format (e.g., "20250102")
+            Date in YYYYMMDD format (e.g., "20250102") - the requested date, not OI effective date
         oi_df : pd.DataFrame
-            DataFrame with OI data including columns: last_day_OI, expiration, strike, right,
-            effective_date_oi, timestamp_oi
+            RAW DataFrame from ThetaData API with columns: timestamp, open_interest,
+            expiration, strike, right, symbol, root, option_symbol
 
         Returns
         -------
@@ -7174,23 +7159,9 @@ class ThetaSyncManager:
         cache_path = self._get_oi_cache_path(symbol, date_ymd)
 
         try:
-            # Prepare DataFrame for caching
-            df_cache = oi_df.copy()
-
-            # Ensure required columns exist
-            required_cols = ['last_day_OI']
-            if not all(col in df_cache.columns for col in required_cols):
-                print(f"[OI-CACHE][SAVE][WARN] Missing required columns in OI DataFrame")
-                return False
-
-            # Add effective_date_oi if not present
-            if 'effective_date_oi' not in df_cache.columns:
-                df_cache['effective_date_oi'] = date_ymd
-
-            # Save to Parquet
-            df_cache.to_parquet(cache_path, index=False, compression='snappy')
-
-            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(df_cache)} OI records to {cache_path}")
+            # Save RAW data without transformations for cache transparency
+            oi_df.to_parquet(cache_path, index=False, compression='snappy')
+            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(oi_df)} OI records to {cache_path}")
             return True
 
         except Exception as e:

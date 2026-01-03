@@ -98,8 +98,10 @@ Implemented an InfluxDB-based caching system that:
 **Cache Storage:** Local Parquet files (works with ANY sink: csv, parquet, influxdb)
 **Cache Location:** `{root_dir}/.oi_cache/{symbol}/{YYYYMMDD}.parquet`
 
-**Schema:**
-- **Columns:** `expiration`, `strike`, `right`, `option_symbol`, `root`, `symbol`, `last_day_OI`, `effective_date_oi`, `timestamp_oi`
+**Schema (RAW data from ThetaData API):**
+- **Columns:** `timestamp` (OI effective date from previous session), `open_interest`, `expiration`, `strike`, `right`, `symbol`, `root`, `option_symbol`
+
+**Cache transparency:** Cache returns the exact same data ThetaData API would return. When requesting OI for date `20250102`, both API and cache return OI from previous trading session (e.g., `20250101` EOD) with `timestamp` column containing that effective date.
 
 **Cache is independent from main data sink** - you can store OHLC in CSV while caching OI in Parquet files.
 
@@ -107,18 +109,21 @@ Implemented an InfluxDB-based caching system that:
 
 ```python
 # 1. Check cache
-if self.cfg.influx_url and self._check_oi_cache(symbol, cur_ymd):
-    # Cache HIT: Load from cache
+if self.cfg.enable_oi_caching and self._check_oi_cache(symbol, cur_ymd):
+    # Cache HIT: Load RAW data from cache (same as API would return)
     doi = self._load_oi_from_cache(symbol, cur_ymd)
-    print(f"[OI-CACHE][HIT] Using cached OI for {symbol}/{cur_ymd}")
+    print(f"[OI-CACHE][SUCCESS] Retrieved N OI records from local cache (no remote API call)")
 else:
     # Cache MISS: Download from API
-    doi = download_oi_from_api(...)
+    doi = download_oi_from_api(...)  # Returns RAW data
 
-    # Save to cache for future reuse
+    # Save RAW data to cache for future reuse (no transformations)
     if doi is not None and not doi.empty:
-        self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
-        print(f"[OI-CACHE][SAVE] {symbol} date={cur_ymd} - Cached N OI records")
+        self._save_oi_to_cache(symbol, cur_ymd, doi)  # Save RAW data
+        print(f"[OI-CACHE][SAVED] Successfully saved N OI records to local cache: {path}")
+
+# Data transformations (rename columns, calculate effective_date) happen here
+# Same transformations applied whether data comes from cache or API
 ```
 
 ### Benefits
