@@ -95,13 +95,13 @@ Implemented an InfluxDB-based caching system that:
 
 ### Architecture
 
-**Cache Storage:** InfluxDB
-**Measurement Name:** `OI-{symbol}` (e.g., `OI-TLRY`, `OI-AAPL`)
+**Cache Storage:** Local Parquet files (works with ANY sink: csv, parquet, influxdb)
+**Cache Location:** `{root_dir}/.oi_cache/{symbol}/{YYYYMMDD}.parquet`
 
 **Schema:**
-- **Tags:** `expiration`, `strike`, `right`, `option_symbol`, `root`, `symbol`
-- **Fields:** `last_day_OI`, `effective_date_oi`, `timestamp_oi`
-- **Time:** `timestamp_oi` from API or synthetic timestamp (EOD of previous day)
+- **Columns:** `expiration`, `strike`, `right`, `option_symbol`, `root`, `symbol`, `last_day_OI`, `effective_date_oi`, `timestamp_oi`
+
+**Cache is independent from main data sink** - you can store OHLC in CSV while caching OI in Parquet files.
 
 ### Implementation Flow
 
@@ -132,29 +132,62 @@ else:
 
 **First download (cache MISS):**
 ```
-[OI-CACHE][CHECK] TLRY date=20250102 cached=False (count=0)
+[OI-CACHE] Checking local cache for TLRY date=20250102...
+[OI-CACHE] ✗ Current date OI not found in local cache - starting remote data source fetching
 [OI-FETCH] historical mode: expiration="*" (all expirations)
-[OI-CACHE][SAVE] TLRY date=20250102 - Cached 1250 OI records
+[OI-CACHE] Saving current date OI to local cache for future reuse...
+[OI-CACHE][SAVED] Successfully saved 1250 OI records to local cache: data/.oi_cache/TLRY/20250102.parquet
 ```
 
 **Subsequent downloads (cache HIT):**
 ```
-[OI-CACHE][CHECK] TLRY date=20250102 cached=True (count=1250)
+[OI-CACHE] Checking local cache for TLRY date=20250102...
+[OI-CACHE][CHECK] TLRY date=20250102 - Cache file found: data/.oi_cache/TLRY/20250102.parquet
+[OI-CACHE] ✓ Found current date OI in local cache - retrieving from file
 [OI-CACHE][LOAD] TLRY date=20250102 - Loaded 1250 OI records from cache
-[OI-CACHE][HIT] Using cached OI for TLRY/20250102 (1250 records)
+[OI-CACHE][SUCCESS] Retrieved 1250 OI records from local cache (no remote API call)
+```
+
+**OI caching disabled:**
+```
+[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source
 ```
 
 ### Cache Invalidation
 
 **Automatic:** OI cache is automatically invalidated each day because the `cur_ymd` date advances. Yesterday's OI remains cached but is not queried for today's date.
 
-**Manual:** To clear the OI cache for a specific symbol:
-```python
-# Using InfluxDB client
-client.query(f'DELETE FROM "OI-{symbol}"')
+**Manual:** To clear the OI cache:
 
-# Or clear specific date
-client.query(f'DELETE FROM "OI-{symbol}" WHERE effective_date_oi = "20250102"')
+**Clear all OI cache:**
+```bash
+rm -rf data/.oi_cache/
+```
+
+**Clear cache for specific symbol:**
+```bash
+rm -rf data/.oi_cache/TLRY/
+```
+
+**Clear cache for specific symbol and date:**
+```bash
+rm data/.oi_cache/TLRY/20250102.parquet
+```
+
+**Programmatic cleanup (Python):**
+```python
+import shutil
+import os
+
+# Clear all OI cache
+cache_dir = os.path.join(cfg.root_dir, cfg.oi_cache_dir)
+if os.path.exists(cache_dir):
+    shutil.rmtree(cache_dir)
+
+# Clear specific symbol
+symbol_cache = os.path.join(cache_dir, "TLRY")
+if os.path.exists(symbol_cache):
+    shutil.rmtree(symbol_cache)
 ```
 
 ---
@@ -163,14 +196,35 @@ client.query(f'DELETE FROM "OI-{symbol}" WHERE effective_date_oi = "20250102"')
 
 Both optimizations are **enabled by default** and require no configuration changes.
 
+### Parameters
+
+**OI Caching Configuration:**
+```python
+cfg = ManagerConfig(
+    root_dir="data",
+    enable_oi_caching=True,         # Default: True - Enable OI caching for intraday
+    oi_cache_dir=".oi_cache",       # Default: ".oi_cache" - Cache directory name
+    # ... other parameters
+)
+```
+
 ### Requirements
 
-- **OI Caching:** Requires `influx_url` to be configured in `ManagerConfig`
+- **OI Caching:** Works with ANY sink (csv, parquet, influxdb) - no special requirements
 - **Date Fetch Skip:** Always enabled for single-day downloads
 
 ### Disabling (not recommended)
 
-To disable OI caching, you can set `influx_url=None` in the config, but this will also disable InfluxDB as a sink.
+To disable OI caching:
+```python
+cfg = ManagerConfig(
+    root_dir="data",
+    enable_oi_caching=False,  # Disable OI caching
+    # ...
+)
+```
+
+**Note:** OI caching is independent from the main data sink. Even if you use `sink="csv"`, OI will be cached in Parquet files.
 
 ---
 
@@ -223,14 +277,21 @@ For 10 symbols updated every 5 minutes:
 ### OI Cache Not Working
 
 **Symptoms:**
-- No `[OI-CACHE][HIT]` messages in logs
+- No `[OI-CACHE][SUCCESS]` messages in logs
 - OI downloaded on every run
 
 **Solutions:**
-1. Verify InfluxDB is configured: `cfg.influx_url` is set
-2. Check InfluxDB connectivity: `influx ping`
-3. Verify OI-{symbol} measurements exist: `SHOW TABLES` in InfluxDB
-4. Check for errors in `[OI-CACHE][WARN]` messages
+1. Verify OI caching is enabled: `cfg.enable_oi_caching = True` (default)
+2. Check cache directory exists and has write permissions:
+   ```bash
+   ls -la data/.oi_cache/
+   ```
+3. Verify cache files are being created:
+   ```bash
+   ls -la data/.oi_cache/TLRY/
+   ```
+4. Check for errors in `[OI-CACHE][WARN]` messages in logs
+5. Ensure sufficient disk space for cache files
 
 ### Single-Day Optimization Not Working
 
@@ -261,8 +322,9 @@ These optimizations significantly improve the performance and efficiency of real
 
 ✅ **Single-day downloads** skip unnecessary API date fetches
 ✅ **OI caching** eliminates redundant API calls for unchanging data
+✅ **Works with ANY sink** - csv, parquet, influxdb (cache is independent)
 ✅ **99%+ reduction** in API calls for real-time intraday scenarios
 ✅ **Backward compatible** - multi-day downloads unchanged
-✅ **Automatic** - no configuration required
+✅ **Enabled by default** - minimal configuration required (`enable_oi_caching=True`)
 
-**Result:** Faster, more efficient real-time data synchronization with minimal API load.
+**Result:** Faster, more efficient real-time data synchronization with minimal API load, regardless of your chosen data storage format.

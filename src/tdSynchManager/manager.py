@@ -2690,26 +2690,28 @@ class ThetaSyncManager:
             # >>> OI CACHE OPTIMIZATION (INTRADAY) <<<
             # OI changes only at EOD, so we cache it to avoid redundant API calls
             # Check cache first, download only if cache miss
+            # Works with ANY sink (csv, parquet, influxdb) - cache is independent
             doi = None
             oi_from_cache = False
 
-            print(f"[OI-CACHE] Checking local DB for {symbol} date={cur_ymd}...")
-            if self.cfg.influx_url and self._check_oi_cache(symbol, cur_ymd):
-                # Cache HIT: Load OI from InfluxDB cache
-                print(f"[OI-CACHE] ✓ Found current date OI in local DB - retrieving from cache")
-                doi = self._load_oi_from_cache(symbol, cur_ymd)
-                if doi is not None and not doi.empty:
-                    oi_from_cache = True
-                    print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local DB (no remote API call)")
-                else:
-                    print(f"[OI-CACHE][WARN] Cache indicated data present but load returned empty - falling back to remote")
+            if self.cfg.enable_oi_caching:
+                print(f"[OI-CACHE] Checking local cache for {symbol} date={cur_ymd}...")
+                if self._check_oi_cache(symbol, cur_ymd):
+                    # Cache HIT: Load OI from local Parquet cache
+                    print(f"[OI-CACHE] ✓ Found current date OI in local cache - retrieving from file")
+                    doi = self._load_oi_from_cache(symbol, cur_ymd)
+                    if doi is not None and not doi.empty:
+                        oi_from_cache = True
+                        print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local cache (no remote API call)")
+                    else:
+                        print(f"[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
 
             if not oi_from_cache:
                 # Cache MISS: Download OI from API
-                if not self.cfg.influx_url:
-                    print(f"[OI-CACHE] InfluxDB not configured - fetching from remote data source")
+                if self.cfg.enable_oi_caching:
+                    print(f"[OI-CACHE] ✗ Current date OI not found in local cache - starting remote data source fetching")
                 else:
-                    print(f"[OI-CACHE] ✗ Current date OI not found in local DB - starting remote data source fetching")
+                    print(f"[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
 
                 if is_current_day and expirations:
                     # Current day: must use per-expiration (expiration="*" fails with 400)
@@ -2745,9 +2747,9 @@ class ThetaSyncManager:
                     if csv_oi:
                         doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
 
-                # Save to cache for future reuse (only if we have data)
-                if doi is not None and not doi.empty and self.cfg.influx_url:
-                    print(f"[OI-CACHE] Saving current date OI to local DB for future reuse...")
+                # Save to cache for future reuse (only if we have data and caching is enabled)
+                if doi is not None and not doi.empty and self.cfg.enable_oi_caching:
+                    print(f"[OI-CACHE] Saving current date OI to local cache for future reuse...")
                     # Need to add timestamp_oi and effective_date_oi before caching
                     oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
                     if oi_col:
@@ -2763,12 +2765,13 @@ class ThetaSyncManager:
                         else:
                             doi_cache["effective_date_oi"] = prev.date().isoformat()
 
-                        # Save to cache
+                        # Save to cache (Parquet file)
                         saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
                         if saved:
-                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local DB (measurement: OI-{symbol})")
+                            cache_path = self._get_oi_cache_path(symbol, cur_ymd)
+                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
                         else:
-                            print(f"[OI-CACHE][WARN] Failed to save OI to local DB - check InfluxDB connection")
+                            print(f"[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
             
             if doi is not None and not doi.empty:
                 # Normalize types before merge (avoid object/float mismatch on strike, etc.)
@@ -7054,13 +7057,22 @@ class ThetaSyncManager:
 
     # ----------------------- OI CACHE METHODS (INTRADAY OPTIMIZATION) -----------------------
 
+    def _get_oi_cache_path(self, symbol: str, date_ymd: str) -> str:
+        """Get the file path for cached OI data."""
+        # Format: {root_dir}/.oi_cache/{symbol}/{YYYYMMDD}.parquet
+        cache_dir = os.path.join(self.cfg.root_dir, self.cfg.oi_cache_dir, symbol)
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, f"{date_ymd}.parquet")
+
     def _check_oi_cache(self, symbol: str, date_ymd: str) -> bool:
         """
-        Check if Open Interest data for the given symbol and date is already cached in InfluxDB.
+        Check if Open Interest data for the given symbol and date is already cached.
 
-        OI data is cached in a dedicated measurement "OI-{symbol}" to avoid redundant API calls
-        during intraday downloads. Since OI only changes at EOD, the same data can be reused
+        OI data is cached in local Parquet files to avoid redundant API calls during
+        intraday downloads. Since OI only changes at EOD, the same data can be reused
         throughout the trading day.
+
+        Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
         Parameters
         ----------
@@ -7074,45 +7086,26 @@ class ThetaSyncManager:
         bool
             True if OI data for this date is cached, False otherwise
         """
-        if not self.cfg.influx_url:
+        if not self.cfg.enable_oi_caching:
             return False
 
-        measurement = f"OI-{symbol}"
+        cache_path = self._get_oi_cache_path(symbol, date_ymd)
+        exists = os.path.exists(cache_path)
 
-        try:
-            client = self._ensure_influx_client()
+        if exists:
+            print(f"[OI-CACHE][CHECK] {symbol} date={date_ymd} - Cache file found: {cache_path}")
 
-            # Query to check if any OI data exists for this date
-            # We use effective_date_oi field as the filter
-            query = f'''
-                SELECT COUNT(*) as count
-                FROM "{measurement}"
-                WHERE effective_date_oi = '{date_ymd}'
-                LIMIT 1
-            '''
-
-            result = client.query(query)
-            df = result.to_pandas() if hasattr(result, "to_pandas") else None
-
-            if df is not None and not df.empty and "count" in df.columns:
-                count = df["count"].iloc[0]
-                has_cache = count > 0
-                print(f"[OI-CACHE][CHECK] {symbol} date={date_ymd} cached={has_cache} (count={count})")
-                return has_cache
-
-            return False
-
-        except Exception as e:
-            print(f"[OI-CACHE][CHECK][WARN] Failed to check cache for {symbol}/{date_ymd}: {e}")
-            return False
+        return exists
 
     def _load_oi_from_cache(self, symbol: str, date_ymd: str) -> Optional[pd.DataFrame]:
         """
-        Load cached Open Interest data from InfluxDB for the given symbol and date.
+        Load cached Open Interest data from local Parquet file for the given symbol and date.
 
         Retrieves previously cached OI data to avoid redundant API calls during intraday
         downloads. The cache is populated during the first download of the day and reused
         for subsequent intraday updates.
+
+        Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
         Parameters
         ----------
@@ -7127,31 +7120,21 @@ class ThetaSyncManager:
             DataFrame with OI data including columns: last_day_OI, expiration, strike, right,
             effective_date_oi, timestamp_oi. Returns None if cache miss or error.
         """
-        if not self.cfg.influx_url:
+        if not self.cfg.enable_oi_caching:
             return None
 
-        measurement = f"OI-{symbol}"
+        cache_path = self._get_oi_cache_path(symbol, date_ymd)
+
+        if not os.path.exists(cache_path):
+            print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file not found")
+            return None
 
         try:
-            client = self._ensure_influx_client()
-
-            # Query all OI records for this date
-            query = f'''
-                SELECT *
-                FROM "{measurement}"
-                WHERE effective_date_oi = '{date_ymd}'
-            '''
-
-            result = client.query(query)
-            df = result.to_pandas() if hasattr(result, "to_pandas") else None
+            df = pd.read_parquet(cache_path)
 
             if df is None or df.empty:
-                print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - No cached data")
+                print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file is empty")
                 return None
-
-            # Rename 'time' column to 'timestamp_oi' for consistency
-            if 'time' in df.columns:
-                df = df.rename(columns={'time': 'timestamp_oi'})
 
             print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Loaded {len(df)} OI records from cache")
             return df
@@ -7162,11 +7145,13 @@ class ThetaSyncManager:
 
     def _save_oi_to_cache(self, symbol: str, date_ymd: str, oi_df: pd.DataFrame) -> bool:
         """
-        Save Open Interest data to InfluxDB cache for reuse during intraday downloads.
+        Save Open Interest data to local Parquet file for reuse during intraday downloads.
 
-        Caches OI data in a dedicated measurement "OI-{symbol}" to avoid redundant API calls
-        throughout the trading day. Since OI only changes at EOD, this significantly reduces
-        API load and improves performance for real-time intraday synchronization.
+        Caches OI data in Parquet format to avoid redundant API calls throughout the trading day.
+        Since OI only changes at EOD, this significantly reduces API load and improves performance
+        for real-time intraday synchronization.
+
+        Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
         Parameters
         ----------
@@ -7183,15 +7168,13 @@ class ThetaSyncManager:
         bool
             True if save succeeded, False otherwise
         """
-        if not self.cfg.influx_url or oi_df is None or oi_df.empty:
+        if not self.cfg.enable_oi_caching or oi_df is None or oi_df.empty:
             return False
 
-        measurement = f"OI-{symbol}"
+        cache_path = self._get_oi_cache_path(symbol, date_ymd)
 
         try:
-            client = self._ensure_influx_client()
-
-            # Prepare DataFrame for InfluxDB write
+            # Prepare DataFrame for caching
             df_cache = oi_df.copy()
 
             # Ensure required columns exist
@@ -7204,43 +7187,10 @@ class ThetaSyncManager:
             if 'effective_date_oi' not in df_cache.columns:
                 df_cache['effective_date_oi'] = date_ymd
 
-            # Use timestamp_oi as the time column, or create from effective_date_oi
-            if 'timestamp_oi' in df_cache.columns:
-                df_cache['time'] = pd.to_datetime(df_cache['timestamp_oi'], errors='coerce', utc=True)
-            else:
-                # Create timestamp from date (EOD of previous day, 4pm ET = 21:00 UTC)
-                df_cache['time'] = pd.to_datetime(date_ymd, format='%Y%m%d', errors='coerce') + pd.Timedelta(hours=21)
-                df_cache['time'] = df_cache['time'].dt.tz_localize('UTC')
+            # Save to Parquet
+            df_cache.to_parquet(cache_path, index=False, compression='snappy')
 
-            # Ensure time column is timezone-aware UTC
-            if df_cache['time'].dt.tz is None:
-                df_cache['time'] = df_cache['time'].dt.tz_localize('UTC')
-            elif str(df_cache['time'].dt.tz) != 'UTC':
-                df_cache['time'] = df_cache['time'].dt.tz_convert('UTC')
-
-            # Identify tag columns (identifiers) and field columns (measurements)
-            tag_cols = []
-            for col in ['expiration', 'strike', 'right', 'option_symbol', 'root', 'symbol']:
-                if col in df_cache.columns:
-                    tag_cols.append(col)
-
-            field_cols = ['last_day_OI', 'effective_date_oi']
-            if 'timestamp_oi' in df_cache.columns:
-                field_cols.append('timestamp_oi')
-
-            # Keep only necessary columns
-            keep_cols = ['time'] + tag_cols + field_cols
-            df_cache = df_cache[[col for col in keep_cols if col in df_cache.columns]]
-
-            # Write to InfluxDB
-            client.write(
-                database=self.cfg.influx_bucket,
-                record=df_cache,
-                data_frame_measurement_name=measurement,
-                data_frame_tag_columns=tag_cols if tag_cols else None
-            )
-
-            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(df_cache)} OI records")
+            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(df_cache)} OI records to {cache_path}")
             return True
 
         except Exception as e:

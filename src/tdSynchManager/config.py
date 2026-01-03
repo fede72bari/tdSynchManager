@@ -77,6 +77,10 @@ class ManagerConfig:
     influx_write_batch: int = 5000            # batch size for writes
     influx_data_dir: Optional[str] = None     # v3 Core: data directory (for real disk size calculation)
 
+    # --- OI (Open Interest) Caching ---
+    enable_oi_caching: bool = True            # Enable OI caching for intraday (works with any sink)
+    oi_cache_dir: str = ".oi_cache"           # Directory for cached OI files (relative to root_dir)
+
     # --- Data Consistency & Validation ---
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     enable_data_validation: bool = True       # Enable validation before saving
