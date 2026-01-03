@@ -2748,13 +2748,16 @@ class ThetaSyncManager:
                         doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
 
                 # Save to cache for future reuse (only if we have data and caching is enabled)
-                # Save RAW data from API without transformations for cache transparency
+                # Add request_date column + keep original timestamp for cache transparency
                 if doi is not None and not doi.empty and self.cfg.enable_oi_caching:
                     print(f"[OI-CACHE] Saving current date OI to local cache for future reuse...")
-                    saved = self._save_oi_to_cache(symbol, cur_ymd, doi)
+                    doi_cache = doi.copy()
+                    # Add request_date column (query date) while keeping original timestamp (OI effective date)
+                    doi_cache['request_date'] = cur_ymd
+                    saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
                     if saved:
                         cache_path = self._get_oi_cache_path(symbol, cur_ymd)
-                        print(f"[OI-CACHE][SAVED] Successfully saved {len(doi)} OI records to local cache: {cache_path}")
+                        print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
                     else:
                         print(f"[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
             
@@ -7121,6 +7124,10 @@ class ThetaSyncManager:
                 print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file is empty")
                 return None
 
+            # Remove request_date column (used only for cache querying)
+            if 'request_date' in df.columns:
+                df = df.drop(columns=['request_date'])
+
             print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Loaded {len(df)} OI records from cache")
             return df
 
@@ -7132,9 +7139,13 @@ class ThetaSyncManager:
         """
         Save Open Interest data to local Parquet file for reuse during intraday downloads.
 
-        Saves RAW data exactly as returned by ThetaData API for cache transparency.
-        When querying cache for date X, it returns the same data ThetaData would return
-        (OI from previous trading session with original timestamp and column names).
+        Saves RAW data from ThetaData API + request_date column for cache transparency.
+        Cache stores TWO dates:
+        1. request_date (query date, e.g., "20250102") - used to retrieve data
+        2. timestamp (OI effective date, e.g., "2025-01-01") - from API response
+
+        This mirrors ThetaData behavior: requesting OI for 2025-01-02 returns OI from
+        previous trading session (2025-01-01 EOD).
 
         Works with ANY sink (csv, parquet, influxdb) - cache is independent of main data storage.
 
@@ -7143,9 +7154,9 @@ class ThetaSyncManager:
         symbol : str
             Ticker symbol (e.g., "AAPL", "SPY")
         date_ymd : str
-            Date in YYYYMMDD format (e.g., "20250102") - the requested date, not OI effective date
+            Date in YYYYMMDD format (e.g., "20250102") - the requested date
         oi_df : pd.DataFrame
-            RAW DataFrame from ThetaData API with columns: timestamp, open_interest,
+            DataFrame with columns: request_date, timestamp, open_interest,
             expiration, strike, right, symbol, root, option_symbol
 
         Returns

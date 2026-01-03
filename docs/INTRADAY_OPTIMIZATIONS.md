@@ -98,10 +98,23 @@ Implemented an InfluxDB-based caching system that:
 **Cache Storage:** Local Parquet files (works with ANY sink: csv, parquet, influxdb)
 **Cache Location:** `{root_dir}/.oi_cache/{symbol}/{YYYYMMDD}.parquet`
 
-**Schema (RAW data from ThetaData API):**
-- **Columns:** `timestamp` (OI effective date from previous session), `open_interest`, `expiration`, `strike`, `right`, `symbol`, `root`, `option_symbol`
+**Schema (RAW data from ThetaData API + request_date):**
 
-**Cache transparency:** Cache returns the exact same data ThetaData API would return. When requesting OI for date `20250102`, both API and cache return OI from previous trading session (e.g., `20250101` EOD) with `timestamp` column containing that effective date.
+Cache stores **TWO dates** for complete transparency:
+
+1. **`request_date`** - Query date (e.g., `20250102`) - used to retrieve data from cache
+2. **`timestamp`** - OI effective date (e.g., `2025-01-01 16:00:00`) - from ThetaData API response
+
+**Other columns:** `open_interest`, `expiration`, `strike`, `right`, `symbol`, `root`, `option_symbol`
+
+**Cache transparency principle:**
+
+When requesting OI for date `20250102`:
+
+- **ThetaData API** returns: OI from 2025-01-01 EOD with `timestamp=2025-01-01`
+- **Local cache** returns: Same data with `timestamp=2025-01-01` (after removing `request_date`)
+
+Both data sources return identical structure - only the source differs.
 
 **Cache is independent from main data sink** - you can store OHLC in CSV while caching OI in Parquet files.
 
