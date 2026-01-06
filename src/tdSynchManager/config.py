@@ -91,6 +91,9 @@ class ManagerConfig:
     intraday_bucket_tolerance: float = 0.0    # Allowed fraction of missing time buckets (0 = require 100%)
     tick_segment_minutes: int = 30            # Bucket size for tick volume analysis (default 30 minutes)
     enable_tick_bucket_analysis: bool = True  # Enable granular tick bucket analysis on daily volume FAIL
+    greeks_iv_oi_failure_retry_passes: int = 2  # Extra delayed passes for option enrichment failures (OI/Greeks/IV)
+    greeks_iv_oi_failure_delay_seconds: float = 30.0  # Delay between retry passes
+    skip_day_on_greeks_iv_oi_failure: bool = False  # Skip entire option day (1d + intraday) if any OI/Greeks/IV missing after retries
 
 
 @dataclass

@@ -1714,8 +1714,7 @@ class ThetaSyncManager:
           Intraday:/option/list/contracts/{trade|quote}, /option/history/ohlc,
                    /option/history/greeks/all, /option/history/greeks/implied_volatility (interval),
                    /option/history/open_interest (previous day).
-        • Errors during enrichment are caught and logged as warnings; the base OHLC file is still produced
-          when possible.
+        • Enrichment failures are retried; missing OI/Greeks/IV rows are dropped unless skip-day is enabled.
         """
 
         # Log start of download (console + parquet with ALL parameters)
@@ -1742,6 +1741,11 @@ class ThetaSyncManager:
 
         sink_lower = sink.lower()
         stop_before_part = None
+        skip_day_on_missing = bool(getattr(self.cfg, "skip_day_on_greeks_iv_oi_failure", False))
+        retry_passes = int(getattr(self.cfg, "greeks_iv_oi_failure_retry_passes", 0) or 0)
+        retry_passes = max(0, retry_passes)
+        retry_delay = float(getattr(self.cfg, "greeks_iv_oi_failure_delay_seconds", 0) or 0.0)
+        total_passes = 1 + retry_passes
 
         # -------------------------------
         # EOD (daily) — one shot over all expirations
@@ -1782,184 +1786,220 @@ class ThetaSyncManager:
                 if df is None or df.empty:
                     raise ValueError("Empty DataFrame from option_history_eod")
 
-                # 2) (optional) EOD Greeks for ALL expirations and merge
-                if enrich_greeks:
-                    csv_g, _ = await self.client.option_history_greeks_eod(
-                        symbol=symbol,
-                        expiration="*",
-                        start_date=day_iso,
-                        end_date=day_iso,
-                        rate_type="sofr",
-                        format_type="csv",
-                    )
-                    if not csv_g:
-                        # STRICT MODE: Se enrich_greeks=True e greeks mancano → SKIP
-                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks download failed, skipping to allow coherence check detection"
-                        print(error_msg)
-                        if self.logger:
-                            self.logger.log_error(
-                                asset="option",
+                df_base = df
+
+                def _missing_mask_for_cols(df_in, cols):
+                    if df_in is None or df_in.empty or not cols:
+                        return None
+                    mask = None
+                    for col in cols:
+                        if col not in df_in.columns:
+                            return pd.Series([True] * len(df_in), index=df_in.index)
+                        s = df_in[col]
+                        missing = s.isna()
+                        if s.dtype == object:
+                            missing |= s.astype(str).str.strip().eq("")
+                        mask = missing if mask is None else (mask | missing)
+                    return mask
+
+                df = df_base
+                missing_mask = None
+                missing_details = {}
+
+                for enrich_pass in range(total_passes):
+                    df_pass = df_base.copy()
+                    greeks_missing_mask = None
+                    oi_missing_mask = None
+                    greeks_details = {}
+                    oi_details = {}
+
+                    if enrich_greeks:
+                        csv_g, _ = await self._td_get_with_retry(
+                            lambda: self.client.option_history_greeks_eod(
                                 symbol=symbol,
-                                interval=interval,
-                                date=day_iso,
-                                error_type="GREEKS_DOWNLOAD_FAILED",
-                                error_message="Greeks EOD download returned empty/None - skipping save for coherence check",
-                                severity="ERROR"
-                            )
-                        raise ValueError("Greeks EOD download failed - strict mode requires complete data")
-
-                    dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
-                    if dg is None or dg.empty:
-                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks CSV empty, skipping to allow coherence check detection"
-                        print(error_msg)
-                        if self.logger:
-                            self.logger.log_error(
-                                asset="option",
-                                symbol=symbol,
-                                interval=interval,
-                                date=day_iso,
-                                error_type="GREEKS_CSV_EMPTY",
-                                error_message="Greeks EOD CSV parsed to empty DataFrame - skipping save",
-                                severity="ERROR"
-                            )
-                        raise ValueError("Greeks EOD CSV empty - strict mode requires complete data")
-
-                    # Align strike columns
-                    if "strike_price" in dg.columns and "strike" not in dg.columns:
-                        dg = dg.rename(columns={"strike_price": "strike"})
-                    if "strike_price" in df.columns and "strike" not in df.columns:
-                        df = df.rename(columns={"strike_price": "strike"})
-
-                    # Find join keys
-                    candidate_keys = [
-                        ["option_symbol"],
-                        ["root", "expiration", "strike", "right"],
-                        ["symbol", "expiration", "strike", "right"],
-                    ]
-                    on_cols = None
-                    for keys in candidate_keys:
-                        if all(k in df.columns for k in keys) and all(k in dg.columns for k in keys):
-                            on_cols = keys
-                            break
-                    if on_cols is not None:
-                        dup_cols = [c for c in dg.columns if c in df.columns and c not in on_cols]
-                        dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
-                        df = df.merge(dg, on=on_cols, how="left")
-                    else:
-                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: greeks merge failed (no common join keys), skipping"
-                        print(error_msg)
-                        if self.logger:
-                            self.logger.log_error(
-                                asset="option",
-                                symbol=symbol,
-                                interval=interval,
-                                date=day_iso,
-                                error_type="GREEKS_MERGE_FAILED",
-                                error_message=f"No common join keys between OHLC and Greeks. OHLC cols: {list(df.columns)[:10]}, Greeks cols: {list(dg.columns)[:10]}",
-                                severity="ERROR"
-                            )
-                        raise ValueError("Greeks EOD merge failed - no common join keys")
-
-                # 2b) last_day_OI: Previous day OI
-                try:
-                    d = dt.fromisoformat(day_iso)
-                    prev = d - timedelta(days=1)
-                    # Weekend normalization
-                    if prev.weekday() == 5:  # Sat -> Fri
-                        prev = prev - timedelta(days=1)
-                    elif prev.weekday() == 6:  # Sun -> Fri
-                        prev = prev - timedelta(days=2)
-
-                    cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
-                    csv_oi, _ = await self.client.option_history_open_interest(
-                        symbol=symbol,
-                        expiration="*",
-                        date=cur_ymd,
-                        strike="*",
-                        right="both",
-                        format_type="csv",
-                    )
-                    if not csv_oi:
-                        # STRICT MODE: OI mancante → skip se enrich_greeks=True
-                        if enrich_greeks:
-                            error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI download failed, skipping to allow coherence check detection"
-                            print(error_msg)
-                            if self.logger:
-                                self.logger.log_error(
-                                    asset="option",
-                                    symbol=symbol,
-                                    interval=interval,
-                                    date=day_iso,
-                                    error_type="OI_DOWNLOAD_FAILED",
-                                    error_message=f"Open Interest download for date {cur_ymd} returned empty/None - skipping save",
-                                    severity="ERROR"
-                                )
-                            raise ValueError("OI download failed - strict mode requires complete data")
+                                expiration="*",
+                                start_date=day_iso,
+                                end_date=day_iso,
+                                rate_type="sofr",
+                                format_type="csv",
+                            ),
+                            label=f"greeks_eod {symbol} {day_iso}"
+                        )
+                        if not csv_g:
+                            greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                            greeks_details = {"reason": "greeks_empty_response"}
                         else:
-                            # Log warning but continue if enrich_greeks=False
-                            warn_msg = f"[WARN] EOD OI download {symbol} {day_iso}: empty response (enrich_greeks=False, continuing)"
-                            print(warn_msg)
-                            if self.logger:
-                                self.logger.log_warning(
-                                    asset="option",
-                                    symbol=symbol,
-                                    interval=interval,
-                                    date=day_iso,
-                                    warning_type="OI_DOWNLOAD_EMPTY",
-                                    warning_message=f"Open Interest download empty for {cur_ymd}"
-                                )
-                    else:
-                        doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
-                        if doi is not None and not doi.empty:
-                            oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
-                            if oi_col:
-                                doi = doi.rename(columns={oi_col: "last_day_OI"})
+                            try:
+                                dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
+                            except Exception as e:
+                                dg = None
+                                greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                greeks_details = {"reason": "greeks_csv_parse_error", "error": str(e)}
 
-                                ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
-                                if ts_col:
-                                    doi = doi.rename(columns={ts_col: "timestamp_oi"})
-                                if "timestamp_oi" in doi.columns:
-                                    _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
-                                    doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
-                                else:
-                                    doi["effective_date_oi"] = prev.date().isoformat()
+                            if dg is None or dg.empty:
+                                if greeks_missing_mask is None:
+                                    greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                if not greeks_details:
+                                    greeks_details = {"reason": "greeks_csv_empty"}
+                            else:
+                                if "strike_price" in dg.columns and "strike" not in dg.columns:
+                                    dg = dg.rename(columns={"strike_price": "strike"})
+                                if "strike_price" in df_pass.columns and "strike" not in df_pass.columns:
+                                    df_pass = df_pass.rename(columns={"strike_price": "strike"})
 
                                 candidate_keys = [
                                     ["option_symbol"],
                                     ["root", "expiration", "strike", "right"],
                                     ["symbol", "expiration", "strike", "right"],
                                 ]
-                                on_cols = None
-                                for keys in candidate_keys:
-                                    if all(k in df.columns for k in keys) and all(k in doi.columns for k in keys):
-                                        on_cols = keys
-                                        break
+                                on_cols = next((keys for keys in candidate_keys
+                                                if all(k in df_pass.columns for k in keys) and all(k in dg.columns for k in keys)), None)
                                 if on_cols is not None:
-                                    keep = on_cols + ["last_day_OI"]
+                                    dup_cols = [c for c in dg.columns if c in df_pass.columns and c not in on_cols]
+                                    dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
+                                    df_pass = df_pass.merge(dg, on=on_cols, how="left")
+
+                                    iv_candidates = ["implied_vol", "implied_volatility", "iv"]
+                                    iv_col = next((c for c in iv_candidates if c in df_pass.columns), None)
+                                    req_cols = ["delta", "gamma", "theta", "vega", "rho"]
+                                    req_cols += [iv_col] if iv_col else ["implied_volatility"]
+                                    greeks_missing_mask = _missing_mask_for_cols(df_pass, req_cols)
+                                    if greeks_missing_mask is not None and greeks_missing_mask.any():
+                                        greeks_details = {
+                                            "reason": "greeks_iv_missing_values",
+                                            "missing_rows": int(greeks_missing_mask.sum())
+                                        }
+                                else:
+                                    greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                    greeks_details = {"reason": "greeks_merge_keys_missing"}
+
+                    try:
+                        d = dt.fromisoformat(day_iso)
+                        prev = d - timedelta(days=1)
+                        if prev.weekday() == 5:
+                            prev = prev - timedelta(days=1)
+                        elif prev.weekday() == 6:
+                            prev = prev - timedelta(days=2)
+
+                        cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
+                        csv_oi, _ = await self._td_get_with_retry(
+                            lambda: self.client.option_history_open_interest(
+                                symbol=symbol,
+                                expiration="*",
+                                date=cur_ymd,
+                                strike="*",
+                                right="both",
+                                format_type="csv",
+                            ),
+                            label=f"oi_eod {symbol} {cur_ymd}"
+                        )
+                        if not csv_oi:
+                            oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                            oi_details = {"reason": "oi_empty_response"}
+                        else:
+                            try:
+                                doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
+                            except Exception as e:
+                                doi = None
+                                oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                oi_details = {"reason": "oi_csv_parse_error", "error": str(e)}
+
+                            if doi is None or doi.empty:
+                                if oi_missing_mask is None:
+                                    oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                if not oi_details:
+                                    oi_details = {"reason": "oi_csv_empty"}
+                            else:
+                                oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
+                                if not oi_col:
+                                    oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                    oi_details = {"reason": "oi_column_missing"}
+                                else:
+                                    doi = doi.rename(columns={oi_col: "last_day_OI"})
+
+                                    ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
+                                    if ts_col:
+                                        doi = doi.rename(columns={ts_col: "timestamp_oi"})
                                     if "timestamp_oi" in doi.columns:
-                                        keep += ["timestamp_oi"]
-                                    keep += ["effective_date_oi"]
-                                    doi = doi[keep].drop_duplicates(subset=on_cols)
-                                    df = df.merge(doi, on=on_cols, how="left")
-                        elif enrich_greeks:
-                            # OI CSV empty in strict mode
-                            error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI CSV empty, skipping"
-                            print(error_msg)
-                            if self.logger:
-                                self.logger.log_error(
-                                    asset="option",
-                                    symbol=symbol,
-                                    interval=interval,
-                                    date=day_iso,
-                                    error_type="OI_CSV_EMPTY",
-                                    error_message=f"Open Interest CSV for {cur_ymd} parsed to empty DataFrame",
-                                    severity="ERROR"
-                                )
-                            raise ValueError("OI CSV empty - strict mode requires complete data")
-                except Exception as e:
-                    # Log and re-raise if strict mode
-                    if enrich_greeks:
-                        error_msg = f"[SKIP-SAVE] option EOD {symbol} {day_iso}: OI merge error: {e}"
+                                        _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
+                                        doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
+                                    else:
+                                        doi["effective_date_oi"] = prev.date().isoformat()
+
+                                    candidate_keys = [
+                                        ["option_symbol"],
+                                        ["root", "expiration", "strike", "right"],
+                                        ["symbol", "expiration", "strike", "right"],
+                                    ]
+                                    on_cols = next((keys for keys in candidate_keys
+                                                    if all(k in df_pass.columns for k in keys) and all(k in doi.columns for k in keys)), None)
+                                    if on_cols is not None:
+                                        keep = on_cols + ["last_day_OI"]
+                                        if "timestamp_oi" in doi.columns:
+                                            keep += ["timestamp_oi"]
+                                        keep += ["effective_date_oi"]
+                                        doi = doi[keep].drop_duplicates(subset=on_cols)
+                                        df_pass = df_pass.merge(doi, on=on_cols, how="left")
+                                        oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
+                                        if oi_missing_mask is not None and oi_missing_mask.any():
+                                            oi_details = {
+                                                "reason": "oi_missing_values",
+                                                "missing_rows": int(oi_missing_mask.sum())
+                                            }
+                                    else:
+                                        oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                        oi_details = {"reason": "oi_merge_keys_missing"}
+                    except Exception as e:
+                        oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                        oi_details = {"reason": "oi_exception", "error": str(e)}
+
+                    missing_mask = None
+                    missing_details = {"retry_pass": enrich_pass + 1, "retry_total": total_passes}
+
+                    components = []
+                    if greeks_missing_mask is not None and greeks_missing_mask.any():
+                        missing_mask = greeks_missing_mask if missing_mask is None else (missing_mask | greeks_missing_mask)
+                        missing_details["greeks_missing_rows"] = int(greeks_missing_mask.sum())
+                        if greeks_details:
+                            missing_details["greeks_details"] = greeks_details
+                        components.append("greeks_iv")
+
+                    if oi_missing_mask is not None and oi_missing_mask.any():
+                        missing_mask = oi_missing_mask if missing_mask is None else (missing_mask | oi_missing_mask)
+                        missing_details["oi_missing_rows"] = int(oi_missing_mask.sum())
+                        if oi_details:
+                            missing_details["oi_details"] = oi_details
+                        components.append("oi")
+                    if components:
+                        missing_details["missing_components"] = components
+
+                    if missing_mask is None or not missing_mask.any():
+                        df = df_pass
+                        break
+
+                    df = df_pass
+                    if enrich_pass < total_passes - 1 and retry_delay > 0:
+                        print(f"[EOD-RETRY] {symbol} {day_iso} pass={enrich_pass+1}/{total_passes} sleeping {retry_delay}s")
+                        await asyncio.sleep(retry_delay)
+
+                if missing_mask is not None and missing_mask.any():
+                    if "expiration" in df.columns:
+                        missing_exps = df.loc[missing_mask, "expiration"].astype(str).dropna().unique().tolist()
+                        if missing_exps:
+                            missing_details["missing_expirations"] = missing_exps[:25]
+                    if self.logger:
+                        self.logger.log_error(
+                            asset="option",
+                            symbol=symbol,
+                            interval=interval,
+                            date=day_iso,
+                            error_type="ENRICHMENT_MISSING_EOD",
+                            error_message="Missing OI/Greeks/IV rows after merge",
+                            severity="WARNING",
+                            details=missing_details
+                        )
+                    if skip_day_on_missing:
+                        error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: missing OI/Greeks/IV rows"
                         print(error_msg)
                         if self.logger:
                             self.logger.log_error(
@@ -1967,24 +2007,29 @@ class ThetaSyncManager:
                                 symbol=symbol,
                                 interval=interval,
                                 date=day_iso,
-                                error_type="OI_MERGE_ERROR",
-                                error_message=f"OI merge exception: {str(e)}",
-                                severity="ERROR"
+                                error_type="EOD_DAY_ABORTED_ON_MISSING_ENRICHMENT",
+                                error_message=error_msg,
+                                severity="ERROR",
+                                details=missing_details
                             )
-                        raise
-                    else:
-                        # Just warn if not in strict mode
-                        warn_msg = f"[WARN] EOD OI merge {symbol} {day_iso}: {e}"
-                        print(warn_msg)
+                        raise ValueError("EOD missing OI/Greeks/IV rows")
+
+                    df = df.loc[~missing_mask].copy()
+                    if df.empty:
+                        error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: all rows dropped due to missing OI/Greeks/IV"
+                        print(error_msg)
                         if self.logger:
-                            self.logger.log_warning(
+                            self.logger.log_error(
                                 asset="option",
                                 symbol=symbol,
                                 interval=interval,
                                 date=day_iso,
-                                warning_type="OI_MERGE_ERROR",
-                                warning_message=str(e)
+                                error_type="EOD_EMPTY_AFTER_ENRICHMENT_DROP",
+                                error_message=error_msg,
+                                severity="ERROR",
+                                details=missing_details
                             )
+                        raise ValueError("EOD empty after enrichment drop")
 
                 # 3) Normalize dtypes and dedupe
                 if "expiration" in df.columns:
@@ -2241,16 +2286,12 @@ class ThetaSyncManager:
         if interval == "tick":
             bar_start_et = None
 
+
         if interval == "tick":
-            # TICK: usa trade+quote pairing per ogni expiration (v3)
+            # TICK: uses trade+quote pairing per expiration (v3)
             # /option/history/trade_quote   date=YYYYMMDD, strike="*", right="both"
-            
-            # --- ACCUMULATORS (tick): collect greeks/IV per expiration; merge once after concat ---
-            greeks_trade_list: List[pd.DataFrame] = []
-            iv_trade_list: List[pd.DataFrame] = []
-            # --- /ACCUMULATORS ---
-            
-            for exp in expirations:
+
+            async def _fetch_tick_expiration(exp: str, pass_idx: int):
                 try:
                     # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
                     tq_kwargs = {
@@ -2265,111 +2306,223 @@ class ThetaSyncManager:
                     if bar_start_et is not None:
                         tq_kwargs["start_time"] = bar_start_et
 
-                    csv_tq, _ = await self.client.option_history_trade_quote(**tq_kwargs)
+                    csv_tq, _ = await self._td_get_with_retry(
+                        lambda: self.client.option_history_trade_quote(**tq_kwargs),
+                        label=f"tq {symbol} {exp} {ymd}"
+                    )
                     if not csv_tq:
-                        continue                 
-                        
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="TQ_DOWNLOAD_FAILED_INTRADAY",
+                                error_message=f"Trade/Quote download failed for expiration {exp} - empty response",
+                                severity="WARNING",
+                                details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
+                            )
+                        return False, "tq_empty_response", None, None, None
+
                     df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
                     df = self._normalize_ts_to_utc(df)
                     df = self._normalize_df_types(df)
                     if df is None or df.empty:
-                        continue
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="TQ_CSV_EMPTY_INTRADAY",
+                                error_message=f"Trade/Quote CSV empty for expiration {exp}",
+                                severity="WARNING",
+                                details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
+                            )
+                        return False, "tq_csv_empty", None, None, None
 
-                    # ### >>> TICK — CANONICAL TIMESTAMP FROM trade_timestamp — BEGIN
+                    # ### >>> TICK - CANONICAL TIMESTAMP FROM trade_timestamp - BEGIN
                     # Create the canonical 'timestamp' from 'trade_timestamp' for tick data.
                     if "timestamp" not in df.columns:
                         if "trade_timestamp" not in df.columns:
                             raise RuntimeError("Expected 'trade_timestamp' in tick TQ response.")
                         df["timestamp"] = pd.to_datetime(df["trade_timestamp"], errors="coerce", utc=True).dt.tz_localize(None)
-                    # ### <<< TICK — CANONICAL TIMESTAMP FROM trade_timestamp — END
+                    # ### <<< TICK - CANONICAL TIMESTAMP FROM trade_timestamp - END
 
+                    if not enrich_tick_greeks:
+                        return True, "ok", df, None, None
 
-                    # A) Per-trade Greeks (ALL) — opt-in, minimal diff
-                    if enrich_tick_greeks:
-                        try:
-                            csv_tg, _ = await self.client.option_history_all_trade_greeks(
+                    greeks_success = True
+                    iv_success = True
+                    dg = None
+                    divt = None
+
+                    csv_tg, _ = await self._td_get_with_retry(
+                        lambda: self.client.option_history_all_trade_greeks(
+                            symbol=symbol,
+                            expiration=exp,
+                            date=ymd,
+                            strike="*",
+                            right="both",
+                            format_type="csv",
+                        ),
+                        label=f"greeks/trade {symbol} {exp} {ymd}"
+                    )
+                    if not csv_tg:
+                        greeks_success = False
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
                                 symbol=symbol,
-                                expiration=exp,
-                                date=ymd,
-                                strike="*",
-                                right="both",
-                                format_type="csv",
+                                interval=interval,
+                                date=day_iso,
+                                error_type="GREEKS_DOWNLOAD_FAILED_INTRADAY",
+                                error_message=f"Tick greeks download failed for expiration {exp} - skipping expiration",
+                                severity="WARNING"
                             )
-                            if csv_tg:
-                                dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
-                                dg = self._normalize_ts_to_utc(dg)
-                                dg = self._normalize_df_types(dg)
-                                if dg is not None and not dg.empty:
+                    else:
+                        dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
+                        dg = self._normalize_ts_to_utc(dg)
+                        dg = self._normalize_df_types(dg)
+                        if dg is None or dg.empty:
+                            greeks_success = False
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="GREEKS_CSV_EMPTY_INTRADAY",
+                                    error_message=f"Tick greeks CSV empty for expiration {exp} - skipping expiration",
+                                    severity="WARNING"
+                                )
+                        else:
+                            if "strike_price" in dg.columns and "strike" not in dg.columns:
+                                dg = dg.rename(columns={"strike_price": "strike"})
+                            if "strike_price" in df.columns and "strike" not in df.columns:
+                                df = df.rename(columns={"strike_price": "strike"})
+                            if ("trade_timestamp" in df.columns
+                                and "trade_timestamp" not in dg.columns
+                                and "timestamp" in dg.columns):
+                                dg = dg.rename(columns={"timestamp": "trade_timestamp"})
 
-                                    # --- normalizza nomi per join robusta ---
-                                    # unifica strike
-                                    if "strike_price" in dg.columns and "strike" not in dg.columns:
-                                        dg = dg.rename(columns={"strike_price": "strike"})
-                                    if "strike_price" in df.columns and "strike" not in df.columns:
-                                        df = df.rename(columns={"strike_price": "strike"})
-                                    
-                                    # usa trade_timestamp per join a livello trade
-                                    if ("trade_timestamp" in df.columns
-                                        and "trade_timestamp" not in dg.columns
-                                        and "timestamp" in dg.columns):
-                                        dg = dg.rename(columns={"timestamp": "trade_timestamp"})
-                                    # --- /normalizza ---
-
-                                    # collect once: postpone the join to after the main concat
-                                    greeks_trade_list.append(dg)
-
-                        except Exception as e:
-                            print(f"[WARN] tick Greeks merge {symbol} {day_iso} exp={exp}: {e}")
-
-                    # B) Per-trade IV — opt-in
-                    if enrich_tick_greeks:
-                        try:
-                            csv_tiv, _ = await self.client.option_history_trade_implied_volatility(
+                    csv_tiv, _ = await self._td_get_with_retry(
+                        lambda: self.client.option_history_trade_implied_volatility(
+                            symbol=symbol,
+                            expiration=exp,
+                            date=ymd,
+                            strike="*",
+                            right="both",
+                            format_type="csv",
+                        ),
+                        label=f"iv/trade {symbol} {exp} {ymd}"
+                    )
+                    if not csv_tiv:
+                        iv_success = False
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
                                 symbol=symbol,
-                                expiration=exp,
-                                date=ymd,
-                                strike="*",
-                                right="both",
-                                format_type="csv",
+                                interval=interval,
+                                date=day_iso,
+                                error_type="IV_DOWNLOAD_FAILED_INTRADAY",
+                                error_message=f"Tick IV download failed for expiration {exp} - skipping expiration",
+                                severity="WARNING"
                             )
-                            if csv_tiv:
-                                divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
-                                divt = self._normalize_ts_to_utc(divt)
-                                divt = self._normalize_df_types(divt)
-                                if divt is not None and not divt.empty:
-                                    # prefer a clear name to avoid confusion with bar-level IV
-                                    if "implied_volatility" in divt.columns and "trade_iv" not in divt.columns:
-                                        divt = divt.rename(columns={"implied_volatility": "trade_iv"})
+                    else:
+                        divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
+                        divt = self._normalize_ts_to_utc(divt)
+                        divt = self._normalize_df_types(divt)
+                        if divt is None or divt.empty:
+                            iv_success = False
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="IV_CSV_EMPTY_INTRADAY",
+                                    error_message=f"Tick IV CSV empty for expiration {exp} - skipping expiration",
+                                    severity="WARNING"
+                                )
+                        else:
+                            if "implied_volatility" in divt.columns and "trade_iv" not in divt.columns:
+                                divt = divt.rename(columns={"implied_volatility": "trade_iv"})
+                            if "strike_price" in divt.columns and "strike" not in divt.columns:
+                                divt = divt.rename(columns={"strike_price": "strike"})
+                            if "strike_price" in df.columns and "strike" not in df.columns:
+                                df = df.rename(columns={"strike_price": "strike"})
+                            if ("trade_timestamp" in df.columns
+                                and "trade_timestamp" not in divt.columns
+                                and "timestamp" in divt.columns):
+                                divt = divt.rename(columns={"timestamp": "trade_timestamp"})
 
-                                    # --- normalize columns for robust join (Trade IV on tick) ---
-                                    # Unify strike naming
-                                    if "strike_price" in divt.columns and "strike" not in divt.columns:
-                                        divt = divt.rename(columns={"strike_price": "strike"})
-                                    if "strike_price" in df.columns and "strike" not in df.columns:
-                                        df = df.rename(columns={"strike_price": "strike"})
+                    if greeks_success and iv_success:
+                        return True, "ok", df, dg, divt
 
-                                    # Use trade-level timestamp for tick joins
-                                    if ("trade_timestamp" in df.columns
-                                        and "trade_timestamp" not in divt.columns
-                                        and "timestamp" in divt.columns):
-                                        divt = divt.rename(columns={"timestamp": "trade_timestamp"})
-                                    # --- /normalize ---
-                                    
-                                    # collect once: postpone the join to after the main concat
-                                    iv_trade_list.append(divt)
+                    return False, "incomplete_greeks_iv", None, None, None
 
-                        except Exception as e:
-                            print(f"[WARN] tick IV merge {symbol} {day_iso} exp={exp}: {e}")
-                        
-                    dfs.append(df)
                 except Exception as e:
-                    # Solo logga se NON è un 472 (no data)
                     if "472" not in str(e) and "No data found" not in str(e):
                         print(f"[WARN] option tick {symbol} {interval} {day_iso} exp={exp}: {e}")
-                    # continue to next expiration
+                    return False, f"exception: {e}", None, None, None
+
+            pending_exps = list(expirations)
+            failure_reasons: dict[str, list[str]] = {}
+            for pass_idx in range(total_passes):
+                if not pending_exps:
+                    break
+                if pass_idx > 0 and retry_delay > 0:
+                    print(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
+                    await asyncio.sleep(retry_delay)
+
+                current_exps = pending_exps
+                pending_exps = []
+                for exp in current_exps:
+                    success, reason, df, dg, divt = await _fetch_tick_expiration(exp, pass_idx)
+                    if success:
+                        dfs.append(df)
+                        if dg is not None:
+                            greeks_trade_list.append(dg)
+                        if divt is not None:
+                            iv_trade_list.append(divt)
+                        if exp in failure_reasons:
+                            failure_reasons.pop(exp, None)
+                    else:
+                        pending_exps.append(exp)
+                        failure_reasons.setdefault(exp, []).append(reason)
+
+            if pending_exps:
+                failed_details = {exp: failure_reasons.get(exp, []) for exp in pending_exps}
+                if self.logger:
+                    self.logger.log_error(
+                        asset="option",
+                        symbol=symbol,
+                        interval=interval,
+                        date=day_iso,
+                        error_type="EXPIRATION_RETRY_EXHAUSTED",
+                        error_message=f"Expirations failed after {total_passes} passes: {', '.join(pending_exps)}",
+                        severity="WARNING",
+                        details={"failed_expirations": failed_details}
+                    )
+
+                if skip_day_on_missing:
+                    error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: expirations failed after retries"
+                    print(error_msg)
+                    if self.logger:
+                        self.logger.log_error(
+                            asset="option",
+                            symbol=symbol,
+                            interval=interval,
+                            date=day_iso,
+                            error_type="INTRADAY_DAY_ABORTED_ON_EXPIRATION_FAILURE",
+                            error_message=error_msg,
+                            severity="ERROR",
+                            details={"failed_expirations": failed_details}
+                        )
+                    return
         else:
-            
-            for exp in expirations:
+            async def _fetch_intraday_expiration(exp: str, pass_idx: int):
                 try:
                     # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
                     ohlc_kwargs = {
@@ -2383,20 +2536,46 @@ class ThetaSyncManager:
                         ohlc_kwargs["start_time"] = bar_start_et
 
                     csv_ohlc, _ = await self._td_get_with_retry(
-                                    lambda: self.client.option_history_ohlc(**ohlc_kwargs),
-                                    label=f"ohlc {symbol} {exp} {ymd} {interval}"
-                                )
+                        lambda: self.client.option_history_ohlc(**ohlc_kwargs),
+                        label=f"ohlc {symbol} {exp} {ymd} {interval}"
+                    )
 
                     if not csv_ohlc:
-                        continue
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="OHLC_DOWNLOAD_FAILED_INTRADAY",
+                                error_message=f"OHLC download failed for expiration {exp} - empty response",
+                                severity="WARNING",
+                                details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
+                            )
+                        return False, "ohlc_empty_response", None, None, None
+
                     df = pd.read_csv(io.StringIO(csv_ohlc), dtype=str)
                     if df is None or df.empty:
-                        continue
+                        if self.logger:
+                            self.logger.log_error(
+                                asset="option",
+                                symbol=symbol,
+                                interval=interval,
+                                date=day_iso,
+                                error_type="OHLC_CSV_EMPTY_INTRADAY",
+                                error_message=f"OHLC CSV empty for expiration {exp}",
+                                severity="WARNING",
+                                details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
+                            )
+                        return False, "ohlc_csv_empty", None, None, None
+
                     df = self._normalize_ts_to_utc(df)
 
-                    # STRICT MODE: Track if greeks/IV succeed when enrich_greeks=True
+                    # Track if greeks/IV succeed when enrich_greeks=True
                     greeks_success = True
                     iv_success = True
+                    dg = None
+                    div = None
 
                     if enrich_greeks:
                         kwargs = {
@@ -2418,7 +2597,6 @@ class ThetaSyncManager:
                         )
 
                         if not csv_gr_all:
-                            # STRICT MODE: Greeks download failed
                             greeks_success = False
                             error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks download failed"
                             print(error_msg)
@@ -2450,10 +2628,8 @@ class ThetaSyncManager:
                                     )
                             else:
                                 dg = self._normalize_ts_to_utc(dg)
-                                # collect once: postpone the join to after the main concat
-                                greeks_bar_list.append(dg)
 
-                    # IV bars (bid/mid/ask) — collect once, merge later
+                    # IV bars (bid/mid/ask) - collect once, merge later
                     if enrich_greeks:
                         try:
                             # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
@@ -2469,9 +2645,9 @@ class ThetaSyncManager:
                                 iv_kwargs["start_time"] = bar_start_et
 
                             csv_iv, _ = await self._td_get_with_retry(
-                                            lambda: self.client.option_history_implied_volatility(**iv_kwargs),
-                                            label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
-                                        )
+                                lambda: self.client.option_history_implied_volatility(**iv_kwargs),
+                                label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
+                            )
                             if not csv_iv:
                                 iv_success = False
                                 error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV download failed"
@@ -2504,8 +2680,6 @@ class ThetaSyncManager:
                                         )
                                 else:
                                     div = self._normalize_ts_to_utc(div)
-                                    # collect once: postpone the join to after the main concat
-                                    iv_bar_list.append(div)
                         except Exception as e:
                             iv_success = False
                             error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV exception: {e}"
@@ -2521,15 +2695,71 @@ class ThetaSyncManager:
                                     severity="WARNING"
                                 )
 
-                    # STRICT MODE: Only append OHLC if greeks/IV succeeded (or enrich_greeks=False)
                     if not enrich_greeks or (greeks_success and iv_success):
-                        dfs.append(df)
-                    else:
-                        skip_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: OHLC not saved due to incomplete greeks/IV"
-                        print(skip_msg)
+                        return True, "ok", df, dg, div
+
+                    skip_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: OHLC not saved due to incomplete greeks/IV"
+                    print(skip_msg)
+                    return False, "incomplete_greeks_iv", None, None, None
 
                 except Exception as e:
                     print(f"[WARN] option intraday {symbol} {interval} {day_iso} exp={exp}: {e}")
+                    return False, f"exception: {e}", None, None, None
+
+            pending_exps = list(expirations)
+            failure_reasons: dict[str, list[str]] = {}
+            for pass_idx in range(total_passes):
+                if not pending_exps:
+                    break
+                if pass_idx > 0 and retry_delay > 0:
+                    print(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
+                    await asyncio.sleep(retry_delay)
+
+                current_exps = pending_exps
+                pending_exps = []
+                for exp in current_exps:
+                    success, reason, df, dg, div = await _fetch_intraday_expiration(exp, pass_idx)
+                    if success:
+                        dfs.append(df)
+                        if dg is not None:
+                            greeks_bar_list.append(dg)
+                        if div is not None:
+                            iv_bar_list.append(div)
+                        if exp in failure_reasons:
+                            failure_reasons.pop(exp, None)
+                    else:
+                        pending_exps.append(exp)
+                        failure_reasons.setdefault(exp, []).append(reason)
+
+            if pending_exps:
+                failed_details = {exp: failure_reasons.get(exp, []) for exp in pending_exps}
+                if self.logger:
+                    self.logger.log_error(
+                        asset="option",
+                        symbol=symbol,
+                        interval=interval,
+                        date=day_iso,
+                        error_type="EXPIRATION_RETRY_EXHAUSTED",
+                        error_message=f"Expirations failed after {total_passes} passes: {', '.join(pending_exps)}",
+                        severity="WARNING",
+                        details={"failed_expirations": failed_details}
+                    )
+
+                if skip_day_on_missing:
+                    error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: expirations failed after retries"
+                    print(error_msg)
+                    if self.logger:
+                        self.logger.log_error(
+                            asset="option",
+                            symbol=symbol,
+                            interval=interval,
+                            date=day_iso,
+                            error_type="INTRADAY_DAY_ABORTED_ON_EXPIRATION_FAILURE",
+                            error_message=error_msg,
+                            severity="ERROR",
+                            details={"failed_expirations": failed_details}
+                        )
+                    return
 
         if not dfs:
             # STRICT MODE: All expirations failed or were skipped
@@ -2672,7 +2902,26 @@ class ThetaSyncManager:
                     divt_all = divt_all.drop(columns=dup_cols)
                 df_all = df_all.merge(divt_all, on=on_cols, how="left")
                 
-        # last_day_OI (stesso valore su tutte le righe del contratto)
+
+        # last_day_OI (same value for all rows of the contract)
+        def _missing_mask_for_cols(df, cols):
+            if df is None or df.empty or not cols:
+                return None
+            mask = None
+            for col in cols:
+                if col not in df.columns:
+                    return pd.Series([True] * len(df), index=df.index)
+                s = df[col]
+                missing = s.isna()
+                if s.dtype == object:
+                    missing |= s.astype(str).str.strip().eq("")
+                mask = missing if mask is None else (mask | missing)
+            return mask
+
+        oi_missing_mask = None
+        oi_missing_details = {}
+        oi_merge_keys = None
+
         try:
             d = dt.fromisoformat(day_iso)
             prev = d - timedelta(days=1)
@@ -2683,122 +2932,248 @@ class ThetaSyncManager:
 
             cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
 
-            # >>> Current-Day Fix: Per-Expiration Fallback <
             today_utc = dt.now(timezone.utc).date().isoformat()
             is_current_day = (day_iso == today_utc)
 
-            # >>> OI CACHE OPTIMIZATION (INTRADAY) <<<
-            # OI changes only at EOD, so we cache it to avoid redundant API calls
-            # Check cache first, download only if cache miss
-            # Works with ANY sink (csv, parquet, influxdb) - cache is independent
-            doi = None
-            oi_from_cache = False
+            df_oi_base = df_all
+            use_cache = bool(self.cfg.enable_oi_caching)
 
-            if self.cfg.enable_oi_caching:
-                print(f"[OI-CACHE] Checking local cache for {symbol} date={cur_ymd}...")
-                if self._check_oi_cache(symbol, cur_ymd):
-                    # Cache HIT: Load OI from local Parquet cache
-                    print(f"[OI-CACHE] ✓ Found current date OI in local cache - retrieving from file")
-                    doi = self._load_oi_from_cache(symbol, cur_ymd)
-                    if doi is not None and not doi.empty:
-                        oi_from_cache = True
-                        print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local cache (no remote API call)")
-                    else:
-                        print(f"[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
-
-            if not oi_from_cache:
-                # Cache MISS: Download OI from API
-                if self.cfg.enable_oi_caching:
-                    print(f"[OI-CACHE] ✗ Current date OI not found in local cache - starting remote data source fetching")
-                else:
-                    print(f"[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
-
+            async def _fetch_oi_remote():
                 if is_current_day and expirations:
-                    # Current day: must use per-expiration (expiration="*" fails with 400)
                     print(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
                     oi_dfs = []
+                    failed_exps = []
                     for exp in expirations:
                         try:
-                            csv_oi_exp, _ = await self.client.option_history_open_interest(
-                                symbol=symbol,
-                                expiration=exp,
-                                date=cur_ymd,
-                                strike="*",
-                                right="both",
-                                format_type="csv",
+                            csv_oi_exp, _ = await self._td_get_with_retry(
+                                lambda: self.client.option_history_open_interest(
+                                    symbol=symbol,
+                                    expiration=exp,
+                                    date=cur_ymd,
+                                    strike="*",
+                                    right="both",
+                                    format_type="csv",
+                                ),
+                                label=f"oi {symbol} {exp} {cur_ymd}"
                             )
                             if csv_oi_exp:
                                 oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp), dtype=str))
+                            else:
+                                failed_exps.append(exp)
                         except Exception as e:
+                            failed_exps.append(exp)
                             print(f"[WARN] OI exp={exp} day={day_iso}: {e}")
 
                     if oi_dfs:
-                        doi = pd.concat(oi_dfs, ignore_index=True)
-                else:
-                    # Historical: single call works
-                    csv_oi, _ = await self.client.option_history_open_interest(
+                        return pd.concat(oi_dfs, ignore_index=True), failed_exps
+                    return None, failed_exps
+
+                csv_oi, _ = await self._td_get_with_retry(
+                    lambda: self.client.option_history_open_interest(
                         symbol=symbol,
                         expiration="*",
                         date=cur_ymd,
                         strike="*",
                         right="both",
                         format_type="csv",
-                    )
-                    if csv_oi:
-                        doi = pd.read_csv(io.StringIO(csv_oi), dtype=str)
+                    ),
+                    label=f"oi {symbol} {cur_ymd}"
+                )
+                if csv_oi:
+                    return pd.read_csv(io.StringIO(csv_oi), dtype=str), []
+                return None, []
 
-                # Save to cache for future reuse (only if we have data and caching is enabled)
-                # Add request_date column + keep original timestamp for cache transparency
-                if doi is not None and not doi.empty and self.cfg.enable_oi_caching:
-                    print(f"[OI-CACHE] Saving current date OI to local cache for future reuse...")
-                    doi_cache = doi.copy()
-                    # Add request_date column (query date) while keeping original timestamp (OI effective date)
-                    doi_cache['request_date'] = cur_ymd
-                    saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
-                    if saved:
-                        cache_path = self._get_oi_cache_path(symbol, cur_ymd)
-                        print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
-                    else:
-                        print(f"[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
-            
-            if doi is not None and not doi.empty:
-                # Normalize types before merge (avoid object/float mismatch on strike, etc.)
-                doi = self._normalize_df_types(doi)
-                df_all = self._normalize_df_types(df_all)
+            for oi_pass in range(total_passes):
+                doi = None
+                oi_from_cache = False
+                oi_failed_exps = []
 
-                oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi.columns), None)
-                if oi_col:
-                    doi = doi.rename(columns={oi_col: "last_day_OI"})
-                    
-                    # OI timestamp + semantic date
-                    ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
-                    if ts_col:
-                        doi = doi.rename(columns={ts_col: "timestamp_oi"})
-                    if "timestamp_oi" in doi.columns:
-                        _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
-                        doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
+                if use_cache and self.cfg.enable_oi_caching:
+                    print(f"[OI-CACHE] Checking local cache for {symbol} date={cur_ymd}...")
+                    if self._check_oi_cache(symbol, cur_ymd):
+                        print(f"[OI-CACHE] Found current date OI in local cache - retrieving from file")
+                        doi = self._load_oi_from_cache(symbol, cur_ymd)
+                        if doi is not None and not doi.empty:
+                            oi_from_cache = True
+                            print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local cache (no remote API call)")
+                        else:
+                            print("[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
+
+                if not oi_from_cache:
+                    if self.cfg.enable_oi_caching:
+                        print("[OI-CACHE] Current date OI not found in local cache - starting remote data source fetching")
                     else:
-                        doi["effective_date_oi"] = prev.date().isoformat()
-                    
-                    # Merge
-                    candidate_keys = [
-                        ["option_symbol"],
-                        ["root", "expiration", "strike", "right"],
-                        ["symbol", "expiration", "strike", "right"],
-                    ]
-                    on_cols = next((keys for keys in candidate_keys if all(k in df_all.columns for k in keys) and all(k in doi.columns for k in keys)), None)
-                    if on_cols:
-                        keep = on_cols + ["last_day_OI"]
-                        if "timestamp_oi" in doi.columns:
-                            keep += ["timestamp_oi"]
-                        keep += ["effective_date_oi"]
-                        doi = doi[keep].drop_duplicates(subset=on_cols)
-                        df_all = df_all.merge(doi, on=on_cols, how="left")
-                        
+                        print("[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
+                    doi, oi_failed_exps = await _fetch_oi_remote()
+
+                if doi is not None and not doi.empty:
+                    if self.cfg.enable_oi_caching and not oi_from_cache:
+                        print("[OI-CACHE] Saving current date OI to local cache for future reuse...")
+                        doi_cache = doi.copy()
+                        doi_cache["request_date"] = cur_ymd
+                        saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
+                        if saved:
+                            cache_path = self._get_oi_cache_path(symbol, cur_ymd)
+                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
+                        else:
+                            print("[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
+
+                    df_norm = self._normalize_df_types(df_oi_base)
+                    doi_norm = self._normalize_df_types(doi)
+
+                    oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi_norm.columns), None)
+                    if not oi_col:
+                        df_all = df_norm
+                        oi_missing_mask = pd.Series([True] * len(df_norm), index=df_norm.index)
+                        oi_missing_details = {
+                            "reason": "oi_column_missing",
+                            "retry_pass": oi_pass + 1,
+                            "retry_total": total_passes
+                        }
+                    else:
+                        doi_norm = doi_norm.rename(columns={oi_col: "last_day_OI"})
+                        ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi_norm.columns), None)
+                        if ts_col:
+                            doi_norm = doi_norm.rename(columns={ts_col: "timestamp_oi"})
+                        if "timestamp_oi" in doi_norm.columns:
+                            _eff = pd.to_datetime(doi_norm["timestamp_oi"], errors="coerce")
+                            doi_norm["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
+                        else:
+                            doi_norm["effective_date_oi"] = prev.date().isoformat()
+
+                        candidate_keys = [
+                            ["option_symbol"],
+                            ["root", "expiration", "strike", "right"],
+                            ["symbol", "expiration", "strike", "right"],
+                        ]
+                        on_cols = next((keys for keys in candidate_keys if all(k in df_norm.columns for k in keys) and all(k in doi_norm.columns for k in keys)), None)
+                        oi_merge_keys = on_cols
+                        if on_cols is not None:
+                            keep = on_cols + ["last_day_OI"]
+                            if "timestamp_oi" in doi_norm.columns:
+                                keep += ["timestamp_oi"]
+                            keep += ["effective_date_oi"]
+                            doi_norm = doi_norm[keep].drop_duplicates(subset=on_cols)
+                            df_all = df_norm.merge(doi_norm, on=on_cols, how="left")
+                            oi_missing_mask = _missing_mask_for_cols(df_all, ["last_day_OI"])
+                            if oi_missing_mask is not None and oi_missing_mask.any():
+                                oi_missing_details = {
+                                    "reason": "oi_missing_values",
+                                    "retry_pass": oi_pass + 1,
+                                    "retry_total": total_passes,
+                                    "missing_rows": int(oi_missing_mask.sum())
+                                }
+                                if oi_failed_exps:
+                                    oi_missing_details["oi_failed_expirations"] = oi_failed_exps
+                            else:
+                                oi_missing_mask = None
+                                break
+                        else:
+                            df_all = df_norm
+                            oi_missing_mask = pd.Series([True] * len(df_norm), index=df_norm.index)
+                            oi_missing_details = {
+                                "reason": "oi_merge_keys_missing",
+                                "retry_pass": oi_pass + 1,
+                                "retry_total": total_passes
+                            }
+                else:
+                    df_all = df_oi_base
+                    oi_missing_mask = pd.Series([True] * len(df_oi_base), index=df_oi_base.index)
+                    oi_missing_details = {
+                        "reason": "oi_empty_response",
+                        "retry_pass": oi_pass + 1,
+                        "retry_total": total_passes
+                    }
+                    if oi_failed_exps:
+                        oi_missing_details["oi_failed_expirations"] = oi_failed_exps
+
+                if oi_missing_mask is None or not oi_missing_mask.any():
+                    break
+
+                if oi_pass < total_passes - 1 and retry_delay > 0:
+                    print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} sleeping {retry_delay}s")
+                    await asyncio.sleep(retry_delay)
+                    use_cache = False
+
         except Exception as e:
             print(f"[WARN] intraday OI merge {symbol} {interval} {day_iso}: {e}")
+            if df_all is not None and not df_all.empty:
+                oi_missing_mask = pd.Series([True] * len(df_all), index=df_all.index)
+                oi_missing_details = {"reason": "oi_exception", "error": str(e)}
 
-    
+        missing_mask = None
+        missing_details = {}
+
+        if oi_missing_mask is not None and oi_missing_mask.any():
+            missing_mask = oi_missing_mask if missing_mask is None else (missing_mask | oi_missing_mask)
+            missing_details["oi_missing_rows"] = int(oi_missing_mask.sum())
+            if oi_missing_details:
+                missing_details["oi_details"] = oi_missing_details
+            if "expiration" in df_all.columns:
+                missing_exps = df_all.loc[oi_missing_mask, "expiration"].astype(str).dropna().unique().tolist()
+                if missing_exps:
+                    missing_details["oi_missing_expirations"] = missing_exps[:25]
+
+        if interval == "tick":
+            if enrich_tick_greeks:
+                req_cols = ["delta", "gamma", "theta", "vega", "rho", "trade_iv"]
+                greek_mask = _missing_mask_for_cols(df_all, req_cols)
+                if greek_mask is not None and greek_mask.any():
+                    missing_mask = greek_mask if missing_mask is None else (missing_mask | greek_mask)
+                    missing_details["greeks_iv_missing_rows"] = int(greek_mask.sum())
+        else:
+            if enrich_greeks:
+                req_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "bar_iv"]
+                greek_mask = _missing_mask_for_cols(df_all, req_cols)
+                if greek_mask is not None and greek_mask.any():
+                    missing_mask = greek_mask if missing_mask is None else (missing_mask | greek_mask)
+                    missing_details["greeks_iv_missing_rows"] = int(greek_mask.sum())
+
+        if missing_mask is not None and missing_mask.any():
+            if self.logger:
+                self.logger.log_error(
+                    asset="option",
+                    symbol=symbol,
+                    interval=interval,
+                    date=day_iso,
+                    error_type="ENRICHMENT_MISSING_INTRADAY",
+                    error_message="Missing OI/Greeks/IV rows after merge",
+                    severity="WARNING",
+                    details=missing_details
+                )
+
+            if skip_day_on_missing:
+                error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: missing OI/Greeks/IV rows"
+                print(error_msg)
+                if self.logger:
+                    self.logger.log_error(
+                        asset="option",
+                        symbol=symbol,
+                        interval=interval,
+                        date=day_iso,
+                        error_type="INTRADAY_DAY_ABORTED_ON_MISSING_ENRICHMENT",
+                        error_message=error_msg,
+                        severity="ERROR",
+                        details=missing_details
+                    )
+                return
+
+            df_all = df_all.loc[~missing_mask].copy()
+            if df_all.empty:
+                error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: all rows dropped due to missing OI/Greeks/IV"
+                print(error_msg)
+                if self.logger:
+                    self.logger.log_error(
+                        asset="option",
+                        symbol=symbol,
+                        interval=interval,
+                        date=day_iso,
+                        error_type="INTRADAY_EMPTY_AFTER_ENRICHMENT_DROP",
+                        error_message=error_msg,
+                        severity="ERROR",
+                        details=missing_details
+                    )
+                return
         # --- GLOBAL ORDER (stabile per part temporali) ---
         time_candidates = ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"]
         tcol = next((c for c in time_candidates if c in df_all.columns), None)
