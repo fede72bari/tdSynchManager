@@ -6305,9 +6305,17 @@ class ThetaSyncManager:
 
     def _get_dates_in_eod_batch_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> set:
         """
-        Legge i file batch EOD e restituisce un set di date (YYYY-MM-DD) effettivamente presenti.
+        Legge i file batch EOD/measurement e restituisce un set di date (YYYY-MM-DD) effettivamente presenti.
         Usato per mild_skip mode per determinare quali giorni sono già scaricati.
+
+        Per InfluxDB: usa query aggregata su metadati Parquet (veloce, una sola query)
+        Per CSV/Parquet: legge file locali
         """
+        # INFLUXDB: Query aggregata sui metadati per massima efficienza
+        if sink_lower == "influxdb":
+            return self._get_dates_from_influx_metadata(asset, symbol, interval)
+
+        # CSV/PARQUET: Continua con logica esistente
         files = self._list_series_files(asset, symbol, interval, sink_lower)
         if not files:
             return set()
@@ -6350,6 +6358,72 @@ class ThetaSyncManager:
 
         return dates
 
+    def _get_dates_from_influx_metadata(self, asset: str, symbol: str, interval: str) -> set:
+        """
+        Estrae tutte le date presenti in InfluxDB usando query aggregata sui metadati.
+
+        Usa system.parquet_files per ottenere min/max time di ogni file Parquet,
+        poi espande i range per ottenere tutte le date (ET timezone).
+
+        Molto più veloce di interrogare ogni giorno singolarmente!
+        """
+        # Costruisci measurement name
+        prefix = self.cfg.influx_measure_prefix or ""
+        if asset == "option":
+            meas = f"{prefix}{symbol}-option-{interval}"
+        else:
+            meas = f"{prefix}{symbol}-{asset}-{interval}"
+
+        try:
+            # Verifica esistenza measurement prima della query
+            if not self._influx_measurement_exists(meas):
+                print(f"[MILD-SKIP][INFLUX] Measurement {meas} does not exist, returning empty dates")
+                return set()
+
+            cli = self._ensure_influx_client()
+
+            # Query metadati Parquet per ottenere range di date per ogni file
+            sql = f"""
+            SELECT min_time, max_time
+            FROM system.parquet_files
+            WHERE table_name = '{meas}'
+            """
+
+            result = cli.query(sql)
+            df = result.to_pandas() if hasattr(result, "to_pandas") else result
+
+            if df is None or df.empty:
+                print(f"[MILD-SKIP][INFLUX] No Parquet files found for {meas}")
+                return set()
+
+            # Converti timestamps da nanoseconds a pandas Timestamp e estrai date ET
+            dates = set()
+            from zoneinfo import ZoneInfo
+            ET = ZoneInfo("America/New_York")
+
+            for _, row in df.iterrows():
+                if pd.notna(row.get("min_time")) and pd.notna(row.get("max_time")):
+                    # Converti da nanoseconds a timestamp
+                    min_ts = pd.Timestamp(row["min_time"], unit='ns', tz='UTC')
+                    max_ts = pd.Timestamp(row["max_time"], unit='ns', tz='UTC')
+
+                    # Converti a ET e estrai date
+                    min_et = min_ts.tz_convert(ET).date()
+                    max_et = max_ts.tz_convert(ET).date()
+
+                    # Aggiungi tutte le date nel range (include min e max)
+                    current_date = min_et
+                    while current_date <= max_et:
+                        dates.add(current_date.isoformat())
+                        current_date += timedelta(days=1)
+
+            print(f"[MILD-SKIP][INFLUX] Found {len(dates)} unique dates in {meas} from Parquet metadata")
+            return dates
+
+        except Exception as e:
+            print(f"[MILD-SKIP][INFLUX][WARN] Failed to get dates from metadata for {meas}: {e}")
+            # Fallback: restituisci set vuoto (causerà download di tutte le date)
+            return set()
 
     def _list_series_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> list:
         """
