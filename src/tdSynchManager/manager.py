@@ -5046,6 +5046,37 @@ class ThetaSyncManager:
                     total_elapsed = time.time() - t0
                     print(f"[INFLUX-META-QUERY][COMPLETE] Total time: {total_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
 
+                    # --- >>> FALLBACK: If metadata returns empty, try direct SELECT on measurement — BEGIN
+                    # Reason: Data may be in write cache (WAL) but not yet persisted to Parquet files
+                    # This makes metadata query return empty even though data exists in measurement
+                    if first_day is None and last_day is None:
+                        print(f"[INFLUX-META-QUERY][FALLBACK] Metadata empty, trying direct SELECT MIN/MAX(time) on '{meas}'...")
+                        try:
+                            t0_fallback = time.time()
+
+                            # Direct query on measurement (slower but reliable for fresh data)
+                            direct_sql = f'SELECT MIN(time) AS min_t, MAX(time) AS max_t FROM "{meas}"'
+                            direct_result = cli.query(direct_sql)
+                            direct_df = direct_result.to_pandas() if hasattr(direct_result, "to_pandas") else direct_result
+
+                            if direct_df is not None and len(direct_df) > 0:
+                                direct_row = direct_df.iloc[0]
+
+                                if pd.notna(direct_row.get("min_t")):
+                                    min_t = pd.to_datetime(direct_row["min_t"], utc=True)
+                                    first_day = min_t.tz_convert("America/New_York").date().isoformat()
+
+                                if pd.notna(direct_row.get("max_t")):
+                                    max_t = pd.to_datetime(direct_row["max_t"], utc=True)
+                                    last_day = max_t.tz_convert("America/New_York").date().isoformat()
+
+                                fallback_elapsed = time.time() - t0_fallback
+                                print(f"[INFLUX-META-QUERY][FALLBACK] Time: {fallback_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
+
+                        except Exception as fallback_e:
+                            print(f"[INFLUX-META-QUERY][FALLBACK][WARN] Direct query failed: {type(fallback_e).__name__}: {fallback_e}")
+                    # --- >>> FALLBACK — END
+
                     return first_day, last_day
                 except Exception as e:
                     print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
@@ -6393,8 +6424,48 @@ class ThetaSyncManager:
             df = result.to_pandas() if hasattr(result, "to_pandas") else result
 
             if df is None or df.empty:
-                print(f"[MILD-SKIP][INFLUX] No Parquet files found for {meas}")
-                return set()
+                print(f"[MILD-SKIP][INFLUX] No Parquet files found for {meas} in metadata")
+
+                # --- >>> FALLBACK: Try direct query on measurement — BEGIN
+                # Reason: Data may be in write cache but not yet persisted to Parquet files
+                print(f"[MILD-SKIP][INFLUX][FALLBACK] Trying direct query to get all dates from '{meas}'...")
+                try:
+                    # Query all timestamps and extract unique dates (ET timezone)
+                    # Note: This is slower than metadata but works for fresh data
+                    direct_sql = f'SELECT MIN(time) AS min_t, MAX(time) AS max_t FROM "{meas}"'
+                    direct_result = cli.query(direct_sql)
+                    direct_df = direct_result.to_pandas() if hasattr(direct_result, "to_pandas") else direct_result
+
+                    if direct_df is not None and len(direct_df) > 0:
+                        direct_row = direct_df.iloc[0]
+
+                        if pd.notna(direct_row.get("min_t")) and pd.notna(direct_row.get("max_t")):
+                            from zoneinfo import ZoneInfo
+                            ET = ZoneInfo("America/New_York")
+
+                            min_t = pd.to_datetime(direct_row["min_t"], utc=True)
+                            max_t = pd.to_datetime(direct_row["max_t"], utc=True)
+
+                            min_et = min_t.tz_convert(ET).date()
+                            max_et = max_t.tz_convert(ET).date()
+
+                            # Expand date range
+                            dates = set()
+                            current_date = min_et
+                            while current_date <= max_et:
+                                dates.add(current_date.isoformat())
+                                current_date += timedelta(days=1)
+
+                            print(f"[MILD-SKIP][INFLUX][FALLBACK] Found {len(dates)} dates from direct query")
+                            return dates
+
+                    print(f"[MILD-SKIP][INFLUX][FALLBACK] Direct query returned no data")
+                    return set()
+
+                except Exception as fallback_e:
+                    print(f"[MILD-SKIP][INFLUX][FALLBACK][WARN] Direct query failed: {type(fallback_e).__name__}: {fallback_e}")
+                    return set()
+                # --- >>> FALLBACK — END
 
             # Converti timestamps da nanoseconds a pandas Timestamp e estrai date ET
             dates = set()
