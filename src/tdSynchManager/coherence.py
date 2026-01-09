@@ -187,8 +187,8 @@ class CoherenceChecker:
         )
 
         # Get local date range
-        # _series_earliest_and_latest_day returns (earliest_day, latest_day, files)
-        local_range_result = self.manager._series_earliest_and_latest_day(
+        # _get_first_last_day_from_sink returns (first_day, last_day)
+        local_range_result = self.manager._get_first_last_day_from_sink(
             asset, symbol, interval, sink.lower()
         )
 
@@ -1097,8 +1097,8 @@ class IncoherenceRecovery:
         """
         # First, check if local storage already has data for this date
         # This avoids unnecessary API calls when data exists but wasn't detected during initial check
-        # _series_earliest_and_latest_day returns (earliest_day, latest_day, files)
-        local_range_result = self.manager._series_earliest_and_latest_day(
+        # _get_first_last_day_from_sink returns (first_day, last_day)
+        local_range_result = self.manager._get_first_last_day_from_sink(
             asset, symbol, interval, sink.lower()
         )
 

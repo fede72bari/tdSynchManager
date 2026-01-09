@@ -1243,7 +1243,7 @@ class ThetaSyncManager:
         first_date_iso = _norm_ymd(first_date)
     
         # Discover earliest and latest days across ALL series files (handles rotations / multiple files)
-        series_first_iso, series_last_iso, series_files = self._series_earliest_and_latest_day(
+        series_first_iso, series_last_iso = self._get_first_last_day_from_sink(
             task.asset, symbol, interval, sink_lower
         )
 
@@ -3345,7 +3345,7 @@ class ThetaSyncManager:
         #   - il giorno è "missing/mixed",
         # allora PURGE di tutto il giorno e riscrittura completa (niente head-only).
         sink_lower = sink.lower()
-        series_first_iso, series_last_iso, _ = self._series_earliest_and_latest_day("option", symbol, interval, sink_lower)
+        series_first_iso, series_last_iso = self._get_first_last_day_from_sink("option", symbol, interval, sink_lower)
         st_now = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
         parts_now = st_now.get("parts") or []
         head_missing = (parts_now and 1 not in parts_now)
@@ -4725,9 +4725,12 @@ class ThetaSyncManager:
                     sink_lower = task.sink.lower()
                     resume_pinned = False
     
-                    series_first_iso, series_last_iso, series_files = self._series_earliest_and_latest_day(
+                    series_first_iso, series_last_iso = self._get_first_last_day_from_sink(
                         task.asset, symbol, interval, sink_lower
                     )
+                    series_files = []
+                    if sink_lower in ("csv", "parquet"):
+                        series_files = self._list_series_files(task.asset, symbol, interval, sink_lower)
     
                     # Check for incomplete days
                     try:
@@ -4930,7 +4933,7 @@ class ThetaSyncManager:
         if first_last_hint is not None:
             first_existing, last_existing = first_last_hint
         else:
-            first_existing, last_existing, _ = self._series_earliest_and_latest_day(
+            first_existing, last_existing = self._get_first_last_day_from_sink(
                 asset, symbol, interval, sink_lower
             )
         
@@ -4991,6 +4994,20 @@ class ThetaSyncManager:
                 else:
                     meas = f"{prefix}{symbol}-{asset}-{interval}"
 
+                # --- >>> AVAILABLE_DATES FAST PATH — BEGIN
+                fd, ld = self._influx_available_dates_first_last_day(meas)
+                if fd and ld:
+                    return fd, ld
+                # build single dates support table if not existing yet
+                else:
+                    print(f"[INFLUX-META-QUERY][DEBUG] Unique dates support table not found; boostrap for creation lunched.")
+                    self._influx_available_dates_bootstrap_from_main(meas)
+                    fd, ld = self._influx_available_dates_first_last_day(meas)
+                    if fd and ld:
+                        return fd, ld                    
+                # --- >>> AVAILABLE_DATES FAST PATH — END
+
+
                 try:
                     import time
                     from datetime import timezone
@@ -5024,6 +5041,34 @@ class ThetaSyncManager:
 
                     result = cli.query(sql)
                     df = result.to_pandas() if hasattr(result, "to_pandas") else result
+
+                    # --- >>> DEBUG: Log what metadata query returned — BEGIN
+                    if df is None:
+                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned None (df=None)")
+                    elif df.empty:
+                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned empty DataFrame (len=0)")
+                    else:
+                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned {len(df)} rows")
+                        print(f"[INFLUX-META-QUERY][DEBUG] Columns: {df.columns.tolist()}")
+                        print(f"[INFLUX-META-QUERY][DEBUG] First row: {df.iloc[0].to_dict()}")
+
+                    # Also try to see ALL tables in system.parquet_files to verify query is working
+                    try:
+                        check_sql = "SELECT DISTINCT table_name FROM system.parquet_files LIMIT 10"
+                        check_result = cli.query(check_sql)
+                        check_df = check_result.to_pandas() if hasattr(check_result, "to_pandas") else check_result
+                        if check_df is not None and not check_df.empty:
+                            tables = check_df['table_name'].tolist()
+                            print(f"[INFLUX-META-QUERY][DEBUG] Found {len(tables)} tables in system.parquet_files: {tables[:5]}")
+                            if meas in tables:
+                                print(f"[INFLUX-META-QUERY][DEBUG] ✓ Measurement '{meas}' IS in system.parquet_files!")
+                            else:
+                                print(f"[INFLUX-META-QUERY][DEBUG] ✗ Measurement '{meas}' NOT in system.parquet_files!")
+                        else:
+                            print(f"[INFLUX-META-QUERY][DEBUG] system.parquet_files appears empty")
+                    except Exception as debug_e:
+                        print(f"[INFLUX-META-QUERY][DEBUG] Failed to check table list: {debug_e}")
+                    # --- >>> DEBUG — END
 
                     first_ts = None
                     last_ts = None
@@ -5078,15 +5123,66 @@ class ThetaSyncManager:
                     # --- >>> FALLBACK — END
 
                     return first_day, last_day
+                
                 except Exception as e:
                     print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
                     return None, None
             
             elif sink_lower in ("csv", "parquet"):
-                first, last, _ = self._series_earliest_and_latest_day(asset, symbol, interval, sink_lower)
-                return first, last
-            
-                return None, None
+                files = self._list_series_files(asset, symbol, interval, sink_lower)
+                if not files:
+                    return None, None
+
+                def _start_from_filename(path: str) -> str | None:
+                    base = os.path.basename(path)
+                    # expected: 'YYYY-MM-DDT...-SYMBOL-asset-interval.csv'
+                    return base.split("T", 1)[0] if "T" in base else None
+
+                earliest = None
+                latest = None
+
+                for path in files:
+                    # compute earliest from filename
+                    s = _start_from_filename(path)
+                    if s and (earliest is None or s < earliest):
+                        earliest = s
+
+                    # compute latest directly from filename prefix (daily files are one-day each)
+                    if s and (latest is None or s > latest):
+                        latest = s
+
+                # For EOD stock/index, read the ACTUAL last date from file content
+                # (batch downloads create single files spanning multiple dates)
+                if interval == "1d" and asset in ("stock", "index") and files:
+                    try:
+                        # Get the file with the latest start date
+                        latest_file = max(files, key=lambda f: _start_from_filename(f) or "")
+
+                        if sink_lower == "csv":
+                            # Read last few lines to find actual last date
+                            # Files are now kept chronologically sorted, so last lines = latest dates
+                            lines = self._tail_csv_last_n_lines(latest_file, n=32)
+                            for line in lines:  # lines are newest-first
+                                dt = self._parse_csv_first_col_as_dt(line)
+                                if dt is not None:
+                                    latest = dt.date().isoformat()
+                                    break
+
+                        elif sink_lower == "parquet":
+                            # Read parquet and get max date
+                            df = pd.read_parquet(latest_file)
+                            for tcol in ("created", "timestamp", "last_trade"):
+                                if tcol in df.columns:
+                                    ts = pd.to_datetime(df[tcol], errors="coerce", utc=True).dropna()
+                                    if not ts.empty:
+                                        latest_dt = ts.max().to_pydatetime()
+                                        latest = latest_dt.astimezone(timezone.utc).date().isoformat()
+                                        break
+                    except Exception as e:
+                        # If reading fails, keep filename-based latest
+                        print(f"[WARN] Could not read actual last date from {latest_file}: {e}")
+
+                return earliest, latest
 
                 
     def _probe_existing_last_ts_with_source(self, task, symbol: str, interval: str, sink: str) -> tuple[datetime | None, str | None]:
@@ -6150,7 +6246,16 @@ class ThetaSyncManager:
     
         df = df_new.copy()
         df["__ts_utc"] = s
-    
+
+        # --- >>> AVAILABLE_DATES: derive ET day(s) for this write batch — BEGIN
+        try:
+            _day_series = df["__ts_utc"].dropna().dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
+            _day_isos = set(_day_series.unique().tolist())
+        except Exception:
+            _day_isos = set()
+        # --- >>> AVAILABLE_DATES: derive ET day(s) for this write batch — END
+
+            
         # 2) NORMALIZZAZIONI leggere per chiavi logiche (servono al dedup)
         if "expiration" in df.columns:
             df["expiration"] = pd.to_datetime(df["expiration"], errors="coerce").dt.date
@@ -6262,6 +6367,8 @@ class ThetaSyncManager:
         total = len(lines)
         total_batches = (total + batch - 1) // batch
 
+        all_chunks_ok = True
+
         for i in range(0, total, batch):
             chunk = lines[i:i+batch]
             batch_idx = i // batch + 1
@@ -6287,8 +6394,18 @@ class ThetaSyncManager:
                 print(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={batch_idx}/{total_batches} points={len(chunk)} status=ok")
             else:
+                all_chunks_ok = False
                 print(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={batch_idx}/{total_batches} points={len(chunk)} status=FAILED (saved for recovery)")
+
+        # --- >>> AVAILABLE_DATES: persist unique ET day(s) — BEGIN
+        if all_chunks_ok and written > 0:
+            try:
+                self._influx_available_dates_note_days(measurement, _day_isos)
+            except Exception as _e:
+                print(f"[INFLUX][AVAILABLE_DATES][WARN] {measurement}: {type(_e).__name__}: {_e}")
+        # --- >>> AVAILABLE_DATES: persist unique ET day(s) — END
+
 
         return written
     
@@ -6344,7 +6461,12 @@ class ThetaSyncManager:
         """
         # INFLUXDB: Query aggregata sui metadati per massima efficienza
         if sink_lower == "influxdb":
-            return self._get_dates_from_influx_metadata(asset, symbol, interval)
+            prefix = self.cfg.influx_measure_prefix or ""
+            if asset == "option":
+                meas = f"{prefix}{symbol}-option-{interval}"
+            else:
+                meas = f"{prefix}{symbol}-{asset}-{interval}"
+            return self._influx_available_dates_get_all(meas)
 
         # CSV/PARQUET: Continua con logica esistente
         files = self._list_series_files(asset, symbol, interval, sink_lower)
@@ -6388,113 +6510,6 @@ class ThetaSyncManager:
                 continue
 
         return dates
-
-    def _get_dates_from_influx_metadata(self, asset: str, symbol: str, interval: str) -> set:
-        """
-        Estrae tutte le date presenti in InfluxDB usando query aggregata sui metadati.
-
-        Usa system.parquet_files per ottenere min/max time di ogni file Parquet,
-        poi espande i range per ottenere tutte le date (ET timezone).
-
-        Molto più veloce di interrogare ogni giorno singolarmente!
-        """
-        # Costruisci measurement name
-        prefix = self.cfg.influx_measure_prefix or ""
-        if asset == "option":
-            meas = f"{prefix}{symbol}-option-{interval}"
-        else:
-            meas = f"{prefix}{symbol}-{asset}-{interval}"
-
-        try:
-            # Verifica esistenza measurement prima della query
-            if not self._influx_measurement_exists(meas):
-                print(f"[MILD-SKIP][INFLUX] Measurement {meas} does not exist, returning empty dates")
-                return set()
-
-            cli = self._ensure_influx_client()
-
-            # Query metadati Parquet per ottenere range di date per ogni file
-            sql = f"""
-            SELECT min_time, max_time
-            FROM system.parquet_files
-            WHERE table_name = '{meas}'
-            """
-
-            result = cli.query(sql)
-            df = result.to_pandas() if hasattr(result, "to_pandas") else result
-
-            if df is None or df.empty:
-                print(f"[MILD-SKIP][INFLUX] No Parquet files found for {meas} in metadata")
-
-                # --- >>> FALLBACK: Try direct query on measurement — BEGIN
-                # Reason: Data may be in write cache but not yet persisted to Parquet files
-                print(f"[MILD-SKIP][INFLUX][FALLBACK] Trying direct query to get all dates from '{meas}'...")
-                try:
-                    # Query all timestamps and extract unique dates (ET timezone)
-                    # Note: This is slower than metadata but works for fresh data
-                    direct_sql = f'SELECT MIN(time) AS min_t, MAX(time) AS max_t FROM "{meas}"'
-                    direct_result = cli.query(direct_sql)
-                    direct_df = direct_result.to_pandas() if hasattr(direct_result, "to_pandas") else direct_result
-
-                    if direct_df is not None and len(direct_df) > 0:
-                        direct_row = direct_df.iloc[0]
-
-                        if pd.notna(direct_row.get("min_t")) and pd.notna(direct_row.get("max_t")):
-                            from zoneinfo import ZoneInfo
-                            ET = ZoneInfo("America/New_York")
-
-                            min_t = pd.to_datetime(direct_row["min_t"], utc=True)
-                            max_t = pd.to_datetime(direct_row["max_t"], utc=True)
-
-                            min_et = min_t.tz_convert(ET).date()
-                            max_et = max_t.tz_convert(ET).date()
-
-                            # Expand date range
-                            dates = set()
-                            current_date = min_et
-                            while current_date <= max_et:
-                                dates.add(current_date.isoformat())
-                                current_date += timedelta(days=1)
-
-                            print(f"[MILD-SKIP][INFLUX][FALLBACK] Found {len(dates)} dates from direct query")
-                            return dates
-
-                    print(f"[MILD-SKIP][INFLUX][FALLBACK] Direct query returned no data")
-                    return set()
-
-                except Exception as fallback_e:
-                    print(f"[MILD-SKIP][INFLUX][FALLBACK][WARN] Direct query failed: {type(fallback_e).__name__}: {fallback_e}")
-                    return set()
-                # --- >>> FALLBACK — END
-
-            # Converti timestamps da nanoseconds a pandas Timestamp e estrai date ET
-            dates = set()
-            from zoneinfo import ZoneInfo
-            ET = ZoneInfo("America/New_York")
-
-            for _, row in df.iterrows():
-                if pd.notna(row.get("min_time")) and pd.notna(row.get("max_time")):
-                    # Converti da nanoseconds a timestamp
-                    min_ts = pd.Timestamp(row["min_time"], unit='ns', tz='UTC')
-                    max_ts = pd.Timestamp(row["max_time"], unit='ns', tz='UTC')
-
-                    # Converti a ET e estrai date
-                    min_et = min_ts.tz_convert(ET).date()
-                    max_et = max_ts.tz_convert(ET).date()
-
-                    # Aggiungi tutte le date nel range (include min e max)
-                    current_date = min_et
-                    while current_date <= max_et:
-                        dates.add(current_date.isoformat())
-                        current_date += timedelta(days=1)
-
-            print(f"[MILD-SKIP][INFLUX] Found {len(dates)} unique dates in {meas} from Parquet metadata")
-            return dates
-
-        except Exception as e:
-            print(f"[MILD-SKIP][INFLUX][WARN] Failed to get dates from metadata for {meas}: {e}")
-            # Fallback: restituisci set vuoto (causerà download di tutte le date)
-            return set()
 
     def _list_series_files(self, asset: str, symbol: str, interval: str, sink_lower: str) -> list:
         """
@@ -6552,147 +6567,6 @@ class ThetaSyncManager:
 
         
     
-    def _series_earliest_and_latest_day(self, asset: str, symbol: str, interval: str, sink_lower: str):
-        """
-        Determine the earliest and latest calendar days covered by a time series.
-
-        This method scans all canonical part files for a given series and extracts the date range
-        by inspecting filenames (which encode the starting day). It's used for coverage tracking
-        and determining what data already exists before downloading.
-
-        Parameters
-        ----------
-        asset : str
-            Asset type: "option", "stock", or "index".
-        symbol : str
-            Ticker symbol (case-insensitive matching).
-        interval : str
-            Timeframe (e.g., "5m", "1m", "1d").
-        sink_lower : str
-            Sink format: "csv", "parquet", or "influxdb".
-
-        Returns
-        -------
-        tuple[str or None, str or None, list]
-            Three-element tuple: (earliest_day, latest_day, files)
-            - earliest_day: ISO date "YYYY-MM-DD" from earliest filename prefix, or None.
-            - latest_day: ISO date "YYYY-MM-DD" from latest filename prefix, or None.
-            - files: List of absolute file paths for all canonical part files, sorted by name.
-            Returns (None, None, []) if no files exist.
-
-        Example Usage
-        -------------
-        # Called by _get_first_last_day_from_sink and coverage tracking methods
-        earliest, latest, files = manager._series_earliest_and_latest_day(
-            asset="stock", symbol="AAPL", interval="5m", sink_lower="parquet"
-        )
-        # Returns: ("2020-01-02", "2024-03-15", [list of file paths])
-
-        Notes
-        -----
-        - Uses _list_series_files to get canonical part files only (excludes legacy base files).
-        - Extracts dates from filename format: "YYYY-MM-DDT00-00-00Z-SYMBOL-asset-interval_partNN.ext"
-        - Both earliest and latest are derived from filename prefixes (not file contents).
-        - For daily-part files, each file represents exactly one calendar day.
-        - For InfluxDB sink, queries the database for MIN(time) and MAX(time).
-        """
-
-        # Handle InfluxDB sink by querying Parquet metadata (FAST)
-        if sink_lower == "influxdb":
-            prefix = (self.cfg.influx_measure_prefix or "")
-            if asset == "option":
-                measurement = f"{prefix}{symbol}-option-{interval}"
-            else:
-                measurement = f"{prefix}{symbol}-{asset}-{interval}"
-
-            # Query Parquet file metadata instead of scanning all data
-            # This is MUCH faster: reads KB of metadata instead of GB of data
-            sql = f"""
-            SELECT MIN(min_time) AS start_ts, MAX(max_time) AS end_ts
-            FROM system.parquet_files
-            WHERE table_name = '{measurement}'
-            """
-
-            df = self._influx_query_dataframe(sql)
-            if df.empty:
-                return None, None, []
-
-            # Extract min and max timestamps (in nanoseconds)
-            start_ns = self._extract_scalar_from_df(df, ["start_ts"])
-            end_ns = self._extract_scalar_from_df(df, ["end_ts"])
-
-            if start_ns is None or end_ns is None:
-                return None, None, []
-
-            # Convert nanoseconds to date strings (YYYY-MM-DD)
-            try:
-                first_ts = pd.Timestamp(start_ns, unit='ns', tz='UTC')
-                last_ts = pd.Timestamp(end_ns, unit='ns', tz='UTC')
-                earliest_date = first_ts.strftime("%Y-%m-%d")
-                latest_date = last_ts.strftime("%Y-%m-%d")
-                return earliest_date, latest_date, []
-            except Exception:
-                return None, None, []
-
-        # Original file-based logic for CSV/Parquet
-        files = self._list_series_files(asset, symbol, interval, sink_lower)
-        if not files:
-            return None, None, []
-
-        def _start_from_filename(path: str) -> str | None:
-            base = os.path.basename(path)
-            # expected: 'YYYY-MM-DDT...-SYMBOL-asset-interval.csv'
-            return base.split("T", 1)[0] if "T" in base else None
-
-        earliest = None
-        latest = None
-
-        for path in files:
-            # compute earliest from filename
-            s = _start_from_filename(path)
-            if s and (earliest is None or s < earliest):
-                earliest = s
-
-            # compute latest directly from filename prefix (daily files are one-day each)
-            if s and (latest is None or s > latest):
-                latest = s
-
-        # For EOD stock/index, read the ACTUAL last date from file content
-        # (batch downloads create single files spanning multiple dates)
-        if interval == "1d" and asset in ("stock", "index") and files:
-            try:
-                # Get the file with the latest start date
-                latest_file = max(files, key=lambda f: _start_from_filename(f) or "")
-
-                if sink_lower == "csv":
-                    # Read last few lines to find actual last date
-                    # Files are now kept chronologically sorted, so last lines = latest dates
-                    lines = self._tail_csv_last_n_lines(latest_file, n=32)
-                    for line in lines:  # lines are newest-first
-                        dt = self._parse_csv_first_col_as_dt(line)
-                        if dt is not None:
-                            latest = dt.date().isoformat()
-                            break
-
-                elif sink_lower == "parquet":
-                    # Read parquet and get max date
-                    df = pd.read_parquet(latest_file)
-                    for tcol in ("created", "timestamp", "last_trade"):
-                        if tcol in df.columns:
-                            ts = pd.to_datetime(df[tcol], errors="coerce", utc=True).dropna()
-                            if not ts.empty:
-                                latest_dt = ts.max().to_pydatetime()
-                                latest = latest_dt.astimezone(timezone.utc).date().isoformat()
-                                break
-            except Exception as e:
-                # If reading fails, keep filename-based latest
-                print(f"[WARN] Could not read actual last date from {latest_file}: {e}")
-                pass
-
-
-        return earliest, latest, files
-
-
     def _list_day_files(self, asset: str, symbol: str, interval: str, sink: str, day_iso: str) -> list[str]:
         """
         Return all files associated with a specific trading day, including all part files.
@@ -7648,6 +7522,168 @@ class ThetaSyncManager:
     # === >>> INFLUX MEASUREMENT EXISTENCE CHECK (no data proxy) — END
 
 
+    # === >>> INFLUX AVAILABLE-DATES INDEX (per-measurement, unique days) — BEGIN
+
+    def _influx_available_dates_measurement(self, measurement: str) -> str:
+        return f"{measurement}_available_dates"
+
+    def _influx_available_dates__ensure_state(self) -> None:
+        if not hasattr(self, "_influx_available_dates_cache"):
+            self._influx_available_dates_cache = {}
+        if not hasattr(self, "_influx_available_dates_loaded"):
+            self._influx_available_dates_loaded = set()
+
+    def _influx_available_dates__load_existing(self, measurement: str) -> set[str]:
+        """Best-effort load of already indexed days (YYYY-MM-DD)."""
+        self._influx_available_dates__ensure_state()
+        if measurement in self._influx_available_dates_loaded:
+            return self._influx_available_dates_cache.setdefault(measurement, set())
+
+        avail = self._influx_available_dates_measurement(measurement)
+        df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
+
+        s = set()
+        if df is not None and (not df.empty) and ("trade_day" in df.columns):
+            s = {str(x).strip()[:10] for x in df["trade_day"].dropna().astype(str).tolist()}
+
+        self._influx_available_dates_cache[measurement] = s
+        self._influx_available_dates_loaded.add(measurement)
+        return s
+
+    def _influx_available_dates_note_days(self, measurement: str, day_isos: set[str]) -> None:
+        """Insert only new days into <measurement>_available_dates."""
+        if not day_isos:
+            return
+        existing = self._influx_available_dates__load_existing(measurement)
+
+        new_days = sorted({str(d).strip()[:10] for d in day_isos if d} - existing)
+        if not new_days:
+            return
+
+        try:
+            cli = self._ensure_influx_client()
+        except Exception:
+            return
+
+        avail = self._influx_available_dates_measurement(measurement)
+
+        # store 1 point per day; trade_day as TAG, ET midnight as timestamp
+        lines = []
+        for d in new_days:
+            ts = pd.Timestamp(d).tz_localize("America/New_York").tz_convert("UTC")
+            ts_ns = int(ts.value)
+            lines.append(f"{avail},trade_day={d} present=1i {ts_ns}")
+
+        # write with retry (same as main)
+        ok = self._influx_retry_mgr.write_with_retry(
+            client=cli,
+            lines=lines,
+            measurement=avail,
+            batch_idx=1,
+            metadata={"measurement": avail, "total_lines": len(lines), "source": "available_dates"},
+        )
+        if ok:
+            existing.update(new_days)
+
+    def _influx_available_dates_get_all(self, measurement: str) -> set[str]:
+        
+        avail = self._influx_available_dates_measurement(measurement)
+        df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
+        
+        if df is None or df.empty or "trade_day" not in df.columns:
+            
+            print(f"[_influx_available_dates_get_all][DEBUG] Unique dates support table not found; boostrap for creation lunched.")
+            self._influx_available_dates_bootstrap_from_main(measurement)
+
+            df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
+            
+            if df is None or df.empty or "trade_day" not in df.columns:
+                return set()
+        
+        return {str(x).strip()[:10] for x in df["trade_day"].dropna().astype(str).tolist()}
+
+    def _influx_available_dates_first_last_day(self, measurement: str):
+        avail = self._influx_available_dates_measurement(measurement)
+        df = self._influx_query_dataframe(
+            f'SELECT MIN(trade_day) AS first_day, MAX(trade_day) AS last_day FROM "{avail}"'
+        )
+        if df is None or df.empty:
+            return None, None
+        row = df.iloc[0]
+        fd = row.get("first_day")
+        ld = row.get("last_day")
+        fd = str(fd).strip()[:10] if fd is not None and str(fd).strip() not in ("", "None", "NaT") else None
+        ld = str(ld).strip()[:10] if ld is not None and str(ld).strip() not in ("", "None", "NaT") else None
+        return fd, ld
+
+    def _influx_available_dates_has_day(self, measurement: str, day_iso: str) -> bool:
+        d = str(day_iso).strip()[:10]
+        if not d:
+            return False
+        avail = self._influx_available_dates_measurement(measurement)
+        df = self._influx_query_dataframe(
+            f"SELECT 1 AS one FROM \"{avail}\" WHERE trade_day = '{d}' LIMIT 1"
+        )
+        return df is not None and (not df.empty)
+
+    def _influx_available_dates_bootstrap_from_main(
+        self,
+        measurement: str,
+        first_day: str | None = None,
+        last_day: str | None = None
+    ) -> set[str]:
+        """One-time expensive fallback: scan the main measurement to build the unique day-index table.
+
+        Parameters
+        ----------
+        measurement:
+            Main measurement name (e.g., 'QQQ-option-5m').
+        first_day, last_day:
+            Optional 'YYYY-MM-DD' bounds to restrict the scan. If omitted, scans the whole table.
+
+        Returns
+        -------
+        set[str]
+            Set of 'YYYY-MM-DD' days present in the main measurement (as indexed in <measurement>_available_dates).
+        """
+        existing = self._influx_available_dates_get_all(measurement)
+        if existing:
+            return existing
+
+        where_parts: list[str] = []
+        if first_day:
+            d0 = str(first_day).strip()[:10]
+            if d0:
+                where_parts.append(f"time >= to_timestamp('{d0}T00:00:00Z')")
+        if last_day:
+            d1 = str(last_day).strip()[:10]
+            if d1:
+                where_parts.append(f"time <= to_timestamp('{d1}T23:59:59Z')")
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+        q = f"""
+            SELECT DISTINCT DATE_TRUNC('day', time) AS date
+            FROM "{measurement}"
+            {where_sql}
+            ORDER BY date
+        """
+        df = self._influx_query_dataframe(q)
+        if df is None or df.empty or "date" not in df.columns:
+            return set()
+
+        days: set[str] = set()
+        for v in df["date"].dropna().tolist():
+            ts = pd.to_datetime(v, utc=True, errors="coerce")
+            if pd.notna(ts):
+                days.add(ts.date().isoformat())
+
+        self._influx_available_dates_note_days(measurement, days)
+        return self._influx_available_dates_get_all(measurement)
+
+    # === >>> INFLUX AVAILABLE-DATES INDEX (per-measurement, unique days) — END
+
+
     def _influx_last_timestamp(self, measurement: str):
         # --- >>> WARM-UP GUARD: avoid querying missing measurement — BEGIN
         try:
@@ -7779,11 +7815,9 @@ class ThetaSyncManager:
         return None
 
 
-
     def _influx_day_has_any(self, measurement: str, day_iso: str) -> bool:
-        """True se esiste almeno una riga in DB per quel giorno ET."""
-        s, e = self._influx__et_day_bounds_to_utc(day_iso)
-        return self._influx__first_ts_between(measurement, s, e) is not None
+        # Fast check via available_dates table
+        return self._influx_available_dates_has_day(measurement, day_iso)
 
     def _influx_first_ts_for_et_day(self, measurement: str, day_iso: str):
         """Primo ts del giorno ET in UTC, oppure None."""
@@ -9017,7 +9051,7 @@ class ThetaSyncManager:
                 try:
                     fl = (first_day_et, last_day_et)  # se già calcolate prima del loop
                 except NameError:
-                    fl = self._get_first_last_days_from_sink(task.asset, symbol, interval, task.sink)
+                    fl = self._get_first_last_day_from_sink(task.asset, symbol, interval, task.sink)
                 if fl and fl[0] and fl[1]:
                     _first, _last = fl
                     if _first < day < _last:
@@ -9982,7 +10016,7 @@ class ThetaSyncManager:
                             continue
 
                         # Get earliest and latest dates
-                        earliest, latest, _ = self._series_earliest_and_latest_day(
+                        earliest, latest = self._get_first_last_day_from_sink(
                             asset_dir, symbol_dir, interval_dir, sink_type
                         )
 

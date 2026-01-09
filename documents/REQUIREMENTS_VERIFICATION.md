@@ -585,8 +585,8 @@ problem_segments = await _segment_tick_problems(tick_df, date)
 **Implementazione Attesa**:
 ```python
 # Prima di recovery
-local_range = manager._series_earliest_and_latest_day(...)
-if date_iso in local_range:
+first_day, last_day = manager._get_first_last_day_from_sink(...)
+if first_day and last_day and first_day <= date_iso <= last_day:
     missing_days = manager._missing_1d_days_csv(...)
     if not missing_days:
         # Esiste già, skip download
@@ -595,7 +595,7 @@ if date_iso in local_range:
 
 **Verifica Codice**:
 - ✅ **IMPLEMENTATO**: `coherence.py:964-992` (check locale in `_recover_eod_day`)
-- ✅ **METODO USATO**: `_series_earliest_and_latest_day` + `_missing_1d_days_csv`
+- ✅ **METODO USATO**: `_get_first_last_day_from_sink` + `_missing_1d_days_csv`
 
 **Stato**: ✅ **COMPLETO**
 

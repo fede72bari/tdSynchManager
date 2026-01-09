@@ -54,7 +54,6 @@
 - `_read_minimal` (nested function) - Minimal DataFrame reading
 - `_max_file_ts` (nested function) - Max timestamp extraction
 - `_list_series_files` - Series file listing
-- `_series_earliest_and_latest_day` - Series date range
 - `_start_from_filename` (nested function) - Date extraction from filename
 - `_get_first_last_day_from_sink` - Sink-specific date range
 - `_list_day_files` - Daily file listing
