@@ -1802,12 +1802,27 @@ class ThetaSyncManager:
                         mask = missing if mask is None else (mask | missing)
                     return mask
 
+                def _normalize_join_cols(df_in):
+                    if df_in is None or df_in.empty:
+                        return df_in
+                    if "right" in df_in.columns:
+                        df_in["right"] = (
+                            df_in["right"].astype(str).str.strip().str.lower()
+                            .replace({"c": "call", "p": "put"})
+                        )
+                    if "symbol" not in df_in.columns and "root" in df_in.columns:
+                        df_in["symbol"] = df_in["root"]
+                    if "root" not in df_in.columns and "symbol" in df_in.columns:
+                        df_in["root"] = df_in["symbol"]
+                    return df_in
+
                 df = df_base
                 missing_mask = None
                 missing_details = {}
 
                 for enrich_pass in range(total_passes):
                     df_pass = df_base.copy()
+                    df_pass = _normalize_join_cols(df_pass)
                     greeks_missing_mask = None
                     oi_missing_mask = None
                     greeks_details = {}
@@ -1846,6 +1861,9 @@ class ThetaSyncManager:
                                     dg = dg.rename(columns={"strike_price": "strike"})
                                 if "strike_price" in df_pass.columns and "strike" not in df_pass.columns:
                                     df_pass = df_pass.rename(columns={"strike_price": "strike"})
+
+                                dg = _normalize_join_cols(dg)
+                                df_pass = _normalize_join_cols(df_pass)
 
                                 candidate_keys = [
                                     ["option_symbol"],
@@ -1926,29 +1944,32 @@ class ThetaSyncManager:
                                     else:
                                         doi["effective_date_oi"] = prev.date().isoformat()
 
-                                    candidate_keys = [
-                                        ["option_symbol"],
-                                        ["root", "expiration", "strike", "right"],
-                                        ["symbol", "expiration", "strike", "right"],
-                                    ]
-                                    on_cols = next((keys for keys in candidate_keys
-                                                    if all(k in df_pass.columns for k in keys) and all(k in doi.columns for k in keys)), None)
-                                    if on_cols is not None:
-                                        keep = on_cols + ["last_day_OI"]
-                                        if "timestamp_oi" in doi.columns:
-                                            keep += ["timestamp_oi"]
-                                        keep += ["effective_date_oi"]
-                                        doi = doi[keep].drop_duplicates(subset=on_cols)
-                                        df_pass = df_pass.merge(doi, on=on_cols, how="left")
-                                        oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
-                                        if oi_missing_mask is not None and oi_missing_mask.any():
-                                            oi_details = {
-                                                "reason": "oi_missing_values",
-                                                "missing_rows": int(oi_missing_mask.sum())
-                                            }
-                                    else:
-                                        oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
-                                        oi_details = {"reason": "oi_merge_keys_missing"}
+                                doi = _normalize_join_cols(doi)
+                                df_pass = _normalize_join_cols(df_pass)
+
+                                candidate_keys = [
+                                    ["option_symbol"],
+                                    ["root", "expiration", "strike", "right"],
+                                    ["symbol", "expiration", "strike", "right"],
+                                ]
+                                on_cols = next((keys for keys in candidate_keys
+                                                if all(k in df_pass.columns for k in keys) and all(k in doi.columns for k in keys)), None)
+                                if on_cols is not None:
+                                    keep = on_cols + ["last_day_OI"]
+                                    if "timestamp_oi" in doi.columns:
+                                        keep += ["timestamp_oi"]
+                                    keep += ["effective_date_oi"]
+                                    doi = doi[keep].drop_duplicates(subset=on_cols)
+                                    df_pass = df_pass.merge(doi, on=on_cols, how="left")
+                                    oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
+                                    if oi_missing_mask is not None and oi_missing_mask.any():
+                                        oi_details = {
+                                            "reason": "oi_missing_values",
+                                            "missing_rows": int(oi_missing_mask.sum())
+                                        }
+                                else:
+                                    oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                    oi_details = {"reason": "oi_merge_keys_missing"}
                     except Exception as e:
                         oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
                         oi_details = {"reason": "oi_exception", "error": str(e)}
@@ -2918,6 +2939,20 @@ class ThetaSyncManager:
                 mask = missing if mask is None else (mask | missing)
             return mask
 
+        def _normalize_join_cols(df):
+            if df is None or df.empty:
+                return df
+            if "right" in df.columns:
+                df["right"] = (
+                    df["right"].astype(str).str.strip().str.lower()
+                    .replace({"c": "call", "p": "put"})
+                )
+            if "symbol" not in df.columns and "root" in df.columns:
+                df["symbol"] = df["root"]
+            if "root" not in df.columns and "symbol" in df.columns:
+                df["root"] = df["symbol"]
+            return df
+
         oi_missing_mask = None
         oi_missing_details = {}
         oi_merge_keys = None
@@ -3000,8 +3035,10 @@ class ThetaSyncManager:
                             print("[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
 
                 if not oi_from_cache:
-                    if self.cfg.enable_oi_caching:
+                    if self.cfg.enable_oi_caching and use_cache:
                         print("[OI-CACHE] Current date OI not found in local cache - starting remote data source fetching")
+                    elif self.cfg.enable_oi_caching and not use_cache:
+                        print("[OI-CACHE] Cache bypassed (retry mode) - fetching from remote data source")
                     else:
                         print("[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
                     doi, oi_failed_exps = await _fetch_oi_remote()
@@ -3018,8 +3055,25 @@ class ThetaSyncManager:
                         else:
                             print("[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
 
-                    df_norm = self._normalize_df_types(df_oi_base)
-                    doi_norm = self._normalize_df_types(doi)
+                    df_norm = _normalize_join_cols(self._normalize_df_types(df_oi_base))
+                    doi_norm = _normalize_join_cols(self._normalize_df_types(doi))
+
+                    # ### >>> OI MERGE DIAGNOSTICS — BEGIN
+                    try:
+                        src = "cache" if oi_from_cache else "remote"
+                        cols_hint = [c for c in ["option_symbol", "root", "symbol", "expiration", "strike", "strike_price", "right", "timestamp", "ts", "time", "open_interest", "oi", "OI"] if c in doi_norm.columns]
+                        print(f"[OI-MERGE][INPUT] {symbol} {interval} {day_iso} src={src} doi_rows={len(doi_norm)} doi_cols={cols_hint}")
+                    except Exception:
+                        pass
+                    # ### >>> OI MERGE DIAGNOSTICS — END
+
+
+                    # ### >>> OI JOIN COLUMN NORMALIZATION (strike_price alias) — BEGIN
+                    if "strike_price" in doi_norm.columns and "strike" not in doi_norm.columns:
+                        doi_norm = doi_norm.rename(columns={"strike_price": "strike"})
+                    if "strike_price" in df_norm.columns and "strike" not in df_norm.columns:
+                        df_norm = df_norm.rename(columns={"strike_price": "strike"})
+                    # ### >>> OI JOIN COLUMN NORMALIZATION (strike_price alias) — END
 
                     oi_col = next((c for c in ["open_interest", "oi", "OI"] if c in doi_norm.columns), None)
                     if not oi_col:
@@ -3046,8 +3100,35 @@ class ThetaSyncManager:
                             ["root", "expiration", "strike", "right"],
                             ["symbol", "expiration", "strike", "right"],
                         ]
-                        on_cols = next((keys for keys in candidate_keys if all(k in df_norm.columns for k in keys) and all(k in doi_norm.columns for k in keys)), None)
+
+                        # ### >>> OI MERGE DIAGNOSTICS (key coverage) — BEGIN
+                        avail = []
+                        for keys in candidate_keys:
+                            if not (all(k in df_norm.columns for k in keys) and all(k in doi_norm.columns for k in keys)):
+                                continue
+                            try:
+                                dfk = df_norm[keys].drop_duplicates()
+                                doik = doi_norm[keys].drop_duplicates()
+                                chk = dfk.merge(doik, on=keys, how="left", indicator=True)
+                                miss = int((chk["_merge"] == "left_only").sum())
+                                tot = int(len(chk))
+                                avail.append((keys, miss, tot))
+                            except Exception as _diag_e:
+                                print(f"[OI-MERGE][DIAG][WARN] {symbol} {interval} {day_iso} key={keys} diag_failed={type(_diag_e).__name__}: {_diag_e}")
+
+                        if avail:
+                            parts = [f"key={k} unmatched_keys={m}/{t}" for (k, m, t) in avail]
+                            print(f"[OI-MERGE][DIAG] {symbol} {interval} {day_iso} " + " | ".join(parts))
+                        # ### >>> OI MERGE DIAGNOSTICS (key coverage) — END
+
+                        on_cols = next(
+                            (keys for keys in candidate_keys if all(k in df_norm.columns for k in keys) and all(k in doi_norm.columns for k in keys)),
+                            None
+                        )
                         oi_merge_keys = on_cols
+                        print(f"[OI-MERGE][KEY] {symbol} {interval} {day_iso} using={oi_merge_keys}")
+
+                                                
                         if on_cols is not None:
                             keep = on_cols + ["last_day_OI"]
                             if "timestamp_oi" in doi_norm.columns:
@@ -3056,6 +3137,70 @@ class ThetaSyncManager:
                             doi_norm = doi_norm[keep].drop_duplicates(subset=on_cols)
                             df_all = df_norm.merge(doi_norm, on=on_cols, how="left")
                             oi_missing_mask = _missing_mask_for_cols(df_all, ["last_day_OI"])
+
+                            # ### >>> OI ABSENT-CONTRACTS FILL (NaN->0) — BEGIN
+                            try:
+                                if oi_missing_mask is not None and oi_missing_mask.any() and oi_merge_keys:
+                                    # "Absent from snapshot" means: contract key does NOT exist in the OI snapshot keys.
+                                    _snap_keys = doi_norm[oi_merge_keys].drop_duplicates()
+                                    _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
+
+                                    _mi_all = pd.MultiIndex.from_frame(df_all[oi_merge_keys])
+                                    _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+
+                                    _fill_mask = _absent_contract_mask & df_all["last_day_OI"].isna()
+                                    _filled_rows = int(_fill_mask.sum())
+
+                                    if _filled_rows > 0:
+                                        _absent_unique = int(df_all.loc[_absent_contract_mask, oi_merge_keys].drop_duplicates().shape[0])
+
+                                        df_all.loc[_fill_mask, "last_day_OI"] = 0
+
+                                        print(
+                                            f"[OI-MERGE][FILL0] {symbol} {interval} {day_iso} "
+                                            f"absent_contracts={_absent_unique} filled_rows={_filled_rows}"
+                                        )
+
+                                        # Recompute missing mask after filling absent contracts
+                                        oi_missing_mask = _missing_mask_for_cols(df_all, ["last_day_OI"])
+                            except Exception as _fill_e:
+                                print(
+                                    f"[OI-MERGE][FILL0][WARN] {symbol} {interval} {day_iso} "
+                                    f"fill_failed={type(_fill_e).__name__}: {_fill_e}"
+                                )
+                            # ### >>> OI ABSENT-CONTRACTS FILL (NaN->0) — END
+
+                            try:
+                                miss_cnt = int(oi_missing_mask.sum()) if oi_missing_mask is not None else 0
+                                tot_cnt = int(len(df_all)) if df_all is not None else 0
+                                pct = (100.0 * miss_cnt / max(tot_cnt, 1))
+
+                                uniq_msg = ""
+                                if oi_merge_keys:
+                                    miss_unique = int(df_all.loc[oi_missing_mask, oi_merge_keys].drop_duplicates().shape[0]) if miss_cnt > 0 else 0
+                                    tot_unique = int(df_all[oi_merge_keys].drop_duplicates().shape[0])
+                                    uniq_msg = f" missing_unique_contracts={miss_unique}/{tot_unique}"
+
+                                print(
+                                    f"[OI-MERGE][RESULT] {symbol} {interval} {day_iso} "
+                                    f"pass={oi_pass+1}/{total_passes} keys={oi_merge_keys} "
+                                    f"missing_rows={miss_cnt}/{tot_cnt} ({pct:.2f}%){uniq_msg}"
+                                )
+
+                                if miss_cnt > 0:
+                                    sample_cols = [c for c in ["option_symbol", "root", "expiration", "strike", "right"] if c in df_all.columns]
+                                    if sample_cols:
+                                        print("[OI-MERGE][SAMPLE-MISS] first 8 missing rows keys:")
+                                        print(df_all.loc[oi_missing_mask, sample_cols].head(8).to_string(index=False))
+
+                                    if "expiration" in df_all.columns:
+                                        vc = df_all.loc[oi_missing_mask, "expiration"].astype(str).value_counts().head(8)
+                                        print("[OI-MERGE][MISS-EXP] top expirations missing OI:")
+                                        print(vc.to_string())
+                            except Exception as _log_e:
+                                print(f"[OI-MERGE][LOG][WARN] {symbol} {interval} {day_iso} log_failed={type(_log_e).__name__}: {_log_e}")
+
+
                             if oi_missing_mask is not None and oi_missing_mask.any():
                                 oi_missing_details = {
                                     "reason": "oi_missing_values",
@@ -3090,10 +3235,18 @@ class ThetaSyncManager:
                 if oi_missing_mask is None or not oi_missing_mask.any():
                     break
 
-                if oi_pass < total_passes - 1 and retry_delay > 0:
-                    print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} sleeping {retry_delay}s")
-                    await asyncio.sleep(retry_delay)
-                    use_cache = False
+                if oi_pass < total_passes - 1:
+                    if oi_from_cache:
+                        # Cache data won't change; sleeping is pointless. Retry immediately with remote fetch.
+                        print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} src=cache -> skipping sleep, retrying immediately (remote fetch)")
+                        use_cache = False
+                    elif retry_delay > 0:
+                        print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} sleeping {retry_delay}s")
+                        await asyncio.sleep(retry_delay)
+                        use_cache = False
+                    else:
+                        use_cache = False
+
 
         except Exception as e:
             print(f"[WARN] intraday OI merge {symbol} {interval} {day_iso}: {e}")
@@ -4843,6 +4996,21 @@ class ThetaSyncManager:
                     from datetime import timezone
                     cli = self._ensure_influx_client()
 
+                    # --- >>> WARM-UP GUARD: Skip metadata query if table doesn't exist — BEGIN
+                    # Querying system.parquet_files when table is in inconsistent state (deleted, warm-up)
+                    # can trigger "Panic: table exists" in InfluxDB v3
+                    print(f"[INFLUX-META-QUERY][PRE-CHECK] Checking if measurement '{meas}' exists...")
+                    try:
+                        exists = self._influx_measurement_exists(meas)
+                        if not exists:
+                            print(f"[INFLUX-META-QUERY][SKIP] Measurement '{meas}' does not exist, skipping metadata query")
+                            return None, None
+                    except Exception as e:
+                        print(f"[INFLUX-META-QUERY][WARN] Existence check failed (warm-up?): {type(e).__name__}: {e}")
+                        print(f"[INFLUX-META-QUERY][SKIP] Skipping metadata query due to existence check failure")
+                        return None, None
+                    # --- >>> WARM-UP GUARD — END
+
                     print(f"[INFLUX-META-QUERY][START] Querying first/last timestamp from Parquet metadata for '{meas}'...")
                     t0 = time.time()
 
@@ -5913,20 +6081,29 @@ class ThetaSyncManager:
     
         measurement = self._influx_measurement_from_base(base_path)
     
-        # Annuncio una tantum se tabella vuota/nuova
+        measurement = self._influx_measurement_from_base(base_path)
+
+        # --- >>> INFLUX WARM-UP SAFE TABLE CHECK — BEGIN
+        # InfluxDB v3 can "panic" (server-side) if we probe a missing table with SELECT during warm-up.
+        # Therefore this is a best-effort metadata check used only for logging.
         if not hasattr(self, "_influx_seen_measurements"):
             self._influx_seen_measurements = set()
+
         if measurement not in self._influx_seen_measurements:
+            exists = False
             try:
-                if self._influx_last_timestamp(measurement) is None:
-                    print(f"[INFLUX] creating new table {measurement}")
+                exists = bool(self._influx_measurement_exists(measurement))
             except Exception as e:
-                # Connection/timeout errors re-raised from _influx_last_timestamp
-                print(f"[INFLUX][FATAL] Cannot connect to InfluxDB server: {e}")
-                print(f"[INFLUX][FATAL] Please check that InfluxDB is running and accessible at {self.cfg.influx_url}")
-                raise RuntimeError(f"InfluxDB connection failed: {e}") from e
+                # Do not fail the download/write path because of a metadata hiccup during warm-up.
+                print(f"[INFLUX][WARN] measurement existence check skipped (warm-up?): {measurement}: {type(e).__name__}: {e}")
+                exists = False
+
+            if not exists:
+                print(f"[INFLUX] creating new table {measurement}")
+
             self._influx_seen_measurements.add(measurement)
-    
+        # --- >>> INFLUX WARM-UP SAFE TABLE CHECK — END
+
         # 1) Individua la colonna tempo e normalizza in UTC
         t_candidates = ["timestamp","trade_timestamp","bar_timestamp","datetime","created","last_trade","date","time"]
         tcol = next((c for c in t_candidates if c in df_new.columns), None)
@@ -7265,7 +7442,77 @@ class ThetaSyncManager:
         tail = parts[1] if len(parts) == 2 else stem
         return f"{(self.cfg.influx_measure_prefix or '')}{tail}"
 
+    # === >>> INFLUX MEASUREMENT EXISTENCE CHECK (no data proxy) — BEGIN
+    def _influx_measurement_exists(self, measurement: str) -> bool:
+        """Return True if the InfluxDB measurement/table exists.
+
+        Why this exists
+        ---------------
+        Do **not** treat `_influx_last_timestamp()` returning None as "table does not exist".
+        `MAX(time)` can be NULL even when the table exists but is empty, a write is not yet visible,
+        or metadata is lagging.
+
+        Strategy
+        --------
+        1) Try metadata via InfluxQL: `SHOW MEASUREMENTS` (as in the user's example).
+        2) Fallback to the InfluxDB v3 SQL endpoint: `SHOW TABLES`.
+        3) Final fallback: run a cheap `SELECT ... LIMIT 1`; if it errors as "unknown table", treat as missing.
+        """
+        m = str(measurement)
+
+        # (1) InfluxQL metadata query (preferred: matches the user's manual check)
+        try:
+            cli = self._ensure_influx_client()
+            try:
+                t = cli.query('SHOW MEASUREMENTS', language='influxql')
+            except TypeError:
+                # Older client versions may not accept the 'language' kwarg.
+                t = cli.query('SHOW MEASUREMENTS')
+
+            df = t.to_pandas() if hasattr(t, 'to_pandas') else t
+            if df is not None and len(df) > 0:
+                # Common output column is 'name', but keep this resilient.
+                if 'name' in df.columns:
+                    col = 'name'
+                elif 'measurement' in df.columns:
+                    col = 'measurement'
+                elif 'table_name' in df.columns:
+                    col = 'table_name'
+                else:
+                    col = df.columns[0]
+                names = set(df[col].dropna().astype(str).tolist())
+                return m in names
+        except Exception:
+            # Fall back below.
+            pass
+
+        # (2) HTTP SQL endpoint fallback (reliable on v3): SHOW TABLES
+        try:
+            tables = self._list_influx_tables()
+            if tables:
+                return m in set(map(str, tables))
+        except Exception:
+            # Fall back below.
+            pass
+
+        # (3) Disabled fallback: probing with SELECT against a missing table can trigger server-side panics
+        # on some InfluxDB v3 builds during warm-up. If metadata endpoints are unavailable or lagging,
+        # assume the table is missing and let the first write create it.
+        return False
+
+    # === >>> INFLUX MEASUREMENT EXISTENCE CHECK (no data proxy) — END
+
+
     def _influx_last_timestamp(self, measurement: str):
+        # --- >>> WARM-UP GUARD: avoid querying missing measurement — BEGIN
+        try:
+            if not self._influx_measurement_exists(measurement):
+                return None
+        except Exception as e:
+            print(f"[INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            return None
+        # --- >>> WARM-UP GUARD — END
+
         cli = self._ensure_influx_client()
         q = f'SELECT MAX(time) AS last_ts FROM "{measurement}"'
         try:
@@ -7356,6 +7603,17 @@ class ThetaSyncManager:
 
     def _influx__first_ts_between(self, measurement: str, start_utc_iso: str, end_utc_iso: str):
         """Return first timestamp in [start,end) as pandas.Timestamp(UTC) or None."""
+        # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — BEGIN
+        # Querying a non-existing measurement with SELECT can trigger server-side panics on some InfluxDB v3 builds.
+        # We therefore check existence via metadata first (best-effort). If uncertain, behave as "no rows".
+        try:
+            if not self._influx_measurement_exists(measurement):
+                return None
+        except Exception as e:
+            print(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            return None
+        # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — END
+
         cli = self._ensure_influx_client()
         q = (
             f'SELECT MIN(time) AS first_ts FROM "{measurement}" '
@@ -7376,6 +7634,7 @@ class ThetaSyncManager:
         return None
 
 
+
     def _influx_day_has_any(self, measurement: str, day_iso: str) -> bool:
         """True se esiste almeno una riga in DB per quel giorno ET."""
         s, e = self._influx__et_day_bounds_to_utc(day_iso)
@@ -7393,6 +7652,17 @@ class ThetaSyncManager:
         Ritorna l'ultimo timestamp (tz-aware UTC) presente in [start_utc, end_utc) per il measurement,
         oppure None se vuoto. Usa SQL Influx v3.
         """
+        # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — BEGIN
+        # Querying a non-existing measurement with SELECT can trigger server-side panics on some InfluxDB v3 builds.
+        # We therefore check existence via metadata first (best-effort). If uncertain, behave as "no rows".
+        try:
+            if not self._influx_measurement_exists(measurement):
+                return None
+        except Exception as e:
+            print(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            return None
+        # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — END
+
         # costruisci client/query function come negli altri helper
         client = getattr(self, "_influx", None)
         if client is None and hasattr(self, "client_influx"):
@@ -7400,7 +7670,7 @@ class ThetaSyncManager:
         if client is None:
             client = InfluxDBClient3(host=self.cfg.influx_url, token=self.cfg.influx_token,
                                      database=self.cfg.influx_bucket, org=None)
-    
+
         s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         e = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         q = (
@@ -7417,6 +7687,7 @@ class ThetaSyncManager:
         except Exception as ex:
             print(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
             return None
+
 
     # ----------------------- OI CACHE METHODS (INTRADAY OPTIMIZATION) -----------------------
 
