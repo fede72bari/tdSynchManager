@@ -2136,6 +2136,16 @@ class ThetaSyncManager:
                             missing_details["greeks_details"] = greeks_details
                         components.append("greeks")
 
+                        # --- >>> DEBUG: Show which greeks columns are missing — BEGIN
+                        print(f"[DEBUG-MISSING] GREEKS missing detected:")
+                        print(f"  Total rows with missing greeks: {greeks_missing_mask.sum()}")
+                        req_cols = ["delta", "gamma", "theta", "vega", "rho"]
+                        for col in req_cols:
+                            if col in df_pass.columns:
+                                missing_count = df_pass[col].isna().sum()
+                                print(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                        # --- >>> DEBUG — END
+
                     if iv_missing_mask is not None and iv_missing_mask.any():
                         missing_mask = iv_missing_mask if missing_mask is None else (missing_mask | iv_missing_mask)
                         missing_details["iv_missing_rows"] = int(iv_missing_mask.sum())
@@ -2143,14 +2153,48 @@ class ThetaSyncManager:
                             missing_details["iv_details"] = iv_details
                         components.append("iv")
 
+                        # --- >>> DEBUG: Show which IV columns are missing — BEGIN
+                        print(f"[DEBUG-MISSING] IV missing detected:")
+                        print(f"  Total rows with missing IV: {iv_missing_mask.sum()}")
+                        iv_cols = ["implied_vol", "iv_error"]
+                        for col in iv_cols:
+                            if col in df_pass.columns:
+                                missing_count = df_pass[col].isna().sum()
+                                print(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                        # --- >>> DEBUG — END
+
                     if oi_missing_mask is not None and oi_missing_mask.any():
                         missing_mask = oi_missing_mask if missing_mask is None else (missing_mask | oi_missing_mask)
                         missing_details["oi_missing_rows"] = int(oi_missing_mask.sum())
                         if oi_details:
                             missing_details["oi_details"] = oi_details
                         components.append("oi")
+
+                        # --- >>> DEBUG: Show which OI values are missing — BEGIN
+                        print(f"[DEBUG-MISSING] OI missing detected:")
+                        print(f"  Total rows with missing OI: {oi_missing_mask.sum()}")
+                        if "last_day_OI" in df_pass.columns:
+                            missing_count = df_pass["last_day_OI"].isna().sum()
+                            print(f"    last_day_OI: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                            # Show sample of contracts with missing OI
+                            print(f"  Sample contracts with missing OI (first 5):")
+                            missing_oi_sample = df_pass[oi_missing_mask].head(5)
+                            on_cols = ['root', 'expiration', 'strike', 'right']
+                            for idx, row in missing_oi_sample.iterrows():
+                                key_vals = {k: row.get(k) for k in on_cols if k in row}
+                                print(f"    {key_vals}")
+                        # --- >>> DEBUG — END
+
                     if components:
                         missing_details["missing_components"] = components
+
+                    # --- >>> DEBUG: Final combined missing mask summary — BEGIN
+                    if missing_mask is not None and missing_mask.any():
+                        print(f"[DEBUG-MISSING] COMBINED missing mask summary:")
+                        print(f"  Total rows: {len(df_pass)}")
+                        print(f"  Rows with ANY missing data: {missing_mask.sum()} ({missing_mask.sum()/len(df_pass)*100:.1f}%)")
+                        print(f"  Components missing: {components}")
+                    # --- >>> DEBUG — END
 
                     if missing_mask is None or not missing_mask.any():
                         df = df_pass
