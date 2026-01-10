@@ -94,6 +94,7 @@ class ManagerConfig:
     greeks_iv_oi_failure_retry_passes: int = 2  # Extra delayed passes for option enrichment failures (OI/Greeks/IV)
     greeks_iv_oi_failure_delay_seconds: float = 30.0  # Delay between retry passes
     skip_day_on_greeks_iv_oi_failure: bool = False  # Skip entire option day (1d + intraday) if any OI/Greeks/IV missing after retries
+    greeks_version: Optional[str] = "latest"  # "latest" (real TTE) or "1" (fixed .15 DTE for 0DTE)
 
 
 @dataclass

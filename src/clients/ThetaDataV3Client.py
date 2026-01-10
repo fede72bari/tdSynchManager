@@ -3146,6 +3146,7 @@ class ThetaDataV3Client:
             "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
         ] = "sofr",
         rate_value: Optional[float] = None,
+        greeks_version: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson", "html"] = "csv",
     ) -> Tuple[Any, str]:
         """Retrieve end-of-day (EOD) Greeks for option contracts over a date range.
@@ -3254,6 +3255,8 @@ class ThetaDataV3Client:
             params["annual_dividend"] = annual_dividend
         if rate_value is not None:
             params["rate_value"] = rate_value
+        if greeks_version is not None:
+            params["version"] = greeks_version
     
         return await self._make_request("/option/history/greeks/eod", params)
 
@@ -3276,6 +3279,7 @@ class ThetaDataV3Client:
             "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
         ] = "sofr",
         rate_value: Optional[float] = None,
+        greeks_version: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
         """Retrieve all-order Greeks (first, second, and third order) at fixed intervals.
@@ -3324,6 +3328,8 @@ class ThetaDataV3Client:
             params["annual_dividend"] = annual_dividend
         if rate_value is not None:
             params["rate_value"] = rate_value
+        if greeks_version is not None:
+            params["version"] = greeks_version
             
         return await self._make_request("/option/history/greeks/all", params)
 
@@ -3343,6 +3349,7 @@ class ThetaDataV3Client:
            "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
        ] = "sofr",
        rate_value: Optional[float] = None,
+       greeks_version: Optional[str] = None,
        format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
        """Retrieve all-order Greeks (first, second, third) calculated at each trade (tick-based).
@@ -3390,7 +3397,9 @@ class ThetaDataV3Client:
            params["annual_dividend"] = annual_dividend
        if rate_value is not None:
            params["rate_value"] = rate_value
-           
+       if greeks_version is not None:
+           params["version"] = greeks_version
+            
        return await self._make_request("/option/history/trade_greeks/all", params)
 
 
@@ -3412,6 +3421,7 @@ class ThetaDataV3Client:
             "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
         ] = "sofr",
         rate_value: Optional[float] = None,
+        greeks_version: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
         """Retrieve first-order Greeks at fixed time intervals for option contracts.
@@ -3513,6 +3523,7 @@ class ThetaDataV3Client:
             "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
         ] = "sofr",
         rate_value: Optional[float] = None,
+        greeks_version: Optional[str] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
         """Retrieve first-order Greeks calculated at each option trade (tick-based).
@@ -4128,6 +4139,8 @@ class ThetaDataV3Client:
             params["annual_dividend"] = annual_dividend
         if rate_value is not None:
             params["rate_value"] = rate_value
+        if greeks_version is not None:
+            params["version"] = greeks_version
             
         return await self._make_request("/option/history/greeks/implied_volatility", params)
 
@@ -4226,6 +4239,8 @@ class ThetaDataV3Client:
             params["annual_dividend"] = annual_dividend
         if rate_value is not None:
             params["rate_value"] = rate_value
+        if greeks_version is not None:
+            params["version"] = greeks_version
             
         return await self._make_request("/option/history/trade_greeks/implied_volatility", params)
 
@@ -6715,8 +6730,19 @@ class ResilientThetaClient:
             except Exception as e:
                 error_str = str(e).lower()
 
-                # Check if this is a session closed error
-                if "session closed" in error_str or "session is closed" in error_str:
+                # Check if this is a session error (closed/invalid session)
+                is_invalid_session = "invalid session id" in error_str
+                status = getattr(e, "status", None)
+                if status is None:
+                    status = getattr(e, "status_code", None)
+                is_session_error = (
+                    "session closed" in error_str
+                    or "session is closed" in error_str
+                    or is_invalid_session
+                    or status == 473
+                )
+
+                if is_session_error:
                     if attempt < self._max_reconnect:
                         # Log and attempt reconnection
                         self._logger.log_session_closed(
@@ -6762,8 +6788,17 @@ class ResilientThetaClient:
         # Wait a moment before reconnecting
         await asyncio.sleep(1.0)
 
-        # The client should automatically reconnect on next request
-        # If the client has explicit connect method, call it here
+        # Recreate HTTP session (ThetaDataV3Client does not auto-reopen)
+        try:
+            connector = aiohttp.TCPConnector(
+                limit=getattr(self._client, "max_concurrent_requests", 10)
+            )
+            timeout = getattr(self._client, "_timeout", None)
+            if timeout is None:
+                timeout = aiohttp.ClientTimeout(total=300.0, connect=10.0, sock_read=120.0)
+            self._client.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        except Exception:
+            pass
 
     # Delegate all client methods to _execute_with_reconnect
     # Stock methods

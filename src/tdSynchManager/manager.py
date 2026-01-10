@@ -1513,6 +1513,41 @@ class ThetaSyncManager:
                 dates_to_process.append(temp_date.isoformat())
                 temp_date += timedelta(days=1)
 
+        # MILD-SKIP: reduce work to only missing days (keep edge policies intact)
+        if _mild_skip_policy and _first_day_db and _last_day_db:
+            existing_days = set()
+            if sink_lower == "influxdb":
+                prefix = (self.cfg.influx_measure_prefix or "")
+                if task.asset == "option":
+                    meas = f"{prefix}{symbol}-option-{interval}"
+                else:
+                    meas = f"{prefix}{symbol}-{task.asset}-{interval}"
+                existing_days = self._influx_available_dates_get_all(meas)
+            elif sink_lower in ("csv", "parquet"):
+                files = self._list_series_files(task.asset, symbol, interval, sink_lower)
+                for fpath in files:
+                    fname = os.path.basename(fpath)
+                    day_part = fname.split("T", 1)[0]
+                    if len(day_part) == 10:
+                        existing_days.add(day_part)
+
+            if existing_days:
+                if api_available_dates:
+                    expected_days = set(api_available_dates)
+                else:
+                    expected_days = set(dates_to_process)
+
+                missing_days = expected_days - existing_days
+                edge_days = set()
+                if _first_day_db:
+                    edge_days.add(_first_day_db)
+                if _last_day_db:
+                    edge_days.add(_last_day_db)
+                edge_days &= expected_days
+
+                dates_to_process = sorted(missing_days.union(edge_days))
+                print(f"[MILD-SKIP] missing_days={len(missing_days)} edges_kept={len(edge_days)}")
+
         # Main iteration loop over dates
         for day_iso in dates_to_process:
             # Skip weekends ONLY if using fallback (API dates already exclude them)
@@ -1562,28 +1597,6 @@ class ThetaSyncManager:
                 print(f"[SKIP-MODE] skip middle day={day_iso}")
                 continue
 
-
-            # >>> MILD-SKIP: controlla presenza dati per ogni giorno intermedio
-            if _mild_skip_policy and _first_day_db and _last_day_db:
-                if _first_day_db < day_iso < _last_day_db:
-                    # QUI SI che controlliamo se c'è già dato
-                    has_data = False
-                    
-                    if sink_lower == "influxdb":
-                        prefix = (self.cfg.influx_measure_prefix or "")
-                        meas = f"{prefix}{symbol}-{task.asset if task.asset != 'option' else 'option'}-{interval}"
-                        try:
-                            has_data = self._influx_day_has_any(meas, day_iso)
-                        except Exception:
-                            has_data = False
-                    
-                    elif sink_lower in ("csv", "parquet"):
-                        day_files = self._list_day_files(task.asset, symbol, interval, sink_lower, day_iso)
-                        has_data = len(day_files) > 0
-                    
-                    if has_data:
-                        print(f"[MILD-SKIP] skip middle-day with existing data: {day_iso}")
-                        continue
 
             # calcola sempre sink_lower nel loop (può non essere definito qui)
             sink_lower = (task.sink or "").lower()
@@ -1676,7 +1689,7 @@ class ThetaSyncManager:
              /option/history/eod (expiration="*", start_date=end_date=day_iso).
           2) (optional) Full Greeks merge:
              /option/history/greeks/eod over the same date range.
-          3) Implied Volatility: keep a single 'implied_volatility' from '/option/history/greeks/eod' (no bid/mid/ask, no interval IV).
+          3) Implied Volatility: use 'implied_vol' + 'iv_error' from /option/history/greeks/eod (EOD snapshot).
           4) Prior-day open interest (last_day_OI) merge:
              /option/history/open_interest for the **previous business day** (weekend-safe).
         • Joins: use robust contract keys, preferring "option_symbol" and, when available,
@@ -1746,6 +1759,9 @@ class ThetaSyncManager:
         retry_passes = max(0, retry_passes)
         retry_delay = float(getattr(self.cfg, "greeks_iv_oi_failure_delay_seconds", 0) or 0.0)
         total_passes = 1 + retry_passes
+        greeks_version = getattr(self.cfg, "greeks_version", None)
+        if greeks_version is not None:
+            greeks_version = str(greeks_version).strip() or None
 
         # -------------------------------
         # EOD (daily) — one shot over all expirations
@@ -1805,6 +1821,24 @@ class ThetaSyncManager:
                 def _normalize_join_cols(df_in):
                     if df_in is None or df_in.empty:
                         return df_in
+                    # Normalize expiration format for robust joins
+                    if "expiration" not in df_in.columns:
+                        for alt in ("expiration_date", "expirationDate", "exp", "exp_date"):
+                            if alt in df_in.columns:
+                                df_in = df_in.rename(columns={alt: "expiration"})
+                                break
+                    if "expiration" in df_in.columns:
+                        exp_raw = df_in["expiration"].astype(str).str.strip()
+                        exp_raw = exp_raw.map(self._iso_date_only)
+                        df_in["expiration"] = exp_raw.map(lambda x: self._normalize_date_str(x) or x)
+                    # Normalize strike format (e.g., 30 vs 30.0)
+                    if "strike" in df_in.columns:
+                        strike_raw = df_in["strike"].astype(str).str.strip()
+                        strike_num = pd.to_numeric(strike_raw, errors="coerce")
+                        df_in["strike"] = [
+                            (f"{n:.10f}".rstrip("0").rstrip(".") if pd.notna(n) else r)
+                            for r, n in zip(strike_raw, strike_num)
+                        ]
                     if "right" in df_in.columns:
                         df_in["right"] = (
                             df_in["right"].astype(str).str.strip().str.lower()
@@ -1824,8 +1858,10 @@ class ThetaSyncManager:
                     df_pass = df_base.copy()
                     df_pass = _normalize_join_cols(df_pass)
                     greeks_missing_mask = None
+                    iv_missing_mask = None
                     oi_missing_mask = None
                     greeks_details = {}
+                    iv_details = {}
                     oi_details = {}
 
                     if enrich_greeks:
@@ -1836,6 +1872,7 @@ class ThetaSyncManager:
                                 start_date=day_iso,
                                 end_date=day_iso,
                                 rate_type="sofr",
+                                greeks_version=greeks_version,
                                 format_type="csv",
                             ),
                             label=f"greeks_eod {symbol} {day_iso}"
@@ -1865,6 +1902,14 @@ class ThetaSyncManager:
                                 dg = _normalize_join_cols(dg)
                                 df_pass = _normalize_join_cols(df_pass)
 
+                                # --- >>> DEBUG: Print dataframes before merge — BEGIN
+                                print(f"[DEBUG-GREEKS] {symbol} {day_iso}")
+                                print(f"  df_pass shape: {df_pass.shape}")
+                                print(f"  df_pass columns: {df_pass.columns.tolist()}")
+                                print(f"  dg shape: {dg.shape}")
+                                print(f"  dg columns: {dg.columns.tolist()}")
+                                # --- >>> DEBUG — END
+
                                 candidate_keys = [
                                     ["option_symbol"],
                                     ["root", "expiration", "strike", "right"],
@@ -1872,24 +1917,94 @@ class ThetaSyncManager:
                                 ]
                                 on_cols = next((keys for keys in candidate_keys
                                                 if all(k in df_pass.columns for k in keys) and all(k in dg.columns for k in keys)), None)
+
+                                # --- >>> DEBUG: Print merge keys — BEGIN
+                                print(f"[DEBUG-GREEKS] Merge keys: {on_cols}")
+                                if on_cols:
+                                    print(f"  df_pass unique keys: {df_pass[on_cols].drop_duplicates().shape[0]}")
+                                    print(f"  dg unique keys: {dg[on_cols].drop_duplicates().shape[0]}")
+                                    # Show sample keys from each
+                                    print(f"  df_pass sample keys (first 3):")
+                                    for idx, row in df_pass[on_cols].head(3).iterrows():
+                                        print(f"    {dict(row)}")
+                                    print(f"  dg sample keys (first 3):")
+                                    for idx, row in dg[on_cols].head(3).iterrows():
+                                        print(f"    {dict(row)}")
+                                # --- >>> DEBUG — END
+
                                 if on_cols is not None:
                                     dup_cols = [c for c in dg.columns if c in df_pass.columns and c not in on_cols]
                                     dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
+
+                                    # --- >>> DEBUG: Merge operation — BEGIN
+                                    before_rows = len(df_pass)
+                                    # --- >>> DEBUG — END
+
                                     df_pass = df_pass.merge(dg, on=on_cols, how="left")
+
+                                    # --- >>> DEBUG: After merge stats — BEGIN
+                                    after_rows = len(df_pass)
+                                    print(f"[DEBUG-GREEKS] Merge result:")
+                                    print(f"  Rows before: {before_rows}, after: {after_rows}")
+                                    print(f"  df_pass columns after merge: {df_pass.columns.tolist()}")
+                                    # --- >>> DEBUG — END
 
                                     iv_candidates = ["implied_vol", "implied_volatility", "iv"]
                                     iv_col = next((c for c in iv_candidates if c in df_pass.columns), None)
+                                    if iv_col and iv_col != "implied_vol":
+                                        df_pass = df_pass.rename(columns={iv_col: "implied_vol"})
+                                    iv_error_candidates = ["iv_error", "iv_err"]
+                                    iv_error_col = next((c for c in iv_error_candidates if c in df_pass.columns), None)
+                                    if iv_error_col and iv_error_col != "iv_error":
+                                        df_pass = df_pass.rename(columns={iv_error_col: "iv_error"})
+
+                                    # EOD greeks endpoint provides IV; validate Greeks separately.
                                     req_cols = ["delta", "gamma", "theta", "vega", "rho"]
-                                    req_cols += [iv_col] if iv_col else ["implied_volatility"]
                                     greeks_missing_mask = _missing_mask_for_cols(df_pass, req_cols)
+
+                                    # --- >>> DEBUG: Show which greeks columns are missing — BEGIN
+                                    if greeks_missing_mask is not None and greeks_missing_mask.any():
+                                        print(f"[DEBUG-GREEKS] Missing greeks values detected:")
+                                        print(f"  Total rows: {len(df_pass)}")
+                                        print(f"  Rows with missing greeks: {greeks_missing_mask.sum()}")
+                                        for col in req_cols:
+                                            if col in df_pass.columns:
+                                                missing_count = df_pass[col].isna().sum()
+                                                print(f"    {col}: {missing_count} missing")
+                                            else:
+                                                print(f"    {col}: COLUMN NOT FOUND")
+                                        # Show sample of missing rows
+                                        print(f"  Sample of rows with missing greeks (first 5):")
+                                        missing_sample = df_pass[greeks_missing_mask].head(5)
+                                        for idx, row in missing_sample.iterrows():
+                                            if on_cols:
+                                                key_vals = {k: row.get(k) for k in on_cols}
+                                                print(f"    {key_vals}")
+                                    # --- >>> DEBUG — END
+
                                     if greeks_missing_mask is not None and greeks_missing_mask.any():
                                         greeks_details = {
-                                            "reason": "greeks_iv_missing_values",
+                                            "reason": "greeks_missing_values",
                                             "missing_rows": int(greeks_missing_mask.sum())
                                         }
                                 else:
                                     greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
                                     greeks_details = {"reason": "greeks_merge_keys_missing"}
+
+                    # IV required when greeks requested (EOD)
+                    if enrich_greeks:
+                        iv_required_cols = ["implied_vol", "iv_error"]
+                        missing_cols = [c for c in iv_required_cols if c not in df_pass.columns]
+                        if missing_cols:
+                            iv_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                            iv_details = {"reason": "iv_columns_missing", "missing_columns": missing_cols}
+                        else:
+                            iv_missing_mask = _missing_mask_for_cols(df_pass, iv_required_cols)
+                            if iv_missing_mask is not None and iv_missing_mask.any():
+                                iv_details = {
+                                    "reason": "iv_missing_values",
+                                    "missing_rows": int(iv_missing_mask.sum())
+                                }
 
                     try:
                         d = dt.fromisoformat(day_iso)
@@ -1947,6 +2062,14 @@ class ThetaSyncManager:
                                 doi = _normalize_join_cols(doi)
                                 df_pass = _normalize_join_cols(df_pass)
 
+                                # --- >>> DEBUG: Print dataframes before OI merge — BEGIN
+                                print(f"[DEBUG-OI] {symbol} {day_iso}")
+                                print(f"  df_pass shape: {df_pass.shape}")
+                                print(f"  df_pass columns: {df_pass.columns.tolist()}")
+                                print(f"  doi shape: {doi.shape}")
+                                print(f"  doi columns: {doi.columns.tolist()}")
+                                # --- >>> DEBUG — END
+
                                 candidate_keys = [
                                     ["option_symbol"],
                                     ["root", "expiration", "strike", "right"],
@@ -1954,13 +2077,41 @@ class ThetaSyncManager:
                                 ]
                                 on_cols = next((keys for keys in candidate_keys
                                                 if all(k in df_pass.columns for k in keys) and all(k in doi.columns for k in keys)), None)
+
+                                # --- >>> DEBUG: Print OI merge keys — BEGIN
+                                print(f"[DEBUG-OI] Merge keys: {on_cols}")
+                                if on_cols:
+                                    print(f"  df_pass unique keys: {df_pass[on_cols].drop_duplicates().shape[0]}")
+                                    print(f"  doi unique keys: {doi[on_cols].drop_duplicates().shape[0]}")
+                                    # Show sample keys from each
+                                    print(f"  df_pass sample keys (first 3):")
+                                    for idx, row in df_pass[on_cols].head(3).iterrows():
+                                        print(f"    {dict(row)}")
+                                    print(f"  doi sample keys (first 3):")
+                                    for idx, row in doi[on_cols].head(3).iterrows():
+                                        print(f"    {dict(row)}")
+                                # --- >>> DEBUG — END
+
                                 if on_cols is not None:
                                     keep = on_cols + ["last_day_OI"]
                                     if "timestamp_oi" in doi.columns:
                                         keep += ["timestamp_oi"]
                                     keep += ["effective_date_oi"]
                                     doi = doi[keep].drop_duplicates(subset=on_cols)
+
+                                    # --- >>> DEBUG: OI Merge operation — BEGIN
+                                    before_rows = len(df_pass)
+                                    # --- >>> DEBUG — END
+
                                     df_pass = df_pass.merge(doi, on=on_cols, how="left")
+
+                                    # --- >>> DEBUG: After OI merge stats — BEGIN
+                                    after_rows = len(df_pass)
+                                    print(f"[DEBUG-OI] Merge result:")
+                                    print(f"  Rows before: {before_rows}, after: {after_rows}")
+                                    print(f"  df_pass columns after merge: {df_pass.columns.tolist()}")
+                                    # --- >>> DEBUG — END
+
                                     oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
                                     if oi_missing_mask is not None and oi_missing_mask.any():
                                         oi_details = {
@@ -1983,7 +2134,14 @@ class ThetaSyncManager:
                         missing_details["greeks_missing_rows"] = int(greeks_missing_mask.sum())
                         if greeks_details:
                             missing_details["greeks_details"] = greeks_details
-                        components.append("greeks_iv")
+                        components.append("greeks")
+
+                    if iv_missing_mask is not None and iv_missing_mask.any():
+                        missing_mask = iv_missing_mask if missing_mask is None else (missing_mask | iv_missing_mask)
+                        missing_details["iv_missing_rows"] = int(iv_missing_mask.sum())
+                        if iv_details:
+                            missing_details["iv_details"] = iv_details
+                        components.append("iv")
 
                     if oi_missing_mask is not None and oi_missing_mask.any():
                         missing_mask = oi_missing_mask if missing_mask is None else (missing_mask | oi_missing_mask)
@@ -2378,6 +2536,7 @@ class ThetaSyncManager:
                     dg = None
                     divt = None
 
+                    exp_version = self._greeks_version_for_expiration(exp, ymd)
                     csv_tg, _ = await self._td_get_with_retry(
                         lambda: self.client.option_history_all_trade_greeks(
                             symbol=symbol,
@@ -2385,6 +2544,7 @@ class ThetaSyncManager:
                             date=ymd,
                             strike="*",
                             right="both",
+                            greeks_version=exp_version,
                             format_type="csv",
                         ),
                         label=f"greeks/trade {symbol} {exp} {ymd}"
@@ -2434,6 +2594,7 @@ class ThetaSyncManager:
                             date=ymd,
                             strike="*",
                             right="both",
+                            greeks_version=exp_version,
                             format_type="csv",
                         ),
                         label=f"iv/trade {symbol} {exp} {ymd}"
@@ -2599,6 +2760,7 @@ class ThetaSyncManager:
                     div = None
 
                     if enrich_greeks:
+                        exp_version = self._greeks_version_for_expiration(exp, ymd)
                         kwargs = {
                             "symbol": symbol,
                             "expiration": exp,
@@ -2608,6 +2770,7 @@ class ThetaSyncManager:
                             "right": "both",
                             "rate_type": "sofr",
                             "format_type": "csv",
+                            "greeks_version": exp_version,
                         }
                         if bar_start_et is not None:
                             kwargs["start_time"] = bar_start_et
@@ -2654,13 +2817,15 @@ class ThetaSyncManager:
                     if enrich_greeks:
                         try:
                             # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                            exp_version = self._greeks_version_for_expiration(exp, ymd)
                             iv_kwargs = {
                                 "symbol": symbol,
                                 "expiration": exp,
                                 "date": ymd,
                                 "interval": interval,
                                 "rate_type": "sofr",
-                                "format_type": "csv"
+                                "format_type": "csv",
+                                "greeks_version": exp_version,
                             }
                             if bar_start_et is not None:
                                 iv_kwargs["start_time"] = bar_start_et
@@ -2942,6 +3107,24 @@ class ThetaSyncManager:
         def _normalize_join_cols(df):
             if df is None or df.empty:
                 return df
+            # Normalize expiration format for robust joins
+            if "expiration" not in df.columns:
+                for alt in ("expiration_date", "expirationDate", "exp", "exp_date"):
+                    if alt in df.columns:
+                        df = df.rename(columns={alt: "expiration"})
+                        break
+            if "expiration" in df.columns:
+                exp_raw = df["expiration"].astype(str).str.strip()
+                exp_raw = exp_raw.map(self._iso_date_only)
+                df["expiration"] = exp_raw.map(lambda x: self._normalize_date_str(x) or x)
+            # Normalize strike format (e.g., 30 vs 30.0)
+            if "strike" in df.columns:
+                strike_raw = df["strike"].astype(str).str.strip()
+                strike_num = pd.to_numeric(strike_raw, errors="coerce")
+                df["strike"] = [
+                    (f"{n:.10f}".rstrip("0").rstrip(".") if pd.notna(n) else r)
+                    for r, n in zip(strike_raw, strike_num)
+                ]
             if "right" in df.columns:
                 df["right"] = (
                     df["right"].astype(str).str.strip().str.lower()
@@ -4307,6 +4490,11 @@ class ThetaSyncManager:
             kwargs["annual_dividend"] = annual_dividend
         if rate_value is not None:
             kwargs["rate_value"] = rate_value
+        greeks_version = getattr(self.cfg, "greeks_version", None)
+        if greeks_version is not None:
+            greeks_version = str(greeks_version).strip() or None
+            if greeks_version is not None:
+                kwargs["greeks_version"] = greeks_version
 
         return await self.client.option_history_all_greeks(**kwargs)
 
@@ -6129,8 +6317,10 @@ class ThetaSyncManager:
         numeric_preferred = {
             "price", "bid", "ask", "mid", "last", "open", "high", "low", "close",
             "volume", "size", "trade_size", "bid_size", "ask_size", "oi", "open_interest",
-            "implied_volatility", "trade_iv", "vega", "theta", "gamma", "delta", "rho",
-            "multiplier", "strike", "sequence", "spread", "underlying_price"
+            "implied_volatility", "implied_vol", "iv_error", "bid_implied_vol",
+            "ask_implied_vol", "midpoint", "bar_iv", "trade_iv", "vega", "theta",
+            "gamma", "delta", "rho", "multiplier", "strike", "sequence", "spread",
+            "underlying_price"
         }
 
         for col in df_norm.columns:
@@ -7532,6 +7722,10 @@ class ThetaSyncManager:
             self._influx_available_dates_cache = {}
         if not hasattr(self, "_influx_available_dates_loaded"):
             self._influx_available_dates_loaded = set()
+        if not hasattr(self, "_influx_available_dates_bootstrapping"):
+            self._influx_available_dates_bootstrapping = set()
+        if not hasattr(self, "_influx_available_dates_bootstrap_last"):
+            self._influx_available_dates_bootstrap_last = {}
 
     def _influx_available_dates__load_existing(self, measurement: str) -> set[str]:
         """Best-effort load of already indexed days (YYYY-MM-DD)."""
@@ -7540,6 +7734,12 @@ class ThetaSyncManager:
             return self._influx_available_dates_cache.setdefault(measurement, set())
 
         avail = self._influx_available_dates_measurement(measurement)
+        try:
+            if not self._influx_measurement_exists(avail):
+                return set()
+        except Exception:
+            # Fall through to query attempt below.
+            pass
         df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
 
         s = set()
@@ -7586,21 +7786,30 @@ class ThetaSyncManager:
             existing.update(new_days)
 
     def _influx_available_dates_get_all(self, measurement: str) -> set[str]:
-        
-        avail = self._influx_available_dates_measurement(measurement)
-        df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
-        
-        if df is None or df.empty or "trade_day" not in df.columns:
-            
-            print(f"[_influx_available_dates_get_all][DEBUG] Unique dates support table not found; boostrap for creation lunched.")
-            self._influx_available_dates_bootstrap_from_main(measurement)
+        self._influx_available_dates__ensure_state()
+        if measurement in self._influx_available_dates_loaded:
+            return self._influx_available_dates_cache.setdefault(measurement, set())
 
-            df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
-            
-            if df is None or df.empty or "trade_day" not in df.columns:
-                return set()
-        
-        return {str(x).strip()[:10] for x in df["trade_day"].dropna().astype(str).tolist()}
+        avail = self._influx_available_dates_measurement(measurement)
+        df = None
+
+        try:
+            if self._influx_measurement_exists(avail):
+                df = self._influx_query_dataframe(f'SELECT trade_day FROM "{avail}"')
+        except Exception:
+            df = None
+
+        if df is not None and (not df.empty) and ("trade_day" in df.columns):
+            days = {str(x).strip()[:10] for x in df["trade_day"].dropna().astype(str).tolist()}
+            self._influx_available_dates_cache[measurement] = days
+            self._influx_available_dates_loaded.add(measurement)
+            return days
+
+        # Support table missing or empty -> try one bootstrap (guarded inside the method).
+        days = self._influx_available_dates_bootstrap_from_main(measurement)
+        if measurement in self._influx_available_dates_loaded:
+            return self._influx_available_dates_cache.setdefault(measurement, set())
+        return days or set()
 
     def _influx_available_dates_first_last_day(self, measurement: str):
         avail = self._influx_available_dates_measurement(measurement)
@@ -7646,40 +7855,74 @@ class ThetaSyncManager:
         set[str]
             Set of 'YYYY-MM-DD' days present in the main measurement (as indexed in <measurement>_available_dates).
         """
-        existing = self._influx_available_dates_get_all(measurement)
-        if existing:
-            return existing
+        self._influx_available_dates__ensure_state()
+        if measurement in self._influx_available_dates_bootstrapping:
+            return self._influx_available_dates_cache.setdefault(measurement, set())
 
-        where_parts: list[str] = []
-        if first_day:
-            d0 = str(first_day).strip()[:10]
-            if d0:
-                where_parts.append(f"time >= to_timestamp('{d0}T00:00:00Z')")
-        if last_day:
-            d1 = str(last_day).strip()[:10]
-            if d1:
-                where_parts.append(f"time <= to_timestamp('{d1}T23:59:59Z')")
+        import time
+        now = time.time()
+        last_attempt = self._influx_available_dates_bootstrap_last.get(measurement, 0.0)
+        if now - last_attempt < 2.0:
+            return self._influx_available_dates_cache.setdefault(measurement, set())
 
-        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        self._influx_available_dates_bootstrap_last[measurement] = now
+        self._influx_available_dates_bootstrapping.add(measurement)
+        try:
+            existing = self._influx_available_dates_cache.get(measurement, set())
+            existing_loaded = self._influx_available_dates__load_existing(measurement)
+            if existing_loaded:
+                self._influx_available_dates_cache[measurement] = set(existing_loaded)
+                self._influx_available_dates_loaded.add(measurement)
+                return set(existing_loaded)
 
-        q = f"""
-            SELECT DISTINCT DATE_TRUNC('day', time) AS date
-            FROM "{measurement}"
-            {where_sql}
-            ORDER BY date
-        """
-        df = self._influx_query_dataframe(q)
-        if df is None or df.empty or "date" not in df.columns:
-            return set()
+            # Skip scan if the main measurement doesn't exist.
+            try:
+                if not self._influx_measurement_exists(measurement):
+                    self._influx_available_dates_cache[measurement] = set(existing)
+                    self._influx_available_dates_loaded.add(measurement)
+                    return set(existing)
+            except Exception:
+                # Best-effort: continue to scan if metadata is unavailable.
+                pass
 
-        days: set[str] = set()
-        for v in df["date"].dropna().tolist():
-            ts = pd.to_datetime(v, utc=True, errors="coerce")
-            if pd.notna(ts):
-                days.add(ts.date().isoformat())
+            where_parts: list[str] = []
+            if first_day:
+                d0 = str(first_day).strip()[:10]
+                if d0:
+                    where_parts.append(f"time >= to_timestamp('{d0}T00:00:00Z')")
+            if last_day:
+                d1 = str(last_day).strip()[:10]
+                if d1:
+                    where_parts.append(f"time <= to_timestamp('{d1}T23:59:59Z')")
 
-        self._influx_available_dates_note_days(measurement, days)
-        return self._influx_available_dates_get_all(measurement)
+            where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+            q = f"""
+                SELECT DISTINCT DATE_TRUNC('day', time) AS date
+                FROM "{measurement}"
+                {where_sql}
+                ORDER BY date
+            """
+            df = self._influx_query_dataframe(q)
+            if df is None or df.empty or "date" not in df.columns:
+                self._influx_available_dates_cache[measurement] = set(existing)
+                self._influx_available_dates_loaded.add(measurement)
+                return set(existing)
+
+            days: set[str] = set()
+            for v in df["date"].dropna().tolist():
+                ts = pd.to_datetime(v, utc=True, errors="coerce")
+                if pd.notna(ts):
+                    days.add(ts.date().isoformat())
+
+            self._influx_available_dates_note_days(measurement, days)
+            all_days = set(existing)
+            all_days.update(days)
+            self._influx_available_dates_cache[measurement] = all_days
+            self._influx_available_dates_loaded.add(measurement)
+            return all_days
+        finally:
+            self._influx_available_dates_bootstrapping.discard(measurement)
 
     # === >>> INFLUX AVAILABLE-DATES INDEX (per-measurement, unique days) — END
 
@@ -11410,6 +11653,15 @@ class ThetaSyncManager:
         if len(d) != 8 or not d.isdigit():
             raise ValueError(f"Bad day_iso '{day_iso}' → '{d}' (expected YYYYMMDD)")
         return d
+
+    def _greeks_version_for_expiration(self, expiration: str, day_ymd: str) -> str:
+        """Return Greeks version for 0DTE vs non-0DTE expirations."""
+        exp = (expiration or "").replace("-", "").strip()
+        if len(exp) == 6 and exp.isdigit():
+            exp = f"20{exp}"
+        if len(exp) == 8 and exp.isdigit() and day_ymd and exp == day_ymd:
+            return "1"
+        return "latest"
     # === <<< DATE PARAM HELPERS — END
 
     
