@@ -1548,6 +1548,18 @@ class ThetaSyncManager:
                 dates_to_process = sorted(missing_days.union(edge_days))
                 print(f"[MILD-SKIP] missing_days={len(missing_days)} edges_kept={len(edge_days)}")
 
+        # For EOD (1d): build next_trading_date map for OI date-shift logic
+        # Request OI for next trading day to get same-session close OI
+        next_trading_date_map = {}
+        if interval == "1d" and api_available_dates and task.asset == "option":
+            sorted_api_dates = sorted(api_available_dates)
+            for i, date in enumerate(sorted_api_dates[:-1]):  # Exclude last (no next)
+                next_trading_date_map[date] = sorted_api_dates[i + 1]
+            print(f"[EOD-OI-SHIFT] Built next_trading_date_map with {len(next_trading_date_map)} entries")
+            if sorted_api_dates:
+                last_date = sorted_api_dates[-1]
+                print(f"[EOD-OI-SHIFT] Last available date {last_date} has no next_trading_date - will skip or use fallback")
+
         # Main iteration loop over dates
         for day_iso in dates_to_process:
             # Skip weekends ONLY if using fallback (API dates already exclude them)
@@ -1606,7 +1618,18 @@ class ThetaSyncManager:
                 if interval == "1d":
                     print(f"[MILD-SKIP] skip last_day (1d complete): {day_iso}")
                     continue
-            
+
+            # >>> EOD-OI-SHIFT: Skip EOD dates without next_trading_date (last available date)
+            # This prevents downloading EOD for dates where we can't get same-session close OI
+            next_trading_date_for_oi = None
+            if interval == "1d" and task.asset == "option" and next_trading_date_map:
+                if day_iso in next_trading_date_map:
+                    next_trading_date_for_oi = next_trading_date_map[day_iso]
+                elif api_available_dates and day_iso == sorted(api_available_dates)[-1]:
+                    # This is the last available trading date - skip it for EOD
+                    print(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: last available date, no next_trading_date for OI")
+                    continue
+
             try:
                 if task.asset == "option":
                     await self._download_and_store_options(
@@ -1616,6 +1639,7 @@ class ThetaSyncManager:
                         sink=task.sink,
                         enrich_greeks=task.enrich_bar_greeks,
                         enrich_tick_greeks=getattr(task, "enrich_tick_greeks", False),
+                        next_trading_date=next_trading_date_for_oi,
                     )
                 elif task.asset in ("stock", "index"):
                     await self._download_and_store_equity_or_index(
@@ -1652,6 +1676,7 @@ class ThetaSyncManager:
         sink: str,
         enrich_greeks: bool,
         enrich_tick_greeks: bool = False,
+        next_trading_date: Optional[str] = None,
     ) -> None:
         """
         Download and persist **option** data for a single trading day, handling both
@@ -1677,6 +1702,11 @@ class ThetaSyncManager:
             - Intraday: /option/history/greeks/all aligned to the requested interval.
         enrich_tick_greeks : bool, optional
             If True, enrich tick data with trade-level Greeks granularity (default False).
+        next_trading_date : str, optional
+            Next available trading date after day_iso (format "YYYY-MM-DD"). Used for EOD (1d)
+            interval to request OI for the next trading day, which returns OI with effective_date
+            matching day_iso (same-session close OI). If None, falls back to requesting OI for
+            day_iso itself (returns prior-session OI, as in intraday logic).
 
         Behavior
         --------
@@ -1690,8 +1720,10 @@ class ThetaSyncManager:
           2) (optional) Full Greeks merge:
              /option/history/greeks/eod over the same date range.
           3) Implied Volatility: use 'implied_vol' + 'iv_error' from /option/history/greeks/eod (EOD snapshot).
-          4) Prior-day open interest (last_day_OI) merge:
-             /option/history/open_interest for the **previous business day** (weekend-safe).
+          4) Same-session close OI (last_day_OI) merge:
+             /option/history/open_interest for **next_trading_date** (if provided), which returns
+             OI with effective_date matching day_iso (same-session close). Falls back to requesting
+             day_iso itself if next_trading_date is None (returns prior-session OI).
         • Joins: use robust contract keys, preferring "option_symbol" and, when available,
           "timestamp"; fall back to {root|symbol, expiration, strike, right}. Duplicate
           columns from the right side are dropped before merging.
@@ -2007,24 +2039,27 @@ class ThetaSyncManager:
                                 }
 
                     try:
-                        d = dt.fromisoformat(day_iso)
-                        prev = d - timedelta(days=1)
-                        if prev.weekday() == 5:
-                            prev = prev - timedelta(days=1)
-                        elif prev.weekday() == 6:
-                            prev = prev - timedelta(days=2)
+                        # For EOD: if next_trading_date is provided, request OI for that date to get
+                        # same-session close OI (effective_date will match day_iso).
+                        # Otherwise, fallback to requesting day_iso (returns prior-session OI).
+                        if next_trading_date:
+                            oi_request_date = next_trading_date
+                            print(f"[OI-EOD] Requesting OI for next trading date {oi_request_date} to get day_iso={day_iso} close OI")
+                        else:
+                            oi_request_date = day_iso
+                            print(f"[OI-EOD] No next_trading_date provided, requesting OI for day_iso={day_iso} (fallback)")
 
-                        cur_ymd = dt.fromisoformat(day_iso).strftime("%Y%m%d")
+                        oi_request_ymd = dt.fromisoformat(oi_request_date).strftime("%Y%m%d")
                         csv_oi, _ = await self._td_get_with_retry(
                             lambda: self.client.option_history_open_interest(
                                 symbol=symbol,
                                 expiration="*",
-                                date=cur_ymd,
+                                date=oi_request_ymd,
                                 strike="*",
                                 right="both",
                                 format_type="csv",
                             ),
-                            label=f"oi_eod {symbol} {cur_ymd}"
+                            label=f"oi_eod {symbol} {oi_request_ymd}"
                         )
                         if not csv_oi:
                             oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
@@ -2057,7 +2092,8 @@ class ThetaSyncManager:
                                         _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
                                         doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
                                     else:
-                                        doi["effective_date_oi"] = prev.date().isoformat()
+                                        # Fallback: when requesting OI for next_trading_date, effective_date should be day_iso
+                                        doi["effective_date_oi"] = day_iso
 
                                 doi = _normalize_join_cols(doi)
                                 df_pass = _normalize_join_cols(df_pass)
