@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -587,74 +588,112 @@ class DataConsistencyLogger:
         interval : str
             Time interval.
         """
-        # Normalize interval name for filesystem (eod -> 1d to match data directories)
-        interval_dir = "1d" if interval == "eod" else interval
+        try:
+            # Normalize interval name for filesystem (eod -> 1d to match data directories)
+            interval_dir = "1d" if interval == "eod" else interval
 
-        # Create log directory
-        log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
+            # Create log directory
+            log_dir = self.root_dir / "data" / asset / symbol / interval_dir / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Log filename base: log_YYYY-MM-DD_symbol-asset-interval
-        log_date = log_entry["timestamp"].strftime("%Y-%m-%d")
-        log_base = f"log_{log_date}_{symbol}-{asset}-{interval}"
+            # Log filename base: log_YYYY-MM-DD_symbol-asset-interval
+            log_date = log_entry["timestamp"].strftime("%Y-%m-%d")
+            log_base = f"log_{log_date}_{symbol}-{asset}-{interval}"
 
-        # Max rows per part file
-        MAX_ROWS_PER_PART = 300
+            # Max rows per part file
+            MAX_ROWS_PER_PART = 300
 
-        # Find all existing part files for this date
-        pattern = f"{log_base}_part*.parquet"
-        existing_parts = sorted(log_dir.glob(pattern))
+            # Find all existing part files for this date
+            pattern = f"{log_base}_part*.parquet"
+            existing_parts = sorted(log_dir.glob(pattern))
 
-        # Determine target file
-        target_part_num = 1
-        target_path = None
-
-        if existing_parts:
-            # Get the last part file
-            last_part_path = existing_parts[-1]
-
-            # Extract part number from filename: log_..._part001.parquet
-            last_part_name = last_part_path.stem  # removes .parquet
-            if "_part" in last_part_name:
-                try:
-                    last_num_str = last_part_name.split("_part")[-1]
-                    last_part_num = int(last_num_str)
-                except (ValueError, IndexError):
-                    last_part_num = 1
-            else:
-                last_part_num = 1
-
-            # Check if last part is full
-            try:
-                df_last = pd.read_parquet(last_part_path)
-                rows_in_last = len(df_last)
-            except Exception:
-                rows_in_last = 0
-
-            if rows_in_last < MAX_ROWS_PER_PART:
-                # Append to existing last part
-                target_part_num = last_part_num
-                target_path = last_part_path
-            else:
-                # Create new part
-                target_part_num = last_part_num + 1
-                target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
-        else:
-            # First log for this date - create part001
+            # Determine target file
             target_part_num = 1
-            target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+            target_path = None
 
-        # Append to target file or create new
-        df_new = pd.DataFrame([log_entry])
+            if existing_parts:
+                # Get the last part file
+                last_part_path = existing_parts[-1]
 
-        if target_path.exists():
-            df_existing = pd.read_parquet(target_path)
-            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        else:
-            df_combined = df_new
+                # Extract part number from filename: log_..._part001.parquet
+                last_part_name = last_part_path.stem  # removes .parquet
+                if "_part" in last_part_name:
+                    try:
+                        last_num_str = last_part_name.split("_part")[-1]
+                        last_part_num = int(last_num_str)
+                    except (ValueError, IndexError):
+                        last_part_num = 1
+                else:
+                    last_part_num = 1
 
-        # Write
-        df_combined.to_parquet(target_path, index=False)
+                # Check if last part is full (best-effort)
+                df_last = self._safe_read_parquet(last_part_path)
+                rows_in_last = len(df_last) if df_last is not None else MAX_ROWS_PER_PART
+
+                if rows_in_last < MAX_ROWS_PER_PART:
+                    # Append to existing last part
+                    target_part_num = last_part_num
+                    target_path = last_part_path
+                else:
+                    # Create new part
+                    target_part_num = last_part_num + 1
+                    target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+            else:
+                # First log for this date - create part001
+                target_part_num = 1
+                target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+
+            # Append to target file or create new
+            df_new = pd.DataFrame([log_entry])
+
+            df_existing = None
+            if target_path.exists():
+                df_existing = self._safe_read_parquet(target_path)
+                if df_existing is None:
+                    # Avoid overwriting a corrupt or unreadable file
+                    target_part_num += 1
+                    target_path = log_dir / f"{log_base}_part{target_part_num:03d}.parquet"
+
+            if df_existing is not None:
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            else:
+                df_combined = df_new
+
+            # Atomic write to avoid truncated parquet on crash
+            self._atomic_write_parquet(df_combined, target_path)
+        except Exception as e:
+            if self.verbose:
+                print(f"[LOG][WARN] Failed to persist log for {symbol} {asset}/{interval}: {e}")
+
+    def _safe_read_parquet(self, path: Path) -> Optional[pd.DataFrame]:
+        try:
+            return pd.read_parquet(path)
+        except Exception as e:
+            self._quarantine_corrupt_parquet(path, e)
+            return None
+
+    def _quarantine_corrupt_parquet(self, path: Path, err: Exception) -> None:
+        try:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            corrupt_path = path.with_name(f"{path.name}.corrupt.{ts}")
+            os.replace(path, corrupt_path)
+            if self.verbose:
+                print(f"[LOG][WARN] Corrupt log parquet moved to {corrupt_path}: {err}")
+        except Exception as move_err:
+            if self.verbose:
+                print(f"[LOG][WARN] Could not move corrupt log parquet {path}: {move_err}")
+
+    def _atomic_write_parquet(self, df: pd.DataFrame, target_path: Path) -> None:
+        tmp = target_path.with_name(f"{target_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            df.to_parquet(tmp, index=False)
+            os.replace(tmp, target_path)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
     # -------- Query/Display Helpers --------
     def get_logs(
