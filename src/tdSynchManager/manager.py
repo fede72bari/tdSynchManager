@@ -1625,9 +1625,9 @@ class ThetaSyncManager:
             if interval == "1d" and task.asset == "option" and next_trading_date_map:
                 if day_iso in next_trading_date_map:
                     next_trading_date_for_oi = next_trading_date_map[day_iso]
-                elif api_available_dates and day_iso == sorted(api_available_dates)[-1]:
-                    # This is the last available trading date - skip it for EOD
-                    print(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: last available date, no next_trading_date for OI")
+                else:
+                    # No next_trading_date available - skip this EOD date
+                    print(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: no next_trading_date in map (likely last available date)")
                     continue
 
             try:
@@ -1889,6 +1889,7 @@ class ThetaSyncManager:
                 for enrich_pass in range(total_passes):
                     df_pass = df_base.copy()
                     df_pass = _normalize_join_cols(df_pass)
+                    df_pass["oi_snapshot_present"] = pd.Series(pd.NA, index=df_pass.index, dtype="boolean")
                     greeks_missing_mask = None
                     iv_missing_mask = None
                     oi_missing_mask = None
@@ -1934,14 +1935,6 @@ class ThetaSyncManager:
                                 dg = _normalize_join_cols(dg)
                                 df_pass = _normalize_join_cols(df_pass)
 
-                                # --- >>> DEBUG: Print dataframes before merge — BEGIN
-                                print(f"[DEBUG-GREEKS] {symbol} {day_iso}")
-                                print(f"  df_pass shape: {df_pass.shape}")
-                                print(f"  df_pass columns: {df_pass.columns.tolist()}")
-                                print(f"  dg shape: {dg.shape}")
-                                print(f"  dg columns: {dg.columns.tolist()}")
-                                # --- >>> DEBUG — END
-
                                 candidate_keys = [
                                     ["option_symbol"],
                                     ["root", "expiration", "strike", "right"],
@@ -1950,36 +1943,10 @@ class ThetaSyncManager:
                                 on_cols = next((keys for keys in candidate_keys
                                                 if all(k in df_pass.columns for k in keys) and all(k in dg.columns for k in keys)), None)
 
-                                # --- >>> DEBUG: Print merge keys — BEGIN
-                                print(f"[DEBUG-GREEKS] Merge keys: {on_cols}")
-                                if on_cols:
-                                    print(f"  df_pass unique keys: {df_pass[on_cols].drop_duplicates().shape[0]}")
-                                    print(f"  dg unique keys: {dg[on_cols].drop_duplicates().shape[0]}")
-                                    # Show sample keys from each
-                                    print(f"  df_pass sample keys (first 3):")
-                                    for idx, row in df_pass[on_cols].head(3).iterrows():
-                                        print(f"    {dict(row)}")
-                                    print(f"  dg sample keys (first 3):")
-                                    for idx, row in dg[on_cols].head(3).iterrows():
-                                        print(f"    {dict(row)}")
-                                # --- >>> DEBUG — END
-
                                 if on_cols is not None:
                                     dup_cols = [c for c in dg.columns if c in df_pass.columns and c not in on_cols]
                                     dg = dg.drop(columns=dup_cols).drop_duplicates(subset=on_cols)
-
-                                    # --- >>> DEBUG: Merge operation — BEGIN
-                                    before_rows = len(df_pass)
-                                    # --- >>> DEBUG — END
-
                                     df_pass = df_pass.merge(dg, on=on_cols, how="left")
-
-                                    # --- >>> DEBUG: After merge stats — BEGIN
-                                    after_rows = len(df_pass)
-                                    print(f"[DEBUG-GREEKS] Merge result:")
-                                    print(f"  Rows before: {before_rows}, after: {after_rows}")
-                                    print(f"  df_pass columns after merge: {df_pass.columns.tolist()}")
-                                    # --- >>> DEBUG — END
 
                                     iv_candidates = ["implied_vol", "implied_volatility", "iv"]
                                     iv_col = next((c for c in iv_candidates if c in df_pass.columns), None)
@@ -2039,15 +2006,16 @@ class ThetaSyncManager:
                                 }
 
                     try:
-                        # For EOD: if next_trading_date is provided, request OI for that date to get
-                        # same-session close OI (effective_date will match day_iso).
-                        # Otherwise, fallback to requesting day_iso (returns prior-session OI).
+                        # For EOD: request OI for next_trading_date to get same-session close OI.
+                        # NOTE: With new logic, next_trading_date should ALWAYS be provided for EOD.
+                        # Days without next_trading_date are skipped before reaching this function.
                         if next_trading_date:
                             oi_request_date = next_trading_date
                             print(f"[OI-EOD] Requesting OI for next trading date {oi_request_date} to get day_iso={day_iso} close OI")
                         else:
+                            # This should not happen with new logic - fallback to old behavior as safety measure
                             oi_request_date = day_iso
-                            print(f"[OI-EOD] No next_trading_date provided, requesting OI for day_iso={day_iso} (fallback)")
+                            print(f"[OI-EOD][WARN] No next_trading_date provided for EOD {day_iso} - using fallback (old logic, returns prior-session OI)")
 
                         oi_request_ymd = dt.fromisoformat(oi_request_date).strftime("%Y%m%d")
                         csv_oi, _ = await self._td_get_with_retry(
@@ -2085,26 +2053,20 @@ class ThetaSyncManager:
                                 else:
                                     doi = doi.rename(columns={oi_col: "last_day_OI"})
 
+                                    # Keep timestamp_oi from response for transparency
                                     ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi.columns), None)
                                     if ts_col:
                                         doi = doi.rename(columns={ts_col: "timestamp_oi"})
-                                    if "timestamp_oi" in doi.columns:
-                                        _eff = pd.to_datetime(doi["timestamp_oi"], errors="coerce")
-                                        doi["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
-                                    else:
-                                        # Fallback: when requesting OI for next_trading_date, effective_date should be day_iso
-                                        doi["effective_date_oi"] = day_iso
+
+                                    # ALWAYS use day_iso as effective_date_oi, IGNORE timestamp from response
+                                    # Reason: ThetaData may calculate OI at different times (esp. weekends),
+                                    # making timestamp unreliable for matching. We request OI for next_trading_date
+                                    # and merge it with day_iso EOD bars, so effective_date should always be day_iso.
+                                    # Convert to ET timezone-aware timestamp to avoid UTC/ET date shift issues
+                                    doi["effective_date_oi"] = pd.to_datetime(day_iso).tz_localize("America/New_York")
 
                                 doi = _normalize_join_cols(doi)
                                 df_pass = _normalize_join_cols(df_pass)
-
-                                # --- >>> DEBUG: Print dataframes before OI merge — BEGIN
-                                print(f"[DEBUG-OI] {symbol} {day_iso}")
-                                print(f"  df_pass shape: {df_pass.shape}")
-                                print(f"  df_pass columns: {df_pass.columns.tolist()}")
-                                print(f"  doi shape: {doi.shape}")
-                                print(f"  doi columns: {doi.columns.tolist()}")
-                                # --- >>> DEBUG — END
 
                                 candidate_keys = [
                                     ["option_symbol"],
@@ -2114,41 +2076,49 @@ class ThetaSyncManager:
                                 on_cols = next((keys for keys in candidate_keys
                                                 if all(k in df_pass.columns for k in keys) and all(k in doi.columns for k in keys)), None)
 
-                                # --- >>> DEBUG: Print OI merge keys — BEGIN
-                                print(f"[DEBUG-OI] Merge keys: {on_cols}")
-                                if on_cols:
-                                    print(f"  df_pass unique keys: {df_pass[on_cols].drop_duplicates().shape[0]}")
-                                    print(f"  doi unique keys: {doi[on_cols].drop_duplicates().shape[0]}")
-                                    # Show sample keys from each
-                                    print(f"  df_pass sample keys (first 3):")
-                                    for idx, row in df_pass[on_cols].head(3).iterrows():
-                                        print(f"    {dict(row)}")
-                                    print(f"  doi sample keys (first 3):")
-                                    for idx, row in doi[on_cols].head(3).iterrows():
-                                        print(f"    {dict(row)}")
-                                # --- >>> DEBUG — END
-
                                 if on_cols is not None:
                                     keep = on_cols + ["last_day_OI"]
                                     if "timestamp_oi" in doi.columns:
                                         keep += ["timestamp_oi"]
                                     keep += ["effective_date_oi"]
+                                    print(f"[DEBUG-EDOI-3] Before drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
                                     doi = doi[keep].drop_duplicates(subset=on_cols)
-
-                                    # --- >>> DEBUG: OI Merge operation — BEGIN
-                                    before_rows = len(df_pass)
-                                    # --- >>> DEBUG — END
-
+                                    print(f"[DEBUG-EDOI-4] After drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
                                     df_pass = df_pass.merge(doi, on=on_cols, how="left")
-
-                                    # --- >>> DEBUG: After OI merge stats — BEGIN
-                                    after_rows = len(df_pass)
-                                    print(f"[DEBUG-OI] Merge result:")
-                                    print(f"  Rows before: {before_rows}, after: {after_rows}")
-                                    print(f"  df_pass columns after merge: {df_pass.columns.tolist()}")
-                                    # --- >>> DEBUG — END
+                                    try:
+                                        _snap_keys = doi[on_cols].drop_duplicates()
+                                        _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
+                                        _mi_all = pd.MultiIndex.from_frame(df_pass[on_cols])
+                                        _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+                                        df_pass["oi_snapshot_present"] = (~_absent_contract_mask).astype("boolean")
+                                    except Exception:
+                                        df_pass["oi_snapshot_present"] = pd.Series(pd.NA, index=df_pass.index, dtype="boolean")
+                                    print(f"[DEBUG-EDOI-5] After merge df_pass: dtype={df_pass['effective_date_oi'].dtype if 'effective_date_oi' in df_pass.columns else 'MISSING'}, sample={df_pass['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_pass.columns and len(df_pass) > 0 else 'N/A'}")
 
                                     oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
+
+                                    # Handle contracts expiring today (day_iso) - OI missing is NORMAL
+                                    # because expired contracts don't exist in next day's OI data
+                                    if oi_missing_mask is not None and oi_missing_mask.any() and "expiration" in df_pass.columns:
+                                        try:
+                                            # Convert day_iso and expiration to date for comparison
+                                            day_date = pd.to_datetime(day_iso).date()
+                                            exp_dates = pd.to_datetime(df_pass["expiration"], errors="coerce").dt.date
+
+                                            # Identify contracts expiring TODAY
+                                            expired_today = exp_dates == day_date
+                                            expired_missing = expired_today & oi_missing_mask
+
+                                            if expired_missing.any():
+                                                n_expired = expired_missing.sum()
+                                                print(f"[OI-EXPIRED] {n_expired} contracts expired on {day_iso} - setting OI=0 (normal)")
+                                                df_pass.loc[expired_missing, "last_day_OI"] = 0.0
+
+                                                # Update oi_missing_mask to exclude expired contracts (they're now OK)
+                                                oi_missing_mask = oi_missing_mask & ~expired_today
+                                        except Exception as e:
+                                            print(f"[OI-EXPIRED] Warning: could not check expiration dates: {e}")
+
                                     if oi_missing_mask is not None and oi_missing_mask.any():
                                         oi_details = {
                                             "reason": "oi_missing_values",
@@ -2381,7 +2351,9 @@ class ThetaSyncManager:
                 if 'right' in df.columns:
                     key_cols.append('right')
 
+                print(f"[DEBUG-EDOI-6] Before _ensure_ts_utc_column: effective_date_oi dtype={df['effective_date_oi'].dtype if 'effective_date_oi' in df.columns else 'MISSING'}, sample={df['effective_date_oi'].iloc[0] if 'effective_date_oi' in df.columns and len(df) > 0 else 'N/A'}")
                 df_influx = self._ensure_ts_utc_column(df)
+                print(f"[DEBUG-EDOI-7] After _ensure_ts_utc_column: effective_date_oi dtype={df_influx['effective_date_oi'].dtype if 'effective_date_oi' in df_influx.columns else 'MISSING'}, sample={df_influx['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_influx.columns and len(df_influx) > 0 else 'N/A'}")
 
                 # Log SAVE_START for InfluxDB write
                 self.logger.log_info(
@@ -2493,8 +2465,27 @@ class ThetaSyncManager:
                 if last_in_day is not None:
                     last_et = last_in_day.tz_convert(tz_et)
                     ov = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-                    bar_start_et = (last_et - pd.Timedelta(seconds=ov)).strftime("%H:%M:%S")
-                    print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
+                    if ov == 0:
+                        iv = (interval or "").strip().lower()
+                        interval_minutes = None
+                        if iv.endswith("m") and iv[:-1].isdigit():
+                            interval_minutes = int(iv[:-1])
+                        elif iv.endswith("h") and iv[:-1].isdigit():
+                            interval_minutes = int(iv[:-1]) * 60
+
+                        if interval_minutes:
+                            last_dt = last_et.to_pydatetime()
+                            next_dt = last_dt + timedelta(minutes=interval_minutes)
+                            floored_utc = self._floor_to_interval_et(next_dt.astimezone(self.UTC), interval_minutes)
+                            next_dt = floored_utc.astimezone(self.ET)
+                            bar_start_et = next_dt.strftime("%H:%M:%S")
+                        else:
+                            bar_start_et = last_et.strftime("%H:%M:%S")
+
+                        print(f"[RESUME-INFLUX] edge-day={day_iso} start_time(next)={bar_start_et} meas={meas}")
+                    else:
+                        bar_start_et = (last_et - pd.Timedelta(seconds=ov)).strftime("%H:%M:%S")
+                        print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
                 else:
                     # giorno VUOTO (non rilevato dal check rapido): nessun start_time
                     bar_start_et = None
@@ -2516,6 +2507,17 @@ class ThetaSyncManager:
         
         _st = "(omitted)" if bar_start_et is None else bar_start_et
         print(f"[INTRADAY-START] day={day_iso} start_time={_st} sink={_sink_lower}")
+
+        # If next-bar start is at/after close, skip intraday fetch for this day
+        if bar_start_et is not None:
+            try:
+                start_dt = pd.Timestamp(f"{day_iso}T{bar_start_et}", tz=tz_et)
+                close_dt = pd.Timestamp(f"{day_iso}T16:00:00", tz=tz_et)
+                if start_dt >= close_dt:
+                    print(f"[INTRADAY-SKIP] day={day_iso} start_time={bar_start_et} >= close (16:00:00 ET)")
+                    return
+            except Exception as _e:
+                print(f"[INTRADAY-WARN] start_time check failed: {type(_e).__name__}: {_e}")
                     
         # 1) discover expirations of the day
         expirations = await self._expirations_that_traded(symbol, day_iso, req_type="trade")
@@ -2584,6 +2586,7 @@ class ThetaSyncManager:
                         return False, "tq_empty_response", None, None, None
 
                     df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
+                    df = self._ensure_expiration_column(df, exp)
                     df = self._normalize_ts_to_utc(df)
                     df = self._normalize_df_types(df)
                     if df is None or df.empty:
@@ -2643,6 +2646,7 @@ class ThetaSyncManager:
                             )
                     else:
                         dg = pd.read_csv(io.StringIO(csv_tg), dtype=str)
+                        dg = self._ensure_expiration_column(dg, exp)
                         dg = self._normalize_ts_to_utc(dg)
                         dg = self._normalize_df_types(dg)
                         if dg is None or dg.empty:
@@ -2693,6 +2697,7 @@ class ThetaSyncManager:
                             )
                     else:
                         divt = pd.read_csv(io.StringIO(csv_tiv), dtype=str)
+                        divt = self._ensure_expiration_column(divt, exp)
                         divt = self._normalize_ts_to_utc(divt)
                         divt = self._normalize_df_types(divt)
                         if divt is None or divt.empty:
@@ -2831,6 +2836,7 @@ class ThetaSyncManager:
                             )
                         return False, "ohlc_csv_empty", None, None, None
 
+                    df = self._ensure_expiration_column(df, exp)
                     df = self._normalize_ts_to_utc(df)
 
                     # Track if greeks/IV succeed when enrich_greeks=True
@@ -2891,12 +2897,14 @@ class ThetaSyncManager:
                                         severity="WARNING"
                                     )
                             else:
+                                dg = self._ensure_expiration_column(dg, exp)
                                 dg = self._normalize_ts_to_utc(dg)
 
                     # IV bars (bid/mid/ask) - collect once, merge later
                     if enrich_greeks:
                         try:
                             # Build kwargs to avoid passing None to start_time (causes total_seconds error in SDK)
+                            # Use version=1 for 0DTE (same-day expiration), version=latest for future expirations
                             exp_version = self._greeks_version_for_expiration(exp, ymd)
                             iv_kwargs = {
                                 "symbol": symbol,
@@ -2945,6 +2953,7 @@ class ThetaSyncManager:
                                             severity="WARNING"
                                         )
                                 else:
+                                    div = self._ensure_expiration_column(div, exp)
                                     div = self._normalize_ts_to_utc(div)
                         except Exception as e:
                             iv_success = False
@@ -3349,14 +3358,17 @@ class ThetaSyncManager:
                         }
                     else:
                         doi_norm = doi_norm.rename(columns={oi_col: "last_day_OI"})
+                        # Keep timestamp_oi from response for transparency
                         ts_col = next((c for c in ["timestamp", "ts", "time"] if c in doi_norm.columns), None)
                         if ts_col:
                             doi_norm = doi_norm.rename(columns={ts_col: "timestamp_oi"})
-                        if "timestamp_oi" in doi_norm.columns:
-                            _eff = pd.to_datetime(doi_norm["timestamp_oi"], errors="coerce")
-                            doi_norm["effective_date_oi"] = _eff.dt.tz_localize("UTC").dt.tz_convert("America/New_York").dt.date.astype(str)
-                        else:
-                            doi_norm["effective_date_oi"] = prev.date().isoformat()
+
+                        # ALWAYS use prev.date() as effective_date_oi, IGNORE timestamp from response
+                        # Reason: ThetaData may calculate OI at different times (esp. weekends),
+                        # making timestamp unreliable. For intraday, OI always refers to previous business day.
+                        # Convert to ET timezone-aware timestamp to avoid UTC/ET date shift issues
+                        prev_date_str = prev.date().isoformat()
+                        doi_norm["effective_date_oi"] = pd.to_datetime(prev_date_str).tz_localize("America/New_York")
 
                         candidate_keys = [
                             ["option_symbol"],
@@ -3400,16 +3412,27 @@ class ThetaSyncManager:
                             doi_norm = doi_norm[keep].drop_duplicates(subset=on_cols)
                             df_all = df_norm.merge(doi_norm, on=on_cols, how="left")
                             oi_missing_mask = _missing_mask_for_cols(df_all, ["last_day_OI"])
+                            _absent_contract_mask = None
+                            try:
+                                if oi_merge_keys:
+                                    _snap_keys = doi_norm[oi_merge_keys].drop_duplicates()
+                                    _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
+                                    _mi_all = pd.MultiIndex.from_frame(df_all[oi_merge_keys])
+                                    _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+                                    df_all["oi_snapshot_present"] = (~_absent_contract_mask).astype("boolean")
+                            except Exception as _mask_e:
+                                df_all["oi_snapshot_present"] = pd.NA
 
                             # ### >>> OI ABSENT-CONTRACTS FILL (NaN->0) — BEGIN
                             try:
                                 if oi_missing_mask is not None and oi_missing_mask.any() and oi_merge_keys:
                                     # "Absent from snapshot" means: contract key does NOT exist in the OI snapshot keys.
-                                    _snap_keys = doi_norm[oi_merge_keys].drop_duplicates()
-                                    _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
-
-                                    _mi_all = pd.MultiIndex.from_frame(df_all[oi_merge_keys])
-                                    _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+                                    if _absent_contract_mask is None:
+                                        _snap_keys = doi_norm[oi_merge_keys].drop_duplicates()
+                                        _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
+                                        _mi_all = pd.MultiIndex.from_frame(df_all[oi_merge_keys])
+                                        _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+                                        df_all["oi_snapshot_present"] = (~_absent_contract_mask).astype("boolean")
 
                                     _fill_mask = _absent_contract_mask & df_all["last_day_OI"].isna()
                                     _filled_rows = int(_fill_mask.sum())
@@ -3418,6 +3441,17 @@ class ThetaSyncManager:
                                         _absent_unique = int(df_all.loc[_absent_contract_mask, oi_merge_keys].drop_duplicates().shape[0])
 
                                         df_all.loc[_fill_mask, "last_day_OI"] = 0
+
+                                        # Also fill timestamp fields for absent contracts
+                                        # effective_date_oi: use prev.date() (same as line 3326)
+                                        # timestamp_oi: NaT (ThetaData didn't provide it)
+                                        if "effective_date_oi" in df_all.columns:
+                                            prev_date_str = prev.date().isoformat()
+                                            effective_date_val = pd.to_datetime(prev_date_str).tz_localize("America/New_York")
+                                            df_all.loc[_fill_mask, "effective_date_oi"] = effective_date_val
+
+                                        if "timestamp_oi" in df_all.columns:
+                                            df_all.loc[_fill_mask, "timestamp_oi"] = pd.NaT
 
                                         print(
                                             f"[OI-MERGE][FILL0] {symbol} {interval} {day_iso} "
@@ -6294,9 +6328,9 @@ class ThetaSyncManager:
         dt_cols = list(datetime_cols) if datetime_cols else [
             "timestamp", "trade_timestamp", "bar_timestamp", "datetime",
             "created", "last_trade", "quote_timestamp", "timestamp_oi",
-            "underlying_timestamp", "time", "date"
+            "underlying_timestamp", "time", "date", "effective_date_oi"
         ]
-        date_cols = list(date_only_cols) if date_only_cols else ["expiration", "effective_date_oi"]
+        date_cols = list(date_only_cols) if date_only_cols else ["expiration"]
 
         out = df.copy()
 
@@ -6322,6 +6356,34 @@ class ThetaSyncManager:
         for col in date_cols:
             if col in out.columns:
                 out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
+
+        return out
+
+
+    def _ensure_expiration_column(self, df: pd.DataFrame, expiration: str) -> pd.DataFrame:
+        """Ensure per-expiration payloads carry the expiration value."""
+        if df is None or df.empty:
+            return df
+
+        out = df.copy()
+
+        if "expiration" not in out.columns:
+            for alt in ("expiration_date", "expirationDate", "exp", "exp_date"):
+                if alt in out.columns:
+                    out = out.rename(columns={alt: "expiration"})
+                    break
+
+        exp_norm = self._normalize_date_str(expiration) or expiration
+        if "expiration" not in out.columns:
+            out["expiration"] = exp_norm
+            return out
+
+        exp_series = out["expiration"]
+        missing = exp_series.isna()
+        exp_str = exp_series.astype(str).str.strip()
+        missing = missing | exp_str.eq("") | exp_str.str.lower().isin(["nan", "nat", "none", "null", "-1", "0"])
+        if missing.any():
+            out.loc[missing, "expiration"] = exp_norm
 
         return out
 
@@ -6554,17 +6616,46 @@ class ThetaSyncManager:
         _extra_ts_cols = ["underlying_timestamp", "timestamp_oi", "effective_date_oi"]
         for _c in _extra_ts_cols:
             if _c in df.columns:
-                # Let pandas infer timestamp format automatically
-                _ts = pd.to_datetime(df[_c], errors="coerce")
-                if getattr(_ts.dtype, "tz", None) is None:
-                    _ts = _ts.dt.tz_localize("UTC")
+                # DEBUG: Log column type and sample value
+                print(f"[INFLUX-TS-CONV] Processing column '{_c}': dtype={df[_c].dtype}, is_datetime={pd.api.types.is_datetime64_any_dtype(df[_c])}")
+                if not df[_c].isna().all():
+                    sample_val = df[_c].dropna().iloc[0] if len(df[_c].dropna()) > 0 else None
+                    if sample_val is not None:
+                        print(f"[INFLUX-TS-CONV] Sample value: {sample_val} (type={type(sample_val)})")
+
+                # Check if already a datetime column with timezone info
+                if pd.api.types.is_datetime64_any_dtype(df[_c]):
+                    _ts = df[_c]
+                    # If already timezone-aware, just convert to UTC
+                    if getattr(_ts.dtype, "tz", None) is not None:
+                        print(f"[INFLUX-TS-CONV] Column '{_c}' is timezone-aware ({_ts.dtype.tz}), converting to UTC")
+                        _ts = _ts.dt.tz_convert("UTC")
+                    else:
+                        # No timezone, assume UTC
+                        print(f"[INFLUX-TS-CONV] Column '{_c}' is datetime but no timezone, localizing to UTC")
+                        _ts = _ts.dt.tz_localize("UTC")
                 else:
-                    _ts = _ts.dt.tz_convert("UTC")
+                    # Not a datetime column, try to parse
+                    print(f"[INFLUX-TS-CONV] Column '{_c}' is NOT datetime type, parsing...")
+                    _ts = pd.to_datetime(df[_c], errors="coerce")
+                    if getattr(_ts.dtype, "tz", None) is None:
+                        _ts = _ts.dt.tz_localize("UTC")
+                    else:
+                        _ts = _ts.dt.tz_convert("UTC")
+
+                # Convert to nanoseconds
                 try:
                     ns = _ts.astype("int64", copy=False).astype("float64")
                 except Exception:
                     ns = _ts.to_numpy(dtype="datetime64[ns]").astype("int64").astype("float64")
                 ns[_ts.isna()] = np.nan
+
+                # DEBUG: Log converted nanoseconds
+                if not ns.isna().all():
+                    sample_ns = ns.dropna().iloc[0] if len(ns.dropna()) > 0 else None
+                    if sample_ns is not None:
+                        print(f"[INFLUX-TS-CONV] Converted to nanoseconds: {int(sample_ns)}")
+
                 df[_c] = ns
     
         # 5) Line Protocol (solo campi numerici finiti; i tag: symbol, expiration, right, strike)
