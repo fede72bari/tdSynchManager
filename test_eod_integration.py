@@ -20,7 +20,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from tdSynchManager import ThetaSyncManager, ManagerConfig, Task
+from tdSynchManager import ThetaSyncManager, ManagerConfig, Task, ThetaDataV3Client
 
 
 async def test_eod_download_small_range():
@@ -32,31 +32,33 @@ async def test_eod_download_small_range():
     # Create minimal config for testing
     config = ManagerConfig(
         root_dir="./test_output",
-        influx_host=None,  # Disable InfluxDB for this test
         max_file_mb=50,
         overlap_seconds=0,
     )
 
+    # Create ThetaData client
+    client = ThetaDataV3Client()
+
     # Create manager
-    manager = ThetaSyncManager(cfg=config)
+    manager = ThetaSyncManager(cfg=config, client=client)
 
     # Test task: Download AAL option EOD for a small date range
     # Choose dates in the past to ensure data is available
     test_task = Task(
         asset="option",
-        symbol="AAL",
-        interval="1d",
-        start_date="2026-01-06",  # Monday
-        end_date="2026-01-09",    # Thursday
+        symbols=["AAL"],
+        intervals=["1d"],
+        first_date_override="2026-01-06",  # Monday
+        end_date_override="2026-01-09",    # Thursday
         sink="csv",
         enrich_bar_greeks=True,  # Enable greeks to test full enrichment flow
         use_api_date_discovery=True,  # Enable API date discovery
     )
 
     print(f"\nTest configuration:")
-    print(f"  Symbol: {test_task.symbol}")
-    print(f"  Interval: {test_task.interval}")
-    print(f"  Date range: {test_task.start_date} to {test_task.end_date}")
+    print(f"  Symbols: {test_task.symbols}")
+    print(f"  Intervals: {test_task.intervals}")
+    print(f"  Date range: {test_task.first_date_override} to {test_task.end_date_override}")
     print(f"  Sink: {test_task.sink}")
     print(f"  Enrich Greeks: {test_task.enrich_bar_greeks}")
     print(f"  API Date Discovery: {test_task.use_api_date_discovery}")

@@ -4018,6 +4018,7 @@ class ThetaDataV3Client:
             "treasury_y7", "treasury_y10", "treasury_y20", "treasury_y30"
         ] = "sofr",
         rate_value: Optional[float] = None,
+        greeks_version: Optional[Union[int, str]] = None,
         format_type: Literal["csv", "json", "ndjson"] = "csv",
     ) -> Tuple[Any, str]:
         """Retrieve implied volatility for option contracts at fixed time intervals.

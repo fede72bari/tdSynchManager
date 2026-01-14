@@ -1834,6 +1834,7 @@ class ThetaSyncManager:
                 if df is None or df.empty:
                     raise ValueError("Empty DataFrame from option_history_eod")
 
+                df = self._fill_expiration_from_option_symbol(df)
                 df_base = df
 
                 def _missing_mask_for_cols(df_in, cols):
@@ -1862,7 +1863,7 @@ class ThetaSyncManager:
                     if "expiration" in df_in.columns:
                         exp_raw = df_in["expiration"].astype(str).str.strip()
                         exp_raw = exp_raw.map(self._iso_date_only)
-                        df_in["expiration"] = exp_raw.map(lambda x: self._normalize_date_str(x) or x)
+                        df_in["expiration"] = exp_raw.map(self._normalize_expiration_value)
                     # Normalize strike format (e.g., 30 vs 30.0)
                     if "strike" in df_in.columns:
                         strike_raw = df_in["strike"].astype(str).str.strip()
@@ -2274,6 +2275,8 @@ class ThetaSyncManager:
 
                 _dedupe_keys = ["option_symbol"] if "option_symbol" in df.columns else ["symbol","expiration","strike","right"]
                 df = df.drop_duplicates(subset=_dedupe_keys, keep="last")
+                df = self._require_expiration(df, context=f"EOD {symbol} {day_iso}")
+                df = self._add_dte_column(df, day_iso)
 
                 return (df, url)
 
@@ -3205,7 +3208,7 @@ class ThetaSyncManager:
             if "expiration" in df.columns:
                 exp_raw = df["expiration"].astype(str).str.strip()
                 exp_raw = exp_raw.map(self._iso_date_only)
-                df["expiration"] = exp_raw.map(lambda x: self._normalize_date_str(x) or x)
+                df["expiration"] = exp_raw.map(self._normalize_expiration_value)
             # Normalize strike format (e.g., 30 vs 30.0)
             if "strike" in df.columns:
                 strike_raw = df["strike"].astype(str).str.strip()
@@ -3624,6 +3627,8 @@ class ThetaSyncManager:
                         details=missing_details
                     )
                 return
+        df_all = self._require_expiration(df_all, context=f"INTRADAY {symbol} {interval} {day_iso}")
+        df_all = self._add_dte_column(df_all, day_iso)
         # --- GLOBAL ORDER (stabile per part temporali) ---
         time_candidates = ["trade_timestamp","timestamp","bar_timestamp","datetime","created","last_trade"]
         tcol = next((c for c in time_candidates if c in df_all.columns), None)
@@ -6360,32 +6365,186 @@ class ThetaSyncManager:
         return out
 
 
+    def _normalize_expiration_value(self, value: object) -> Optional[str]:
+        """Normalize expiration to ISO date (YYYY-MM-DD) or return None if invalid."""
+        if value is None:
+            return None
+        s = str(value).strip()
+        if not s or s.lower() in ("nan", "nat", "none", "null", "-1", "0"):
+            return None
+        digits = re.sub(r"\D", "", s)
+        if len(digits) >= 8:
+            digits = digits[:8]
+        elif len(digits) == 6:
+            digits = f"20{digits}"
+        else:
+            return None
+        return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
+
+
     def _ensure_expiration_column(self, df: pd.DataFrame, expiration: str) -> pd.DataFrame:
         """Ensure per-expiration payloads carry the expiration value."""
         if df is None or df.empty:
             return df
 
         out = df.copy()
+        verbose = getattr(self.cfg, "log_verbose_console", True)
+        renamed_from = None
 
         if "expiration" not in out.columns:
             for alt in ("expiration_date", "expirationDate", "exp", "exp_date"):
                 if alt in out.columns:
                     out = out.rename(columns={alt: "expiration"})
+                    renamed_from = alt
                     break
 
-        exp_norm = self._normalize_date_str(expiration) or expiration
+        exp_norm = (
+            self._normalize_expiration_value(expiration)
+            or self._normalize_date_str(expiration)
+            or expiration
+        )
+        if exp_norm and str(exp_norm).strip().lower() in ("*", "nan", "nat", "none", "null", "-1", "0"):
+            exp_norm = None
+        if exp_norm is None:
+            raise ValueError(f"Invalid expiration value for per-expiration request: {expiration!r}")
+
         if "expiration" not in out.columns:
-            out["expiration"] = exp_norm
+            if exp_norm is not None:
+                out["expiration"] = exp_norm
+            if verbose:
+                print(
+                    f"[EXPIRATION][ENSURE] exp_req={expiration} exp_norm={exp_norm} "
+                    f"renamed_from={renamed_from} rows={len(out)} missing_before=na unique_before=na "
+                    f"mismatch_before=na missing_after=0 unique_after=1 sample_after={exp_norm}"
+                )
             return out
 
-        exp_series = out["expiration"]
-        missing = exp_series.isna()
-        exp_str = exp_series.astype(str).str.strip()
-        missing = missing | exp_str.eq("") | exp_str.str.lower().isin(["nan", "nat", "none", "null", "-1", "0"])
-        if missing.any():
-            out.loc[missing, "expiration"] = exp_norm
+        out["expiration"] = out["expiration"].map(self._normalize_expiration_value)
+        missing_before = int(out["expiration"].isna().sum())
+        unique_before = int(out["expiration"].nunique(dropna=True))
+        mismatch_before = "na"
+        if exp_norm is not None:
+            mismatch_before = int((out["expiration"].notna() & (out["expiration"] != exp_norm)).sum())
+            out["expiration"] = exp_norm
+        missing_after = int(out["expiration"].isna().sum())
+        unique_after = int(out["expiration"].nunique(dropna=True))
+        sample_after = ", ".join(out["expiration"].dropna().astype(str).drop_duplicates().head(6).tolist())
+
+        if verbose:
+            print(
+                f"[EXPIRATION][ENSURE] exp_req={expiration} exp_norm={exp_norm} "
+                f"renamed_from={renamed_from} rows={len(out)} "
+                f"missing_before={missing_before} unique_before={unique_before} "
+                f"mismatch_before={mismatch_before} missing_after={missing_after} "
+                f"unique_after={unique_after} sample_after={sample_after}"
+            )
 
         return out
+
+
+    def _fill_expiration_from_option_symbol(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Best-effort fill of missing expiration values from OCC-style option symbol fields."""
+        if df is None or df.empty:
+            return df
+
+        out = df.copy()
+        verbose = getattr(self.cfg, "log_verbose_console", True)
+        if "expiration" not in out.columns:
+            out["expiration"] = pd.NA
+
+        out["expiration"] = out["expiration"].map(self._normalize_expiration_value)
+        missing = out["expiration"].isna()
+        missing_before = int(missing.sum())
+
+        if not missing.any():
+            return out
+
+        sym_col = None
+        for col in ("option_symbol", "contractSymbol", "symbol"):
+            if col in out.columns:
+                sym_col = col
+                break
+        if not sym_col:
+            if verbose:
+                print(f"[EXPIRATION][FILL] no symbol column found; missing_before={missing_before} rows={len(out)}")
+            return out
+
+        sym = out[sym_col].astype(str)
+        m8 = sym.str.extract(r"(\d{8})[CP]", expand=False)
+        m6 = sym.str.extract(r"(\d{6})[CP]", expand=False)
+        exp_raw = m8.fillna(m6.map(lambda x: f"20{x}" if isinstance(x, str) and x else None))
+        exp_norm = exp_raw.map(self._normalize_expiration_value)
+        filled = int(exp_norm[missing].notna().sum())
+        out.loc[missing, "expiration"] = exp_norm[missing]
+        missing_after = int(out["expiration"].isna().sum())
+        if verbose:
+            sample_vals = ", ".join(exp_norm[missing].dropna().astype(str).head(6).tolist())
+            print(
+                f"[EXPIRATION][FILL] col={sym_col} rows={len(out)} missing_before={missing_before} "
+                f"filled={filled} missing_after={missing_after} sample={sample_vals}"
+            )
+        return out
+
+
+    def _require_expiration(self, df: pd.DataFrame, *, context: str) -> pd.DataFrame:
+        """Ensure expiration is populated; raise if still missing after normalization."""
+        if df is None or df.empty:
+            return df
+
+        out = df.copy()
+        verbose = getattr(self.cfg, "log_verbose_console", True)
+        if "expiration" not in out.columns:
+            out["expiration"] = pd.NA
+
+        missing_before = int(out["expiration"].isna().sum())
+        out = self._fill_expiration_from_option_symbol(out)
+        missing = out["expiration"].isna()
+        missing_after = int(missing.sum())
+        if verbose and missing_before != missing_after:
+            print(
+                f"[EXPIRATION][FILL-RESULT] context={context} missing_before={missing_before} missing_after={missing_after}"
+            )
+        if missing.any():
+            sample_cols = [c for c in ["option_symbol", "symbol", "root", "strike", "right", "timestamp"] if c in out.columns]
+            sample = out.loc[missing, sample_cols].head(5)
+            print(f"[EXPIRATION][ERROR] Missing expiration values: {int(missing.sum())} rows; context={context}")
+            if not sample.empty:
+                print(sample.to_string(index=False))
+            raise ValueError(f"Missing expiration values after normalization; context={context}")
+
+        try:
+            exp_vals = out["expiration"].dropna().astype(str)
+            if not exp_vals.empty:
+                unique_count = int(exp_vals.nunique())
+                exp_min = exp_vals.min()
+                exp_max = exp_vals.max()
+                exp_sample = ", ".join(exp_vals.drop_duplicates().head(8).tolist())
+                print(
+                    f"[EXPIRATION][OK] context={context} rows={len(out)} "
+                    f"unique={unique_count} min={exp_min} max={exp_max} sample={exp_sample}"
+                )
+                if verbose:
+                    sample_cols = [c for c in ["timestamp", "option_symbol", "symbol", "expiration", "strike", "right", "dte"] if c in out.columns]
+                    if sample_cols:
+                        sample = out[sample_cols].head(5)
+                        if not sample.empty:
+                            print(f"[EXPIRATION][SAMPLE] context={context}")
+                            print(sample.to_string(index=False))
+        except Exception as e:
+            print(f"[EXPIRATION][WARN] context={context} summary_failed: {e}")
+
+        return out
+
+
+    def _add_dte_column(self, df: pd.DataFrame, day_iso: str) -> pd.DataFrame:
+        """Add days-to-expiration (dte) column based on expiration and day_iso."""
+        if df is None or df.empty or "expiration" not in df.columns or "dte" in df.columns:
+            return df
+
+        exp_ts = pd.to_datetime(df["expiration"], errors="coerce")
+        base_ts = pd.Timestamp(day_iso)
+        df["dte"] = (exp_ts - base_ts).dt.days.astype("Int64")
+        return df
 
 
     def _format_dt_columns_isoz(self, df: pd.DataFrame, datetime_cols: Iterable[str] | None = None) -> pd.DataFrame:
@@ -6601,6 +6760,40 @@ class ThetaSyncManager:
             )
         if "sequence" in df.columns:
             df["sequence"] = pd.to_numeric(df["sequence"], errors="coerce")
+
+        if "expiration" in df.columns:
+            if not hasattr(self, "_influx_exp_debug_seen"):
+                self._influx_exp_debug_seen = set()
+            exp_missing = int(df["expiration"].isna().sum())
+            debug_ready = getattr(self.cfg, "log_verbose_console", True)
+            if debug_ready and (exp_missing > 0 or measurement not in self._influx_exp_debug_seen):
+                exp_vals = df["expiration"].dropna().astype(str)
+                if exp_vals.empty:
+                    exp_min = "na"
+                    exp_max = "na"
+                    exp_unique = 0
+                    exp_sample = ""
+                else:
+                    exp_min = exp_vals.min()
+                    exp_max = exp_vals.max()
+                    exp_unique = int(exp_vals.nunique())
+                    exp_sample = ", ".join(exp_vals.drop_duplicates().head(8).tolist())
+                print(
+                    f"[INFLUX][EXP] measurement={measurement} rows={len(df)} "
+                    f"missing={exp_missing} unique={exp_unique} min={exp_min} max={exp_max} sample={exp_sample}"
+                )
+                sample_cols = [c for c in ["__ts_utc", "timestamp", "symbol", "expiration", "strike", "right", "dte"] if c in df.columns]
+                if sample_cols:
+                    sample = df[sample_cols].head(5)
+                    if not sample.empty:
+                        print("[INFLUX][EXP] sample:")
+                        print(sample.to_string(index=False))
+                if exp_missing > 0 and sample_cols:
+                    miss_sample = df.loc[df["expiration"].isna(), sample_cols].head(5)
+                    if not miss_sample.empty:
+                        print("[INFLUX][EXP][MISSING] sample:")
+                        print(miss_sample.to_string(index=False))
+                self._influx_exp_debug_seen.add(measurement)
 
         # 3) HARD DEDUPE: __ts_utc + tag se presenti (+ sequence se presente)
         tag_keys = [c for c in ["symbol","expiration","right","strike"] if c in df.columns]
@@ -11030,8 +11223,12 @@ class ThetaSyncManager:
             # Options: order by expiration ASC, strike ASC, timestamp DESC
             sort_cols = []
             if "expiration" in df.columns:
-                # Convert expiration to datetime using .loc[] to avoid SettingWithCopyWarning
-                df.loc[:, "expiration"] = pd.to_datetime(df["expiration"], format='mixed', errors='coerce')
+                # Convert expiration to datetime using a robust path (format='mixed' fails on YYYY-MM-DD strings).
+                exp_series = df["expiration"]
+                exp_parsed = pd.to_datetime(exp_series, errors="coerce")
+                if exp_parsed.notna().sum() == 0 and exp_series.notna().any():
+                    exp_parsed = pd.to_datetime(exp_series.astype(str), errors="coerce")
+                df.loc[:, "expiration"] = exp_parsed
                 sort_cols.append("expiration")
             if "strike" in df.columns:
                 sort_cols.append("strike")
