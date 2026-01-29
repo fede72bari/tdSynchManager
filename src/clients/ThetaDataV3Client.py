@@ -4970,7 +4970,91 @@ class ThetaDataV3Client:
             "format": format_type,
         }
         return await self._make_request("/index/at_time/price", params)
-    
+
+    # =========================================================================
+    # CALENDAR ENDPOINTS
+    # =========================================================================
+
+    async def calendar_on_date(
+        self,
+        date: str,
+        format_type: Optional[Literal["csv", "json", "ndjson"]] = "json"
+    ) -> Tuple[Any, str]:
+        """
+        Retrieve market schedule information for a specific date.
+
+        This method queries the ThetaData API to determine the market status for a given date,
+        including whether the market is open, closed, or has early closing. The endpoint returns
+        detailed schedule information including opening and closing times in ET (Eastern Time).
+        This is essential for validating trading days before downloading data, filtering out
+        weekends and holidays, and determining market hours for intraday operations.
+
+        Parameters
+        ----------
+        date : str
+            The date to check market status. Recommended format: YYYY-MM-DD (e.g., "2026-01-16").
+            Also accepts YYYYMMDD format (e.g., "20260116").
+
+        format_type : str, optional
+            Default: "json"
+            Possible values: ["csv", "json", "ndjson"]
+
+            The desired response format for the schedule data.
+            - "json": Returns structured JSON with type, open, and close fields
+            - "csv": Returns comma-separated values
+            - "ndjson": Returns newline-delimited JSON
+
+        Returns
+        -------
+        Tuple[Any, str]
+            A tuple containing two elements:
+            - First element: Schedule information with the following structure (JSON format):
+              {
+                  "type": str,      # "open", "early_close", "full_close", or "weekend"
+                  "open": str,      # Opening time in HH:mm:ss format (ET)
+                  "close": str      # Closing time in HH:mm:ss format (ET)
+              }
+            - Second element: The complete request URL as a string.
+
+        Example Usage
+        -------------
+        ```python
+        async with ThetaDataV3Client() as client:
+            # Check if today is a trading day
+            schedule, url = await client.calendar_on_date("2026-01-16", format_type="json")
+
+            if schedule["type"] in ("open", "early_close"):
+                print(f"Market is open: {schedule['open']} - {schedule['close']} ET")
+            elif schedule["type"] == "full_close":
+                print("Market is closed (holiday)")
+            elif schedule["type"] == "weekend":
+                print("Market is closed (weekend)")
+
+            # Check multiple dates
+            dates_to_check = ["2026-01-16", "2026-01-17", "2026-01-19"]
+            for date in dates_to_check:
+                schedule, _ = await client.calendar_on_date(date)
+                is_trading_day = schedule["type"] in ("open", "early_close")
+                print(f"{date}: {'Trading day' if is_trading_day else 'Closed'}")
+        ```
+
+        Notes
+        -----
+        - Holiday data spans from 01/01/2012 through the end of the calendar year following
+          the current year.
+        - On early-close days, eligible options trade until 1:15 PM ET.
+        - Some NYSE exchanges continue late trading until 5:00 PM ET on early close days.
+        - All times are in ET (Eastern Time) timezone.
+        """
+        # Normalize date format to YYYYMMDD if it contains dashes
+        date_normalized = date.replace("-", "") if "-" in date else date
+
+        params = {
+            "date": date_normalized,
+            "format": format_type,
+        }
+        return await self._make_request("/calendar/on_date", params)
+
 
 def extract_error_text(error_text: str) -> str:
     """
@@ -6902,6 +6986,10 @@ class ResilientThetaClient:
 
     async def index_snapshot_price(self, *args, **kwargs):
         return await self._execute_with_reconnect('index_snapshot_price', *args, **kwargs)
+
+    # Calendar methods
+    async def calendar_on_date(self, *args, **kwargs):
+        return await self._execute_with_reconnect('calendar_on_date', *args, **kwargs)
 
     # Passthrough properties
     @property

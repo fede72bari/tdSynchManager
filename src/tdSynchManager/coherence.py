@@ -5,6 +5,8 @@ local storage and the ThetaData source, and to recover missing data.
 """
 
 from contextlib import contextmanager
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -76,6 +78,8 @@ class CoherenceReport:
         List of intraday time gaps.
     tick_volume_mismatches : List[str]
         List of dates with tick/EOD volume mismatches.
+    missing_enrichment_files : List[str]
+        Missing enrichment rows files to recover (option-only).
     """
     symbol: str
     asset: str
@@ -88,6 +92,7 @@ class CoherenceReport:
     missing_days: List[str] = field(default_factory=list)
     intraday_gaps: List[Tuple[str, str]] = field(default_factory=list)
     tick_volume_mismatches: List[str] = field(default_factory=list)
+    missing_enrichment_files: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -234,6 +239,9 @@ class CoherenceChecker:
             await self._check_intraday_completeness(report, check_start, check_end, api_available_dates)
         else:
             await self._check_tick_completeness(report, check_start, check_end, api_available_dates)
+
+        if asset == "option":
+            await self._check_missing_enrichment_files(report, check_start, check_end)
 
         # Update coherence status
         report.is_coherent = len(report.issues) == 0
@@ -874,6 +882,41 @@ class CoherenceChecker:
 
         return problems
 
+    async def _check_missing_enrichment_files(
+        self,
+        report: CoherenceReport,
+        start_date: str,
+        end_date: str,
+    ):
+        files = self.manager._list_missing_enrichment_files(
+            report.asset,
+            report.symbol,
+            report.interval,
+            report.sink.lower(),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        for day_iso, path in files:
+            pending = self.manager._pending_missing_enrichment_rows(path)
+            if pending <= 0:
+                continue
+            self.logger.log_info(
+                symbol=report.symbol,
+                asset=report.asset,
+                interval=report.interval,
+                date_range=(day_iso, day_iso),
+                message=f"Missing-enrichment file found ({pending} pending): {os.path.basename(path)}",
+                details={"file": path, "missing_rows": pending},
+            )
+            report.missing_enrichment_files.append(path)
+            report.issues.append(CoherenceIssue(
+                issue_type="MISSING_ENRICHMENT_ROWS",
+                severity="WARNING",
+                date_range=(day_iso, day_iso),
+                description=f"{pending} missing enrichment rows pending on {day_iso}",
+                details={"file": path, "missing_rows": pending}
+            ))
+
     async def _segment_tick_problems(
         self,
         tick_df,
@@ -1023,6 +1066,19 @@ class IncoherenceRecovery:
         """
         result = RecoveryResult()
 
+        # Recover missing enrichment rows (option-only)
+        for path in report.missing_enrichment_files:
+            success = await self._recover_missing_enrichment_file(
+                report.symbol,
+                report.asset,
+                report.interval,
+                report.sink,
+                path,
+                enrich_greeks
+            )
+            key = f"missing_enrichment_{os.path.basename(path)}"
+            result.add_result(key, success)
+
         # Recover missing EOD days
         for day in report.missing_days:
             success = await self._recover_eod_day(
@@ -1137,7 +1193,8 @@ class IncoherenceRecovery:
                 day_iso=date_iso,
                 sink=sink,
                 enrich_greeks=enrich_greeks,
-                enrich_tick_greeks=False
+                enrich_tick_greeks=False,
+                dedupe_influx_against_db=(sink.lower() == "influxdb"),
             )
         except Exception as e:
             self.logger.log_failure(
@@ -1160,6 +1217,63 @@ class IncoherenceRecovery:
         )
 
         return True
+
+    async def _influx_intraday_gap_still_missing(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        date_iso: str,
+    ) -> bool:
+        """Return True if intraday gaps still exist in Influx for the given day."""
+        base_path = self.manager._make_file_basepath(
+            asset, symbol, interval, f"{date_iso}T00-00-00Z", "influxdb"
+        )
+        measurement = self.manager._influx_measurement_from_base(base_path)
+
+        try:
+            if not self.manager._influx_measurement_exists(measurement):
+                return True
+        except Exception as e:
+            print(f"[RECOVERY][WARN] influx measurement check failed ({measurement}): {type(e).__name__}: {e}")
+            return True
+
+        start_utc, end_utc = self.manager._influx__et_day_bounds_to_utc(date_iso)
+        select_cols = ["time"]
+        if asset == "option":
+            select_cols += ["symbol", "expiration", "strike", "right"]
+            if interval == "tick":
+                select_cols.append("sequence")
+        else:
+            select_cols.append("symbol")
+
+        query = (
+            f'SELECT {", ".join(select_cols)} FROM "{measurement}" '
+            f"WHERE time >= TIMESTAMP '{start_utc}' AND time < TIMESTAMP '{end_utc}'"
+        )
+        df = self.manager._influx_query_dataframe(query)
+        if df is None or df.empty:
+            return True
+
+        if "time" in df.columns:
+            df = df.rename(columns={"time": "timestamp"})
+
+        expected_combo_total = None
+        if asset == "option":
+            try:
+                expected_combo_total = await self.manager._expected_option_combos_for_day(symbol, date_iso)
+            except Exception as e:
+                print(f"[RECOVERY][WARN] expected combos fetch failed {symbol} {date_iso}: {e}")
+
+        validation_result = DataValidator.validate_intraday_completeness(
+            df=df,
+            date_iso=date_iso,
+            interval=interval,
+            asset=asset,
+            bucket_tolerance=self.manager.cfg.intraday_bucket_tolerance,
+            expected_combo_total=expected_combo_total
+        )
+        return not validation_result.valid
 
     async def _recover_intraday_gap(
         self,
@@ -1204,9 +1318,33 @@ class IncoherenceRecovery:
 
         current_date = start_obj
         all_success = True
+        sink_lower = sink.lower()
 
         while current_date <= end_obj:
             date_str = current_date.strftime('%Y-%m-%d')
+            if sink_lower == "influxdb":
+                try:
+                    still_missing = await self._influx_intraday_gap_still_missing(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_iso=date_str,
+                    )
+                except Exception as e:
+                    print(f"[RECOVERY][WARN] gap check failed {symbol} {interval} {date_str}: {e}")
+                    still_missing = True
+
+                if not still_missing:
+                    self.logger.log_resolution(
+                        symbol=symbol,
+                        asset=asset,
+                        interval=interval,
+                        date_range=(date_str, date_str),
+                        message=f"Intraday data for {date_str} already complete in InfluxDB, skipped download",
+                        details={'recovery_method': 'influx_check'}
+                    )
+                    current_date += timedelta(days=1)
+                    continue
             try:
                 self.manager._purge_day_files(asset, symbol, interval, sink, date_str)
                 # Download with validation enabled to ensure data quality
@@ -1216,7 +1354,9 @@ class IncoherenceRecovery:
                     day_iso=date_str,
                     sink=sink,
                     enrich_greeks=enrich_greeks,
-                    enrich_tick_greeks=False
+                    enrich_tick_greeks=False,
+                    dedupe_influx_against_db=(sink_lower == "influxdb"),
+                    force_full_day=True,
                 )
                 self.logger.log_resolution(
                     symbol=symbol,
@@ -1279,7 +1419,8 @@ class IncoherenceRecovery:
                 day_iso=date_iso,
                 sink=sink,
                 enrich_greeks=False,
-                enrich_tick_greeks=False
+                enrich_tick_greeks=False,
+                dedupe_influx_against_db=(sink.lower() == "influxdb"),
             )
         except Exception as e:
             self.logger.log_failure(
@@ -1301,3 +1442,196 @@ class IncoherenceRecovery:
             details={'recovery_method': 'api_download'}
         )
         return True
+
+    async def _recover_missing_enrichment_file(
+        self,
+        symbol: str,
+        asset: str,
+        interval: str,
+        sink: str,
+        path: str,
+        enrich_greeks: bool,
+    ) -> bool:
+        if asset != "option":
+            return True
+
+        try:
+            import pandas as pd
+            df = pd.read_csv(path, dtype=str)
+        except Exception as e:
+            self.logger.log_failure(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=("", ""),
+                message=f"Missing-enrichment recovery failed (read): {e}",
+                details={"file": path, "error_type": type(e).__name__}
+            )
+            return False
+
+        if df is None or df.empty:
+            return True
+
+        recovered_vals = df["recovered"].astype(str).str.strip().str.lower() if "recovered" in df.columns else None
+        pending_mask = ~recovered_vals.isin(["true", "1", "yes"]) if recovered_vals is not None else pd.Series([True] * len(df), index=df.index)
+        if not pending_mask.any():
+            return True
+
+        day_iso = None
+        if "day" in df.columns:
+            day_vals = df.loc[pending_mask, "day"].dropna().unique().tolist()
+            if day_vals:
+                day_iso = day_vals[0]
+        if not day_iso:
+            m = re.search(r"missing_enrichment-(\d{4}-\d{2}-\d{2})T00-00-00Z", os.path.basename(path))
+            day_iso = m.group(1) if m else None
+        if not day_iso:
+            self.logger.log_failure(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=("", ""),
+                message="Missing-enrichment recovery failed (day missing)",
+                details={"file": path}
+            )
+            return False
+
+        pending_count = int(pending_mask.sum())
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message=f"Missing-enrichment recovery start: file={os.path.basename(path)} pending={pending_count}",
+            details={"file": path, "pending_rows": pending_count},
+        )
+
+        if interval != "1d" and "timestamp" not in df.columns:
+            self.logger.log_failure(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message="Missing-enrichment recovery failed (timestamp missing)",
+                details={"file": path}
+            )
+            return False
+
+        if not enrich_greeks and interval != "tick":
+            print(f"[RECOVERY][WARN] Forcing enrich_greeks=True for missing rows ({symbol} {interval} {day_iso})")
+            enrich_greeks = True
+
+        keys_cols = [c for c in ["timestamp", "symbol", "expiration", "strike", "right", "sequence"] if c in df.columns]
+        keys_df = df.loc[pending_mask, keys_cols].copy()
+        keys_norm = self.manager._normalize_recovery_keys(keys_df, interval)
+        key_cols = self.manager._recovery_key_columns(interval, keys_norm)
+        if not key_cols:
+            return False
+        keys_norm = keys_norm[key_cols].dropna().drop_duplicates()
+        attempted_keys = set(tuple(row) for row in keys_norm.itertuples(index=False, name=None))
+        if not attempted_keys:
+            return True
+
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message=f"Missing-enrichment recovery: trying to download {len(attempted_keys)} keys",
+            details={"file": path, "attempted_keys": len(attempted_keys)},
+        )
+
+        sink_lower = sink.lower()
+        keys_to_recover = keys_norm
+        existing_keys: set[tuple] = set()
+
+        if sink_lower == "influxdb":
+            base_path = self.manager._make_file_basepath(
+                asset, symbol, interval, f"{day_iso}T00-00-00Z", sink_lower
+            )
+            measurement = self.manager._influx_measurement_from_base(base_path)
+            existing_keys, missing_keys = self.manager._influx_split_recovery_keys(
+                keys_norm, measurement, interval
+            )
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"Missing-enrichment key split: existing={len(existing_keys)} missing={len(missing_keys)}",
+                details={"file": path, "existing_keys": len(existing_keys), "missing_keys": len(missing_keys)},
+            )
+            if missing_keys is not None and missing_keys.empty:
+                remaining = self.manager._update_missing_enrichment_recovery(
+                    path,
+                    interval,
+                    attempted_keys,
+                    existing_keys,
+                )
+                self.logger.log_info(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=(day_iso, day_iso),
+                    message=f"Missing-enrichment recovery: all pending keys already in DB (remaining={remaining})",
+                    details={"file": path, "remaining_rows": remaining},
+                )
+                return remaining == 0
+            if missing_keys is not None:
+                keys_to_recover = missing_keys
+
+        try:
+            with self._suspend_validation():
+                df_written = await self.manager._download_and_store_options(
+                    symbol=symbol,
+                    interval=interval,
+                    day_iso=day_iso,
+                    sink=sink,
+                    enrich_greeks=enrich_greeks,
+                    enrich_tick_greeks=(interval == "tick"),
+                    recover_only_keys=keys_to_recover,
+                    return_df=True,
+                    record_missing_rows=False,
+                    missing_policy_override="candle_or_tick_row",
+                    skip_if_exists=False,
+                    dedupe_influx_against_db=(sink_lower == "influxdb"),
+                )
+        except Exception as e:
+            self.logger.log_failure(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"Missing-enrichment recovery failed: {e}",
+                details={"file": path, "error_type": type(e).__name__}
+            )
+            return False
+
+        recovered_keys = set()
+        if df_written is not None and not df_written.empty:
+            written_norm = self.manager._normalize_recovery_keys(df_written, interval)
+            written_cols = self.manager._recovery_key_columns(interval, written_norm)
+            if written_cols:
+                written_norm = written_norm[written_cols].dropna().drop_duplicates()
+                recovered_keys = set(tuple(row) for row in written_norm.itertuples(index=False, name=None))
+
+        if existing_keys:
+            recovered_keys = recovered_keys.union(existing_keys)
+
+        remaining = self.manager._update_missing_enrichment_recovery(
+            path,
+            interval,
+            attempted_keys,
+            recovered_keys,
+        )
+
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message=f"Missing-enrichment recovery result: recovered={len(recovered_keys)} remaining={remaining}",
+            details={"file": path, "recovered_keys": len(recovered_keys), "remaining_rows": remaining},
+        )
+
+        return remaining == 0

@@ -40,7 +40,8 @@
       "Bash(kill:*)",
       "Bash(conda run:*)",
       "Bash('.venv\\\\Scripts\\\\python.exe' 'D:\\\\Dropbox\\\\TRADING\\\\DATA\\\\inspect_aal_5m_issues.py')",
-      "Bash(./venv/Scripts/python.exe:*)"
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Read(//d/Dropbox/TRADING/tradSignals/**)"
     ],
     "deny": [],
     "ask": []
