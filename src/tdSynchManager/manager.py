@@ -938,8 +938,62 @@ class ThetaSyncManager:
         """
         async with self._sem:
             await self._sync_symbol(task, symbol, interval, first_date)
-            
-        
+
+    async def _is_trading_day(self, date_obj: date) -> bool:
+        """Check if a specific date is a trading day using ThetaData /calendar_on_date API.
+
+        This method queries the ThetaData calendar endpoint to determine whether a given date
+        is a trading day (market open or early close) or a non-trading day (weekend or holiday).
+        This is essential for filtering out non-trading days before attempting data downloads,
+        avoiding unnecessary API calls and errors.
+
+        Parameters
+        ----------
+        date_obj : date
+            The date to check (datetime.date object).
+
+        Returns
+        -------
+        bool
+            True if the date is a trading day (type='open' or 'early_close'), False otherwise.
+
+        Example Usage
+        -------------
+        # Check if today is a trading day
+        today = dt.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+        if await self._is_trading_day(today):
+            print("Market is open today")
+        """
+        try:
+            date_str = date_obj.isoformat()  # YYYY-MM-DD format
+            calendar_response, _ = await self.client.calendar_on_date(date_str, format_type="json")
+
+            # Parse response
+            if isinstance(calendar_response, dict):
+                schedule_type = calendar_response.get("type", "")
+            elif isinstance(calendar_response, list) and len(calendar_response) > 0:
+                schedule_type = calendar_response[0].get("type", "")
+            else:
+                print(f"[CALENDAR] Unexpected response format for {date_str}: {calendar_response}")
+                return False
+
+            # Normalize to a set of tokens (API can return a list like ['open']).
+            if isinstance(schedule_type, (list, tuple, set)):
+                tokens = {str(t).strip().lower() for t in schedule_type if str(t).strip()}
+            else:
+                tokens = {str(schedule_type).strip().lower()} if str(schedule_type).strip() else set()
+
+            # Check if it's a trading day
+            is_trading = bool(tokens & {"open", "early_close"})
+            print(f"[CALENDAR] {date_str}: type={schedule_type}, tokens={sorted(tokens)}, is_trading={is_trading}")
+            return is_trading
+
+        except Exception as e:
+            print(f"[CALENDAR][ERROR] Failed to check trading day for {date_obj}: {e}")
+            # Fallback: assume weekend check only
+            return date_obj.weekday() < 5
+
+
     async def _fetch_available_dates_from_api(
         self,
         asset: str,
@@ -1149,7 +1203,6 @@ class ThetaSyncManager:
                 return None
 
             # Filter by date range if specified
-            print(f"[API-DATES][FILTER] Filtering {len(api_dates)} dates by range start={start_date} end={end_date}")
             if start_date or end_date:
                 valid_dates = set()
                 for date_str in api_dates:
@@ -1157,9 +1210,10 @@ class ThetaSyncManager:
                         date_obj = dt.fromisoformat(date_str).date()
                         if (not start_date or date_obj >= start_date) and (not end_date or date_obj <= end_date):
                             valid_dates.add(date_obj.isoformat())
-                    except:
+                    except Exception:
                         continue
-                print(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol}")
+
+                print(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol} (range: {start_date} to {end_date})")
                 return valid_dates if valid_dates else None
 
             print(f"[API-DATES][EXIT] Returning {len(api_dates)} unfiltered dates for {symbol}")
@@ -1504,14 +1558,46 @@ class ThetaSyncManager:
             print(f"[API-DATES] Found {len(api_available_dates)} available dates, iterating only those")
             # ITERATE ONLY OVER AVAILABLE DATES (no weekends/holidays)
             dates_to_process = sorted(api_available_dates)
+
+            # GAP-FILLING: Complete dates between last_in_list and end_date using /calendar_on_date
+            # This handles the case where /list/dates is not updated yet (e.g., not including today)
+            if dates_to_process:
+                last_in_list_str = dates_to_process[-1]
+                last_in_list = dt.fromisoformat(last_in_list_str).date()
+
+                if end_date > last_in_list:
+                    print(f"[GAP-FILLING] Detected gap: last_in_list={last_in_list}, end_date={end_date}")
+                    print(f"[GAP-FILLING] Filling gap with /calendar_on_date checks...")
+
+                    gap_start = last_in_list + timedelta(days=1)
+                    temp_date = gap_start
+                    gap_count = 0
+
+                    while temp_date <= end_date:
+                        # Skip weekends immediately (no API call needed)
+                        if temp_date.weekday() < 5:
+                            if await self._is_trading_day(temp_date):
+                                dates_to_process.append(temp_date.isoformat())
+                                gap_count += 1
+                        temp_date += timedelta(days=1)
+
+                    print(f"[GAP-FILLING] Added {gap_count} trading days from gap {gap_start} to {end_date}")
+                    # Re-sort after adding gap dates
+                    dates_to_process = sorted(dates_to_process)
         else:
-            print(f"[API-DATES] API query failed, using fallback day-by-day iteration")
-            # Fallback: generate all days in range (including weekends for filtering)
+            print(f"[API-DATES] API query failed, using fallback day-by-day with /calendar_on_date")
+            # Fallback: use /calendar_on_date to filter all days in range
             dates_to_process = []
             temp_date = cur_date
+
             while temp_date <= end_date:
-                dates_to_process.append(temp_date.isoformat())
+                # Skip weekends immediately (no API call needed)
+                if temp_date.weekday() < 5:
+                    if await self._is_trading_day(temp_date):
+                        dates_to_process.append(temp_date.isoformat())
                 temp_date += timedelta(days=1)
+
+            print(f"[FALLBACK] Generated {len(dates_to_process)} trading days using /calendar_on_date")
 
         # MILD-SKIP: reduce work to only missing days (keep edge policies intact)
         if _mild_skip_policy and _first_day_db and _last_day_db:
@@ -1677,7 +1763,14 @@ class ThetaSyncManager:
         enrich_greeks: bool,
         enrich_tick_greeks: bool = False,
         next_trading_date: Optional[str] = None,
-    ) -> None:
+        recover_only_keys: Optional[pd.DataFrame] = None,
+        return_df: bool = False,
+        record_missing_rows: bool = True,
+        missing_policy_override: Optional[str] = None,
+        skip_if_exists: bool = True,
+        dedupe_influx_against_db: bool = False,
+        force_full_day: bool = False,
+    ) -> Optional[pd.DataFrame]:
         """
         Download and persist **option** data for a single trading day, handling both
         end-of-day (EOD) and intraday intervals. The function is idempotent at the
@@ -1707,6 +1800,20 @@ class ThetaSyncManager:
             interval to request OI for the next trading day, which returns OI with effective_date
             matching day_iso (same-session close OI). If None, falls back to requesting OI for
             day_iso itself (returns prior-session OI, as in intraday logic).
+        recover_only_keys : Optional[pd.DataFrame], optional
+            If provided, only rows matching these key columns are persisted.
+        return_df : bool, optional
+            If True, return the DataFrame that was persisted (default False).
+        record_missing_rows : bool, optional
+            If True, record missing enrichment rows to CSV when policy is candle_or_tick_row.
+        missing_policy_override : Optional[str], optional
+            Override missing-data policy ("full_day" or "candle_or_tick_row").
+        skip_if_exists : bool, optional
+            If True, skip EOD downloads when the daily file already exists.
+        dedupe_influx_against_db : bool, optional
+            If True and sink is InfluxDB, filter out rows already present in the DB.
+        force_full_day : bool, optional
+            If True, bypasses intraday resume logic and forces a full-day fetch (no start_time).
 
         Behavior
         --------
@@ -1786,7 +1893,8 @@ class ThetaSyncManager:
 
         sink_lower = sink.lower()
         stop_before_part = None
-        skip_day_on_missing = bool(getattr(self.cfg, "skip_day_on_greeks_iv_oi_failure", False))
+        missing_policy = self._missing_data_policy(missing_policy_override)
+        skip_day_on_missing = (missing_policy == "full_day")
         retry_passes = int(getattr(self.cfg, "greeks_iv_oi_failure_retry_passes", 0) or 0)
         retry_passes = max(0, retry_passes)
         retry_delay = float(getattr(self.cfg, "greeks_iv_oi_failure_delay_seconds", 0) or 0.0)
@@ -1805,7 +1913,7 @@ class ThetaSyncManager:
             if sink_lower != "influxdb":
                 os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, f"{day_iso}T00-00-00Z-{symbol}-option-{interval}.{ext}")
-            if os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
+            if skip_if_exists and os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
                 print(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - File already exists")
                 self.logger.log_info(
                     symbol=symbol,
@@ -2228,6 +2336,22 @@ class ThetaSyncManager:
                             severity="WARNING",
                             details=missing_details
                         )
+                    if missing_policy == "candle_or_tick_row" and record_missing_rows:
+                        required_cols = [c for c in [
+                            "last_day_OI",
+                            "delta", "gamma", "theta", "vega", "rho",
+                            "implied_vol", "bar_iv"
+                        ] if c in df.columns]
+                        self._record_missing_enrichment_rows(
+                            asset="option",
+                            symbol=symbol,
+                            interval=interval,
+                            sink_lower=sink_lower,
+                            day_iso=day_iso,
+                            df=df,
+                            missing_mask=missing_mask,
+                            required_cols=required_cols,
+                        )
                     if skip_day_on_missing:
                         error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: missing OI/Greeks/IV rows"
                         print(error_msg)
@@ -2260,6 +2384,11 @@ class ThetaSyncManager:
                                 details=missing_details
                             )
                         raise ValueError("EOD empty after enrichment drop")
+
+                if recover_only_keys is not None:
+                    df = self._filter_df_by_keys(df, recover_only_keys, interval)
+                    if df is None or df.empty:
+                        return df if return_df else None
 
                 # 3) Normalize dtypes and dedupe
                 if "expiration" in df.columns:
@@ -2335,6 +2464,7 @@ class ThetaSyncManager:
             elif sink_lower == "parquet":
                 wrote = self._append_parquet_df(base_path, df, asset="option", interval=interval)
             elif sink_lower == "influxdb":
+                dedupe_skipped_all = False
                 first_et = df["timestamp"].min() if "timestamp" in df.columns else None
                 last_et  = df["timestamp"].max() if "timestamp" in df.columns else None
                 print(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df)} window_ET=({first_et},{last_et})")
@@ -2357,6 +2487,10 @@ class ThetaSyncManager:
                 print(f"[DEBUG-EDOI-6] Before _ensure_ts_utc_column: effective_date_oi dtype={df['effective_date_oi'].dtype if 'effective_date_oi' in df.columns else 'MISSING'}, sample={df['effective_date_oi'].iloc[0] if 'effective_date_oi' in df.columns and len(df) > 0 else 'N/A'}")
                 df_influx = self._ensure_ts_utc_column(df)
                 print(f"[DEBUG-EDOI-7] After _ensure_ts_utc_column: effective_date_oi dtype={df_influx['effective_date_oi'].dtype if 'effective_date_oi' in df_influx.columns else 'MISSING'}, sample={df_influx['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_influx.columns and len(df_influx) > 0 else 'N/A'}")
+                if dedupe_influx_against_db:
+                    df_influx = self._filter_df_against_influx_existing(df_influx, measurement, interval)
+                    if df_influx is None or df_influx.empty:
+                        dedupe_skipped_all = True
 
                 # Log SAVE_START for InfluxDB write
                 self.logger.log_info(
@@ -2370,8 +2504,13 @@ class ThetaSyncManager:
 
                 # InfluxDB write is synchronous - if no exception, write succeeded
                 try:
-                    wrote = await self._append_influx_df(base_path, df_influx)
-                    write_success = True
+                    if dedupe_skipped_all:
+                        wrote = 0
+                        write_success = True
+                        print(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
+                    else:
+                        wrote = await self._append_influx_df(base_path, df_influx)
+                        write_success = True
                 except Exception as e:
                     wrote = 0
                     write_success = False
@@ -2384,7 +2523,7 @@ class ThetaSyncManager:
                         message=f"SAVE_FAILURE: InfluxDB write failed: {str(e)}",
                         details={"sink": "influxdb", "rows_attempted": len(df), "error": str(e), "branch": "EOD"}
                     )
-                if wrote == 0 and len(df) > 0:
+                if wrote == 0 and len(df) > 0 and not dedupe_skipped_all:
                     print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                           "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
                     write_success = False
@@ -2394,7 +2533,7 @@ class ThetaSyncManager:
             print(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
 
             # Check if write actually succeeded
-            if sink_lower == "influxdb" and wrote == 0:
+            if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
                 print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} EOD branch FAILED - wrote 0 rows to InfluxDB")
                 self.logger.log_failure(
                     symbol=symbol,
@@ -2416,6 +2555,8 @@ class ThetaSyncManager:
                     details={"rows": len(df), "wrote": wrote, "sink": sink_lower, "branch": "EOD"}
                 )
 
+            if return_df:
+                return df
             return  # end EOD branch
 
         
@@ -2466,28 +2607,16 @@ class ThetaSyncManager:
                       f"range=[{day_start_utc.isoformat()}, {day_end_utc.isoformat()})")
         
                 if last_in_day is not None:
-                    last_et = last_in_day.tz_convert(tz_et)
                     ov = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
+                    bar_start_et = self._align_start_time_from_last_ts(
+                        last_in_day,
+                        interval,
+                        ov,
+                        use_next_when_no_overlap=True,
+                    )
                     if ov == 0:
-                        iv = (interval or "").strip().lower()
-                        interval_minutes = None
-                        if iv.endswith("m") and iv[:-1].isdigit():
-                            interval_minutes = int(iv[:-1])
-                        elif iv.endswith("h") and iv[:-1].isdigit():
-                            interval_minutes = int(iv[:-1]) * 60
-
-                        if interval_minutes:
-                            last_dt = last_et.to_pydatetime()
-                            next_dt = last_dt + timedelta(minutes=interval_minutes)
-                            floored_utc = self._floor_to_interval_et(next_dt.astimezone(self.UTC), interval_minutes)
-                            next_dt = floored_utc.astimezone(self.ET)
-                            bar_start_et = next_dt.strftime("%H:%M:%S")
-                        else:
-                            bar_start_et = last_et.strftime("%H:%M:%S")
-
                         print(f"[RESUME-INFLUX] edge-day={day_iso} start_time(next)={bar_start_et} meas={meas}")
                     else:
-                        bar_start_et = (last_et - pd.Timedelta(seconds=ov)).strftime("%H:%M:%S")
                         print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
                 else:
                     # giorno VUOTO (non rilevato dal check rapido): nessun start_time
@@ -2507,6 +2636,10 @@ class ThetaSyncManager:
                 bar_start_et = _forced
                 print(f"[RESUME-INFLUX] forced start_time={bar_start_et} day={day_iso} (applied after resume/head-refill)")
         # <<< Optional forced start_time
+
+        if force_full_day:
+            bar_start_et = None
+            print(f"[RECOVERY] force_full_day: omit start_time for {symbol} {interval} {day_iso}")
         
         _st = "(omitted)" if bar_start_et is None else bar_start_et
         print(f"[INTRADAY-START] day={day_iso} start_time={_st} sink={_sink_lower}")
@@ -2540,6 +2673,7 @@ class ThetaSyncManager:
     
         # 2) fetch TICK **oppure** OHLC+enrichment per expiration e concatena
         dfs = []
+        no_data_exps: List[str] = [] 
         greeks_trade_list: List[pd.DataFrame] = []
         iv_trade_list: List[pd.DataFrame] = []
         greeks_bar_list: List[pd.DataFrame] = []
@@ -2570,11 +2704,25 @@ class ThetaSyncManager:
                     if bar_start_et is not None:
                         tq_kwargs["start_time"] = bar_start_et
 
-                    csv_tq, _ = await self._td_get_with_retry(
+                    csv_tq, tq_meta = await self._td_get_with_retry(
                         lambda: self.client.option_history_trade_quote(**tq_kwargs),
                         label=f"tq {symbol} {exp} {ymd}"
                     )
                     if not csv_tq:
+                        if isinstance(tq_meta, dict) and tq_meta.get("no_data"):
+                            # No trades/quotes in the requested slice (ThetaData 472). Soft-skip without retry.
+                            print(f"[NO-DATA] option tick {symbol} {day_iso} exp={exp}: no data in requested slice (472)")
+                            if self.logger:
+                                self.logger.log_info(
+                                    symbol=symbol,
+                                    asset="option",
+                                    interval=interval,
+                                    date_range=(day_iso, day_iso),
+                                    message="NO_DATA: tick trade_quote empty for requested slice (472)",
+                                    details={"expiration": exp, "status": tq_meta.get("status"), "retry_pass": pass_idx + 1, "retry_total": total_passes}
+                                )
+                            return True, "no_data_472", None, None, None
+
                         if self.logger:
                             self.logger.log_error(
                                 asset="option",
@@ -2587,6 +2735,7 @@ class ThetaSyncManager:
                                 details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
                             )
                         return False, "tq_empty_response", None, None, None
+
 
                     df = pd.read_csv(io.StringIO(csv_tq), dtype=str)
                     df = self._ensure_expiration_column(df, exp)
@@ -2733,9 +2882,40 @@ class ThetaSyncManager:
                     return False, "incomplete_greeks_iv", None, None, None
 
                 except Exception as e:
-                    if "472" not in str(e) and "No data found" not in str(e):
-                        print(f"[WARN] option tick {symbol} {interval} {day_iso} exp={exp}: {e}")
+                    msg = str(e)
+                    msg_l = msg.lower()
+
+                    # Treat ThetaData "no data" (472) as soft-skip (NO retry / NO abort day)
+                    if ("472" in msg) or ("no data found" in msg_l) or ("no_data" in msg_l):
+                        print(
+                            f"[NO_DATA-472][EXC] option tick {symbol} {interval} "
+                            f"day={day_iso} exp={exp} pass={pass_idx + 1}: {msg}"
+                        )
+                        if self.logger:
+                            try:
+                                self.logger.log_info(
+                                    symbol=symbol,
+                                    asset="option",
+                                    interval=interval,
+                                    date_range=(day_iso, day_iso),
+                                    message="NO_DATA: tick exception treated as soft-skip (472)",
+                                    details={
+                                        "expiration": exp,
+                                        "reason": "exception_no_data",
+                                        "status": 472,
+                                        "exception": msg,
+                                        "retry_pass": pass_idx + 1,
+                                        "retry_total": total_passes,
+                                    },
+                                )
+                            except Exception as _le:
+                                print(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
+
+                        return True, "no_data_472_exception", None, None, None
+
+                    print(f"[WARN] option tick {symbol} {interval} {day_iso} exp={exp}: {e}")
                     return False, f"exception: {e}", None, None, None
+
 
             pending_exps = list(expirations)
             failure_reasons: dict[str, list[str]] = {}
@@ -2750,17 +2930,36 @@ class ThetaSyncManager:
                 pending_exps = []
                 for exp in current_exps:
                     success, reason, df, dg, divt = await _fetch_tick_expiration(exp, pass_idx)
+
                     if success:
-                        dfs.append(df)
-                        if dg is not None:
+                        # If we have actual rows, keep them for the final concat/export
+                        if df is not None and not df.empty:
+                            dfs.append(df)
+                        else:
+                            # success=True but empty df means: "NO_DATA in requested slice" (e.g., 472)
+                            # We treat it as a soft-skip: no retry, no abort, no enrichment.
+                            print(
+                                f"[NO_DATA] {symbol} {interval} day={day_iso} exp={exp} "
+                                f"reason={reason} pass={pass_idx + 1}/{total_passes} -> soft-skip"
+                            )
+                            no_data_exps.append(exp)
+
+                        # Greeks/IV extracted at trade/tick level (only if returned)
+                        if dg is not None and not dg.empty:
                             greeks_trade_list.append(dg)
-                        if divt is not None:
+                        if divt is not None and not divt.empty:
                             iv_trade_list.append(divt)
+
+                        # This expiration is considered "handled" (either got data or soft no-data),
+                        # so remove any previous failure history for it.
                         if exp in failure_reasons:
                             failure_reasons.pop(exp, None)
+
                     else:
+                        # Real failure: keep it pending for retry passes
                         pending_exps.append(exp)
                         failure_reasons.setdefault(exp, []).append(reason)
+
 
             if pending_exps:
                 failed_details = {exp: failure_reasons.get(exp, []) for exp in pending_exps}
@@ -2805,12 +3004,26 @@ class ThetaSyncManager:
                     if bar_start_et is not None:
                         ohlc_kwargs["start_time"] = bar_start_et
 
-                    csv_ohlc, _ = await self._td_get_with_retry(
+                    csv_ohlc, ohlc_meta = await self._td_get_with_retry(
                         lambda: self.client.option_history_ohlc(**ohlc_kwargs),
                         label=f"ohlc {symbol} {exp} {ymd} {interval}"
                     )
 
                     if not csv_ohlc:
+                        if isinstance(ohlc_meta, dict) and ohlc_meta.get("no_data"):
+                            # No trades in the requested slice (ThetaData 472). Soft-skip: no retry, no Greeks/IV/OI.
+                            print(f"[NO-DATA] option intraday {symbol} {interval} {day_iso} exp={exp}: no trades in requested slice (472)")
+                            if self.logger:
+                                self.logger.log_info(
+                                    symbol=symbol,
+                                    asset="option",
+                                    interval=interval,
+                                    date_range=(day_iso, day_iso),
+                                    message="NO_DATA: intraday OHLC empty for requested slice (472)",
+                                    details={"expiration": exp, "status": ohlc_meta.get("status"), "retry_pass": pass_idx + 1, "retry_total": total_passes}
+                                )
+                            return True, "no_data_472", None, None, None
+
                         if self.logger:
                             self.logger.log_error(
                                 asset="option",
@@ -2823,6 +3036,7 @@ class ThetaSyncManager:
                                 details={"retry_pass": pass_idx + 1, "retry_total": total_passes}
                             )
                         return False, "ohlc_empty_response", None, None, None
+
 
                     df = pd.read_csv(io.StringIO(csv_ohlc), dtype=str)
                     if df is None or df.empty:
@@ -2981,8 +3195,40 @@ class ThetaSyncManager:
                     return False, "incomplete_greeks_iv", None, None, None
 
                 except Exception as e:
+                    msg = str(e)
+                    msg_l = msg.lower()
+
+                    # Treat ThetaData "no data" (472) as soft-skip (NO retry / NO abort day)
+                    if ("472" in msg) or ("no data found" in msg_l) or ("no_data" in msg_l):
+                        print(
+                            f"[NO_DATA-472][EXC] option intraday {symbol} {interval} "
+                            f"day={day_iso} exp={exp} pass={pass_idx + 1}: {msg}"
+                        )
+                        if self.logger:
+                            try:
+                                self.logger.log_info(
+                                    symbol=symbol,
+                                    asset="option",
+                                    interval=interval,
+                                    date_range=(day_iso, day_iso),
+                                    message="NO_DATA: intraday exception treated as soft-skip (472)",
+                                    details={
+                                        "expiration": exp,
+                                        "reason": "exception_no_data",
+                                        "status": 472,
+                                        "exception": msg,
+                                        "retry_pass": pass_idx + 1,
+                                        "retry_total": total_passes,
+                                    },
+                                )
+                            except Exception as _le:
+                                print(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
+
+                        return True, "no_data_472_exception", None, None, None
+
                     print(f"[WARN] option intraday {symbol} {interval} {day_iso} exp={exp}: {e}")
                     return False, f"exception: {e}", None, None, None
+
 
             pending_exps = list(expirations)
             failure_reasons: dict[str, list[str]] = {}
@@ -2997,17 +3243,36 @@ class ThetaSyncManager:
                 pending_exps = []
                 for exp in current_exps:
                     success, reason, df, dg, div = await _fetch_intraday_expiration(exp, pass_idx)
+
                     if success:
-                        dfs.append(df)
-                        if dg is not None:
+                        # If we have actual rows, keep them for the final concat/export
+                        if df is not None and not df.empty:
+                            dfs.append(df)
+                        else:
+                            # success=True but empty df means: "NO_DATA in requested slice" (e.g., 472)
+                            # We treat it as a soft-skip: no retry, no abort, no enrichment.
+                            print(
+                                f"[NO_DATA] {symbol} {interval} day={day_iso} exp={exp} "
+                                f"reason={reason} pass={pass_idx + 1}/{total_passes} -> soft-skip"
+                            )                            
+                            no_data_exps.append(exp)
+
+                        # Greeks/IV extracted at bar level (only if returned)
+                        if dg is not None and not dg.empty:
                             greeks_bar_list.append(dg)
-                        if div is not None:
+                        if div is not None and not div.empty:
                             iv_bar_list.append(div)
+
+                        # This expiration is considered "handled" (either got data or soft no-data),
+                        # so remove any previous failure history for it.
                         if exp in failure_reasons:
                             failure_reasons.pop(exp, None)
+
                     else:
+                        # Real failure: keep it pending for retry passes
                         pending_exps.append(exp)
                         failure_reasons.setdefault(exp, []).append(reason)
+
 
             if pending_exps:
                 failed_details = {exp: failure_reasons.get(exp, []) for exp in pending_exps}
@@ -3040,6 +3305,21 @@ class ThetaSyncManager:
                     return
 
         if not dfs:
+            # If everything returned NO_DATA (472), this is a normal "no trades in slice" outcome.
+            if no_data_exps and len(no_data_exps) == len(expirations):
+                info_msg = f"[NO-DATA] option intraday {symbol} {interval} {day_iso}: no trades in requested slice (all expirations 472)"
+                print(info_msg)
+                if self.logger:
+                    self.logger.log_info(
+                        symbol=symbol,
+                        asset="option",
+                        interval=interval,
+                        date_range=(day_iso, day_iso),
+                        message="NO_DATA: no trades in requested slice (472) for all expirations",
+                        details={"reason": "no_trades_in_slice", "status": 472, "count": len(no_data_exps)}
+                    )
+                return
+
             # STRICT MODE: All expirations failed or were skipped
             error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: no data saved (all expirations failed/skipped)"
             print(error_msg)
@@ -3050,10 +3330,11 @@ class ThetaSyncManager:
                     interval=interval,
                     date=day_iso,
                     error_type="ALL_EXPIRATIONS_FAILED",
-                    error_message=f"All expirations failed or skipped - no data saved for entire day (enrich_greeks={enrich_greeks})",
+                    error_message=f"All expirations failed/skipped - no data saved for entire day (enrich_greeks={enrich_greeks})",
                     severity="ERROR"
                 )
             return
+
 
         df_all = pd.concat(dfs, ignore_index=True)
 
@@ -3195,6 +3476,51 @@ class ThetaSyncManager:
                     missing |= s.astype(str).str.strip().eq("")
                 mask = missing if mask is None else (mask | missing)
             return mask
+
+        def _log_missing_breakdown(df, cols, label):
+            if df is None or df.empty or not cols:
+                return
+            miss_mask = None
+            miss_counts = {}
+            for col in cols:
+                if col not in df.columns:
+                    miss_counts[col] = int(len(df))
+                    if miss_mask is None:
+                        miss_mask = pd.Series([True] * len(df), index=df.index)
+                    continue
+                s = df[col]
+                missing = s.isna()
+                if s.dtype == object:
+                    missing |= s.astype(str).str.strip().eq("")
+                miss_counts[col] = int(missing.sum())
+                miss_mask = missing if miss_mask is None else (miss_mask | missing)
+
+            if not any(v > 0 for v in miss_counts.values()):
+                return
+
+            summary = ", ".join(f"{k}:{v}" for k, v in miss_counts.items())
+            print(
+                f"[ENRICHMENT][MISS-COLS] {symbol} {interval} {day_iso} {label} "
+                f"rows={len(df)} missing_by_col={summary}"
+            )
+
+            if miss_mask is not None and miss_mask.any():
+                sample_cols = [
+                    c for c in
+                    ["symbol", "root", "expiration", "strike", "right", "option_symbol",
+                     "timestamp", "bar_timestamp", "trade_timestamp"]
+                    if c in df.columns
+                ]
+                if sample_cols:
+                    sample = df.loc[miss_mask, sample_cols].head(10)
+                    if not sample.empty:
+                        print(f"[ENRICHMENT][MISS-SAMPLE] {label} first 10:")
+                        print(sample.to_string(index=False))
+                if "expiration" in df.columns:
+                    vc = df.loc[miss_mask, "expiration"].astype(str).value_counts().head(10)
+                    if not vc.empty:
+                        print(f"[ENRICHMENT][MISS-EXP] {label} top expirations:")
+                        print(vc.to_string())
 
         def _normalize_join_cols(df):
             if df is None or df.empty:
@@ -3556,6 +3882,8 @@ class ThetaSyncManager:
 
         missing_mask = None
         missing_details = {}
+        greeks_req_cols = None
+        greeks_missing_mask = None
 
         if oi_missing_mask is not None and oi_missing_mask.any():
             missing_mask = oi_missing_mask if missing_mask is None else (missing_mask | oi_missing_mask)
@@ -3570,19 +3898,23 @@ class ThetaSyncManager:
         if interval == "tick":
             if enrich_tick_greeks:
                 req_cols = ["delta", "gamma", "theta", "vega", "rho", "trade_iv"]
-                greek_mask = _missing_mask_for_cols(df_all, req_cols)
-                if greek_mask is not None and greek_mask.any():
-                    missing_mask = greek_mask if missing_mask is None else (missing_mask | greek_mask)
-                    missing_details["greeks_iv_missing_rows"] = int(greek_mask.sum())
+                greeks_req_cols = req_cols
+                greeks_missing_mask = _missing_mask_for_cols(df_all, req_cols)
+                if greeks_missing_mask is not None and greeks_missing_mask.any():
+                    missing_mask = greeks_missing_mask if missing_mask is None else (missing_mask | greeks_missing_mask)
+                    missing_details["greeks_iv_missing_rows"] = int(greeks_missing_mask.sum())
         else:
             if enrich_greeks:
                 req_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "bar_iv"]
-                greek_mask = _missing_mask_for_cols(df_all, req_cols)
-                if greek_mask is not None and greek_mask.any():
-                    missing_mask = greek_mask if missing_mask is None else (missing_mask | greek_mask)
-                    missing_details["greeks_iv_missing_rows"] = int(greek_mask.sum())
+                greeks_req_cols = req_cols
+                greeks_missing_mask = _missing_mask_for_cols(df_all, req_cols)
+                if greeks_missing_mask is not None and greeks_missing_mask.any():
+                    missing_mask = greeks_missing_mask if missing_mask is None else (missing_mask | greeks_missing_mask)
+                    missing_details["greeks_iv_missing_rows"] = int(greeks_missing_mask.sum())
 
         if missing_mask is not None and missing_mask.any():
+            if greeks_req_cols and greeks_missing_mask is not None and greeks_missing_mask.any():
+                _log_missing_breakdown(df_all, greeks_req_cols, label="greeks_iv")
             if self.logger:
                 self.logger.log_error(
                     asset="option",
@@ -3593,6 +3925,22 @@ class ThetaSyncManager:
                     error_message="Missing OI/Greeks/IV rows after merge",
                     severity="WARNING",
                     details=missing_details
+                )
+            if missing_policy == "candle_or_tick_row" and record_missing_rows:
+                required_cols = []
+                if "last_day_OI" in df_all.columns:
+                    required_cols.append("last_day_OI")
+                if greeks_req_cols:
+                    required_cols.extend([c for c in greeks_req_cols if c not in required_cols])
+                self._record_missing_enrichment_rows(
+                    asset="option",
+                    symbol=symbol,
+                    interval=interval,
+                    sink_lower=sink_lower,
+                    day_iso=day_iso,
+                    df=df_all,
+                    missing_mask=missing_mask,
+                    required_cols=required_cols,
                 )
 
             if skip_day_on_missing:
@@ -3627,6 +3975,11 @@ class ThetaSyncManager:
                         details=missing_details
                     )
                 return
+        if recover_only_keys is not None:
+            df_all = self._filter_df_by_keys(df_all, recover_only_keys, interval)
+            if df_all is None or df_all.empty:
+                return df_all if return_df else None
+
         df_all = self._require_expiration(df_all, context=f"INTRADAY {symbol} {interval} {day_iso}")
         df_all = self._add_dte_column(df_all, day_iso)
         # --- GLOBAL ORDER (stabile per part temporali) ---
@@ -3685,26 +4038,13 @@ class ThetaSyncManager:
                           f"range=[{day_start_utc.isoformat()}, {day_end_utc.isoformat()})")
                     
                     if last_in_day is not None:
-                        last_et = last_in_day.tz_convert(tz_et)
                         ov = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-                        
-                        # >>> FIX: per interval != "tick", allinea al bucket DOPO l'overlap
-                        iv = (interval or "").strip().lower()
-                        if iv.endswith("m") and iv[:-1].isdigit():
-                            m = int(iv[:-1])
-                            resume_et = last_et - pd.Timedelta(seconds=ov)
-                            floored = resume_et.replace(second=0, microsecond=0)
-                            floored = floored.replace(minute=(floored.minute // m) * m)
-                            bar_start_et = floored.strftime("%H:%M:%S")
-                        elif iv.endswith("h") and iv[:-1].isdigit():
-                            h = int(iv[:-1])
-                            resume_et = last_et - pd.Timedelta(seconds=ov)
-                            floored = resume_et.replace(minute=0, second=0, microsecond=0)
-                            floored = floored.replace(hour=(floored.hour // h) * h)
-                            bar_start_et = floored.strftime("%H:%M:%S")
-                        else:
-                            # tick/secondi: usa solo overlap
-                            bar_start_et = (last_et - pd.Timedelta(seconds=ov)).strftime("%H:%M:%S")
+                        bar_start_et = self._align_start_time_from_last_ts(
+                            last_in_day,
+                            interval,
+                            ov,
+                            use_next_when_no_overlap=False,
+                        )
                         
                         print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
                     else:
@@ -3897,6 +4237,7 @@ class ThetaSyncManager:
         elif sink_lower == "parquet":
             wrote = self._append_parquet_df(base_path, df_all, asset="option", interval=interval)
         elif sink_lower == "influxdb":
+            dedupe_skipped_all = False
             # >>> PATCH: log finestra prima di scrivere (INTRADAY)
             first_et = df_all["timestamp"].min() if "timestamp" in df_all.columns else None
             last_et  = df_all["timestamp"].max() if "timestamp" in df_all.columns else None
@@ -3920,6 +4261,10 @@ class ThetaSyncManager:
                 key_cols.append('sequence')
 
             df_influx = self._ensure_ts_utc_column(df_all)
+            if dedupe_influx_against_db:
+                df_influx = self._filter_df_against_influx_existing(df_influx, measurement, interval)
+                if df_influx is None or df_influx.empty:
+                    dedupe_skipped_all = True
 
             # Log SAVE_START for InfluxDB write
             self.logger.log_info(
@@ -3933,8 +4278,13 @@ class ThetaSyncManager:
 
             # InfluxDB write is synchronous - if no exception, write succeeded
             try:
-                wrote = await self._append_influx_df(base_path, df_influx)
-                write_success = True
+                if dedupe_skipped_all:
+                    wrote = 0
+                    write_success = True
+                    print(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
+                else:
+                    wrote = await self._append_influx_df(base_path, df_influx)
+                    write_success = True
             except Exception as e:
                 wrote = 0
                 write_success = False
@@ -3947,7 +4297,7 @@ class ThetaSyncManager:
                     message=f"SAVE_FAILURE: InfluxDB write failed: {str(e)}",
                     details={"sink": "influxdb", "rows_attempted": len(df_all), "error": str(e), "branch": "intraday"}
                 )
-            if wrote == 0 and len(df_all) > 0:
+            if wrote == 0 and len(df_all) > 0 and not dedupe_skipped_all:
                 print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                       "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
                 write_success = False
@@ -3958,7 +4308,7 @@ class ThetaSyncManager:
         print(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
 
         # Check if write actually succeeded
-        if sink_lower == "influxdb" and wrote == 0:
+        if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
             print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} intraday branch FAILED - wrote 0 rows to InfluxDB")
             self.logger.log_failure(
                 symbol=symbol,
@@ -3979,6 +4329,10 @@ class ThetaSyncManager:
                 message=f"DOWNLOAD_SUCCESS: rows={len(df_all)} wrote={wrote}",
                 details={"rows": len(df_all), "wrote": wrote, "sink": sink_lower, "branch": "intraday", "expirations_count": len(expirations)}
             )
+
+        if return_df:
+            return df_all
+        return
 
 
 
@@ -4113,9 +4467,13 @@ class ThetaSyncManager:
                     else:
                         last_in_day = self._influx_last_ts_between(meas, day_start_utc, day_end_utc)
                         if last_in_day is not None:
-                            last_et = last_in_day.tz_convert("America/New_York")
                             ov = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-                            bar_start_et = (last_et - pd.Timedelta(seconds=ov)).strftime("%H:%M:%S")
+                            bar_start_et = self._align_start_time_from_last_ts(
+                                last_in_day,
+                                interval,
+                                ov,
+                                use_next_when_no_overlap=False,
+                            )
                 except Exception:
                     pass
             
@@ -4619,38 +4977,87 @@ class ThetaSyncManager:
 
 
 
-
     async def _td_get_with_retry(self, coro_factory, label: str, retries: int = 1):
         """
-        Esegue la richiesta TD con 1 piccolo retry se fallisce per errori transitori
-        (timeout, disconnessione, cancel durante I/O). Ritorna (text, meta) o (None, None).
+        Run a TD request with a small retry window for transient failures.
+
+        Returns:
+            (text, meta) on success;
+            (None, meta) on failure, where meta may include:
+                - {"no_data": True, "status": 472, "error": "..."} for ThetaData "No data found" (HTTP 472)
         """
-    
+
+        # ### >>> THETADATA NO_DATA (472) DETECTION — BEGIN
+        def _parse_http_status(msg: str, exc: Optional[BaseException] = None) -> Optional[int]:
+            """
+            Robust status extraction for ThetaData / aiohttp / custom SDK errors.
+            Priority:
+            1) Explicit exception fields (.status, .status_code, .code)
+            2) Common string patterns (HTTP error / HTTP Error / status= / status:)
+            """
+            if exc is not None:
+                st = getattr(exc, "status", None) or getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                if st is not None:
+                    try:
+                        return int(st)
+                    except Exception:
+                        pass
+
+            m = re.search(r"(?:http\s*error|status)\s*[:=]?\s*(\d{3})", msg or "", flags=re.I)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    return None
+            return None
+
+        def _is_no_data(msg: str, status: Optional[int]) -> bool:
+            if status == 472:
+                return True
+            s = (msg or "").lower()
+            return ("no data found" in s) or ("no_data" in s) or ("no data" in s and "472" in s)
+        # ### >>> THETADATA NO_DATA (472) DETECTION — END
+
         for attempt in range(retries + 1):
             try:
                 return await coro_factory()
+
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                msg = str(e)
+                status = _parse_http_status(msg, e)
+                if _is_no_data(msg, status):
+                    print(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
+                    return None, {"no_data": True, "status": status or 472, "error": msg}
+
                 print(f"[TD-HTTP][RETRY] {label} attempt={attempt+1} error={e}")
                 if attempt >= retries:
                     print(f"[TD-HTTP][GIVEUP] {label}")
-                    return None, None
+                    return None, {"no_data": False, "status": status, "error": msg}
                 await asyncio.sleep(0.75)
-            except asyncio.CancelledError as e:
-                # a volte arriva da stream/flight; proviamo un solo retry "soft"
+
+            except asyncio.CancelledError:
                 print(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
                 if attempt >= retries:
                     print(f"[TD-HTTP][GIVEUP] {label} cancelled")
-                    return None, None
+                    return None, {"no_data": False, "status": None, "error": "cancelled"}
                 await asyncio.sleep(0.5)
+
             except Exception as e:
+                msg = str(e)
+                status = _parse_http_status(msg, e)
+                if _is_no_data(msg, status):
+                    print(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
+                    return None, {"no_data": True, "status": status or 472, "error": msg}
+
                 print(f"[TD-HTTP][ERROR] {label}: {e}")
-                return None, None
+                return None, {"no_data": False, "status": status, "error": msg}
 
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # DUPLICATE CHECK UTILITIES
-    # ──────────────────────────────────────────────────────────────────────────
-    
+
+        # ──────────────────────────────────────────────────────────────────────────
+        # DUPLICATE CHECK UTILITIES
+        # ──────────────────────────────────────────────────────────────────────────
+        
 
     async def _resolve_first_date(self, task: Task, symbol: str) -> Optional[str]:
         """Resolve the initial coverage date for this (asset, symbol) according to policy."""
@@ -5003,6 +5410,27 @@ class ThetaSyncManager:
         return out
 
 
+    # ============================================================
+    # ### >>> TODAY MARKET DATE (America/New_York) — BEGIN/END
+    # ============================================================
+
+
+    def _today_market_date() -> date:
+        """
+        Return today's date in the US market timezone (America/New_York).
+        Falls back to UTC date if zoneinfo is unavailable.
+        """
+        now_utc = datetime.now(timezone.utc)
+        if ZoneInfo is None:
+            return now_utc.date()
+        return now_utc.astimezone(ZoneInfo("America/New_York")).date()
+    
+    # ============================================================
+    # ### >>> TODAY MARKET DATE (America/New_York) — BEGIN/END
+    # ============================================================
+
+
+
     # ------------- SCREENING FUNCTIONS -------------------------------
 
 
@@ -5100,12 +5528,18 @@ class ThetaSyncManager:
                 resume_dt = last_ts - timedelta(seconds=overlap)
                 
                 iv = (interval or "").strip().lower()
-                if iv.endswith("m") or iv.endswith("h"):
-                    m = int(iv[:-1]) * (60 if iv.endswith("h") else 1)
-                    # Converti a ET-aware, floor, torna a UTC
+                unit, step = self._parse_interval_spec(iv)
+                if unit in ("m", "h") and step:
+                    minutes = step if unit == "m" else step * 60
                     resume_et = resume_dt.astimezone(self.ET)
-                    floored_utc = self._floor_to_interval_et(resume_et, m)
+                    floored_utc = self._floor_to_interval_et(resume_et.astimezone(self.UTC), minutes)
                     resume_dt = floored_utc
+                elif unit == "s" and step:
+                    resume_et = resume_dt.astimezone(self.ET)
+                    floored_utc = self._floor_to_interval_seconds_et(resume_et.astimezone(self.UTC), step)
+                    resume_dt = floored_utc
+                elif unit == "ms":
+                    resume_dt = resume_dt.replace(microsecond=0)
                 
                 candidates.append(resume_dt)
         
@@ -5692,7 +6126,7 @@ class ThetaSyncManager:
         """
         Ritorna (start_et_hms, end_et_hms) per una singola day_iso.
         start_et_hms è calcolato come (max timestamp del giorno già salvato) - overlap_seconds,
-        >>> POI ALLINEATO AL BUCKET per M/H frames <
+        >>> POI ALLINEATO AL BUCKET per M/H/S (ms: allineamento al secondo) <
         """
         ET = ZoneInfo("America/New_York")
     
@@ -5766,18 +6200,17 @@ class ThetaSyncManager:
                 return (None, None)
     
         # >>> COMMON: Overlap + Bucket Alignment <
-        overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
-        start_dt = max_ts - pd.Timedelta(seconds=overlap)
-        
         iv = (interval or "").strip().lower()
-        if iv.endswith("m") or iv.endswith("h"):
-            m = int(iv[:-1]) * (60 if iv.endswith("h") else 1)
-            # Floor to bucket (ET-naive input, no tz conversion needed)
-            start_et_aware = start_dt.replace(tzinfo=ET)
-            floored_utc = self._floor_to_interval_et(start_et_aware.astimezone(self.UTC), m)
-            start_dt = floored_utc.astimezone(ET).replace(tzinfo=None)
-        
-        start_et_hms = start_dt.strftime("%H:%M:%S")
+        if iv == "tick":
+            return (None, None)
+
+        overlap = int(getattr(self.cfg, "overlap_seconds", 0) or 0)
+        start_et_hms = self._align_start_time_from_last_ts(
+            max_ts,
+            interval,
+            overlap,
+            use_next_when_no_overlap=False,
+        )
         return (start_et_hms, None)
 
 
@@ -6662,9 +7095,13 @@ class ThetaSyncManager:
 
         df_ts = df.copy()
         t_candidates = ["timestamp", "trade_timestamp", "bar_timestamp", "datetime", "created", "last_trade", "date", "time"]
-        tcol = next((c for c in t_candidates if c in df_ts.columns), None)
+        tcol, non_null, ratio = self._pick_time_column(df_ts, t_candidates)
         if not tcol:
             raise RuntimeError("No time column found while preparing data for Influx verification.")
+
+        debug_ready = getattr(self.cfg, "log_verbose_console", True)
+        if debug_ready and tcol != "timestamp":
+            print(f"[TIME-COL] selected '{tcol}' for __ts_utc (non_null={non_null}/{len(df_ts)} ratio={ratio:.2f})")
 
         series = pd.to_datetime(df_ts[tcol], errors="coerce")
         if getattr(series.dtype, "tz", None) is None:
@@ -6673,6 +7110,35 @@ class ThetaSyncManager:
             series = series.dt.tz_convert("UTC")
         df_ts["__ts_utc"] = series
         return df_ts
+
+    def _pick_time_column(
+        self,
+        df: pd.DataFrame,
+        candidates: Iterable[str],
+    ) -> Tuple[Optional[str], int, float]:
+        """Pick the time column with the most non-null parsable timestamps."""
+        best_col = None
+        best_non_null = -1
+        best_ratio = 0.0
+        total = len(df)
+
+        for c in candidates:
+            if c not in df.columns:
+                continue
+            try:
+                parsed = pd.to_datetime(df[c], errors="coerce")
+            except Exception:
+                continue
+            non_null = int(parsed.notna().sum())
+            if non_null <= 0:
+                continue
+            ratio = (non_null / total) if total else 0.0
+            if non_null > best_non_null:
+                best_col = c
+                best_non_null = non_null
+                best_ratio = ratio
+
+        return best_col, max(best_non_null, 0), best_ratio
 
         
     # -------------------- INFLUXDB WRITER (append with overlap) --------------------
@@ -6724,9 +7190,12 @@ class ThetaSyncManager:
 
         # 1) Individua la colonna tempo e normalizza in UTC
         t_candidates = ["timestamp","trade_timestamp","bar_timestamp","datetime","created","last_trade","date","time"]
-        tcol = next((c for c in t_candidates if c in df_new.columns), None)
+        tcol, non_null, ratio = self._pick_time_column(df_new, t_candidates)
         if not tcol:
             raise RuntimeError("No time column found for Influx write.")
+        debug_ready = getattr(self.cfg, "log_verbose_console", True)
+        if debug_ready and tcol != "timestamp":
+            print(f"[TIME-COL] selected '{tcol}' for Influx write (non_null={non_null}/{len(df_new)} ratio={ratio:.2f})")
 
         # Let pandas infer timestamp format automatically
         s = pd.to_datetime(df_new[tcol], errors="coerce")
@@ -6794,6 +7263,48 @@ class ThetaSyncManager:
                         print("[INFLUX][EXP][MISSING] sample:")
                         print(miss_sample.to_string(index=False))
                 self._influx_exp_debug_seen.add(measurement)
+
+        # --- >>> INFLUX KEY INTEGRITY DEBUG — BEGIN
+        try:
+            debug_ready = getattr(self.cfg, "log_verbose_console", True)
+        except Exception:
+            debug_ready = True
+
+        if debug_ready:
+            key_cols_preview = ["__ts_utc"] + [c for c in ["symbol", "expiration", "right", "strike"] if c in df.columns]
+            missing_counts = {c: int(df[c].isna().sum()) for c in key_cols_preview if c in df.columns}
+            if key_cols_preview:
+                dup_mask = df.duplicated(subset=key_cols_preview, keep=False)
+                dup_count = int(dup_mask.sum())
+            else:
+                dup_mask = pd.Series([False] * len(df), index=df.index)
+                dup_count = 0
+
+            if dup_count > 0 or any(v > 0 for v in missing_counts.values()):
+                print(f"[INFLUX][KEY-CHECK] measurement={measurement} rows={len(df)} dup_rows={dup_count} missing={missing_counts}")
+                if "right" in df.columns:
+                    right_counts = df["right"].value_counts(dropna=False).head(6)
+                    print(f"[INFLUX][KEY-CHECK] right_counts={right_counts.to_dict()}")
+                else:
+                    print(f"[INFLUX][KEY-CHECK] WARNING: 'right' column missing before dedup")
+
+                if any(v > 0 for v in missing_counts.values()):
+                    miss_cols = [c for c, v in missing_counts.items() if v > 0]
+                    sample_cols = [c for c in ["__ts_utc", "timestamp", "symbol", "expiration", "strike", "right"] if c in df.columns]
+                    miss_sample = df.loc[df[miss_cols].isna().any(axis=1), sample_cols].head(8)
+                    if not miss_sample.empty:
+                        print("[INFLUX][KEY-CHECK] missing_key_sample:")
+                        print(miss_sample.to_string(index=False))
+
+                if dup_count > 0:
+                    try:
+                        dup_keys = df.loc[dup_mask, key_cols_preview]
+                        key_counts = dup_keys.value_counts().head(10)
+                        print("[INFLUX][KEY-CHECK] duplicate_keys_top:")
+                        print(key_counts.to_string())
+                    except Exception as e:
+                        print(f"[INFLUX][KEY-CHECK] duplicate_keys_top: unavailable ({type(e).__name__}: {e})")
+        # --- >>> INFLUX KEY INTEGRITY DEBUG — END
 
         # 3) HARD DEDUPE: __ts_utc + tag se presenti (+ sequence se presente)
         tag_keys = [c for c in ["symbol","expiration","right","strike"] if c in df.columns]
@@ -7188,6 +7699,492 @@ class ThetaSyncManager:
     
         # Ordinamento stabile
         return sorted(out)
+
+
+    def _missing_data_policy(self, override: Optional[str] = None) -> str:
+        """Return missing-data policy: 'full_day' or 'candle_or_tick_row'."""
+        raw = override
+        if raw is None:
+            raw = getattr(self.cfg, "skip_dimension_on_missing_data", None)
+        if raw is None or str(raw).strip() == "":
+            return "full_day" if bool(getattr(self.cfg, "skip_day_on_greeks_iv_oi_failure", False)) else "candle_or_tick_row"
+        mode = str(raw).strip().lower()
+        if mode in ("full_day", "candle_or_tick_row"):
+            return mode
+        print(f"[WARN] Unknown skip_dimension_on_missing_data={raw!r}, falling back to legacy")
+        return "full_day" if bool(getattr(self.cfg, "skip_day_on_greeks_iv_oi_failure", False)) else "candle_or_tick_row"
+
+
+    def _missing_enrichment_path(self, asset: str, symbol: str, interval: str, sink_lower: str, day_iso: str) -> str:
+        sink_dir = self._sink_dir_name(sink_lower)
+        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
+        os.makedirs(folder, exist_ok=True)
+        fname = f"missing_enrichment-{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}.csv"
+        return os.path.join(folder, fname)
+
+
+    def _list_missing_enrichment_files(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink_lower: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> list[tuple[str, str]]:
+        sink_dir = self._sink_dir_name(sink_lower)
+        folder = os.path.join(self._root_sink_dir, asset, symbol, interval, sink_dir)
+        if not os.path.isdir(folder):
+            return []
+
+        sym_u = symbol.upper()
+        asset_l = asset.lower()
+        interval_l = interval.lower()
+        pat = re.compile(
+            rf"^missing_enrichment-(\d{{4}}-\d{{2}}-\d{{2}})T00-00-00Z-{re.escape(sym_u)}-{asset_l}-{interval_l}\.csv$",
+            re.IGNORECASE,
+        )
+
+        out: list[tuple[str, str]] = []
+        for name in os.listdir(folder):
+            m = pat.match(name)
+            if not m:
+                continue
+            day_iso = m.group(1)
+            if start_date and day_iso < start_date:
+                continue
+            if end_date and day_iso > end_date:
+                continue
+            out.append((day_iso, os.path.join(folder, name)))
+
+        out.sort(key=lambda x: x[0])
+        return out
+
+
+    def _normalize_recovery_keys(self, df: pd.DataFrame, interval: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        if "timestamp" in out.columns:
+            ts = pd.to_datetime(out["timestamp"], errors="coerce", utc=True)
+            out["timestamp"] = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+        if "expiration" in out.columns:
+            out["expiration"] = pd.to_datetime(out["expiration"], errors="coerce").dt.date
+        if "strike" in out.columns:
+            out["strike"] = pd.to_numeric(out["strike"], errors="coerce")
+        if "right" in out.columns:
+            out["right"] = (
+                out["right"].astype(str).str.strip().str.lower()
+                .map({"c": "call", "p": "put", "call": "call", "put": "put"})
+                .fillna(out["right"])
+            )
+        if "sequence" in out.columns:
+            out["sequence"] = pd.to_numeric(out["sequence"], errors="coerce")
+        if "symbol" in out.columns:
+            out["symbol"] = out["symbol"].astype(str).str.strip()
+        return out
+
+
+    def _influx_existing_keys_between(
+        self,
+        measurement: str,
+        interval: str,
+        start_utc: pd.Timestamp,
+        end_utc: pd.Timestamp,
+        key_cols: list[str],
+    ) -> set[tuple]:
+        """Return existing key tuples in Influx between [start_utc, end_utc)."""
+        if not key_cols:
+            return set()
+
+        try:
+            if not self._influx_measurement_exists(measurement):
+                return set()
+        except Exception as e:
+            print(f"[INFLUX][WARN] measurement_exists failed: {type(e).__name__}: {e}")
+            return set()
+
+        select_cols = []
+        if "timestamp" in key_cols:
+            select_cols.append("time")
+        for col in ("symbol", "expiration", "strike", "right", "sequence"):
+            if col in key_cols:
+                select_cols.append(col)
+        if not select_cols:
+            return set()
+
+        s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        e = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        query = (
+            f'SELECT {", ".join(select_cols)} FROM "{measurement}" '
+            f"WHERE time >= TIMESTAMP '{s}' AND time < TIMESTAMP '{e}'"
+        )
+
+        try:
+            df = self._influx_query_dataframe(query)
+        except Exception as e:
+            print(f"[INFLUX][WARN] existing-keys query failed: {type(e).__name__}: {e}")
+            return set()
+
+        if df is None or df.empty:
+            return set()
+
+        if "time" in df.columns:
+            df = df.rename(columns={"time": "timestamp"})
+        df_norm = self._normalize_recovery_keys(df, interval)
+        if not all(c in df_norm.columns for c in key_cols):
+            return set()
+        df_norm = df_norm[key_cols].dropna().drop_duplicates()
+        if df_norm.empty:
+            return set()
+        return set(tuple(row) for row in df_norm.itertuples(index=False, name=None))
+
+
+    def _influx_split_recovery_keys(
+        self,
+        keys_df: pd.DataFrame,
+        measurement: str,
+        interval: str,
+    ) -> tuple[set[tuple], pd.DataFrame]:
+        """Split recovery keys into (existing_keys, missing_keys_df)."""
+        if keys_df is None or keys_df.empty:
+            return set(), keys_df
+
+        keys_norm = self._normalize_recovery_keys(keys_df, interval)
+        key_cols = self._recovery_key_columns(interval, keys_norm)
+        if not key_cols or not all(c in keys_norm.columns for c in key_cols):
+            return set(), keys_norm
+
+        keys_norm = keys_norm[key_cols].dropna().drop_duplicates()
+        if keys_norm.empty:
+            return set(), keys_norm
+
+        if "timestamp" not in keys_norm.columns:
+            return set(), keys_norm
+
+        ts = pd.to_datetime(keys_norm["timestamp"], errors="coerce", utc=True).dropna()
+        if ts.empty:
+            return set(), keys_norm
+
+        start_utc = ts.min().tz_convert("UTC")
+        end_utc = (ts.max().tz_convert("UTC") + pd.Timedelta(seconds=1))
+        existing = self._influx_existing_keys_between(
+            measurement=measurement,
+            interval=interval,
+            start_utc=start_utc,
+            end_utc=end_utc,
+            key_cols=key_cols,
+        )
+
+        if not existing:
+            return set(), keys_norm
+
+        key_tuples = keys_norm.apply(lambda row: tuple(row), axis=1)
+        missing_mask = ~key_tuples.isin(existing)
+        missing_keys = keys_norm.loc[missing_mask].copy()
+        return existing, missing_keys
+
+
+    def _filter_df_against_influx_existing(
+        self,
+        df: pd.DataFrame,
+        measurement: str,
+        interval: str,
+    ) -> pd.DataFrame:
+        """Filter rows that already exist in Influx based on logical keys."""
+        if df is None or df.empty:
+            return df
+
+        df_keys = df.copy()
+        if "timestamp" not in df_keys.columns:
+            if "__ts_utc" in df_keys.columns:
+                df_keys["timestamp"] = pd.to_datetime(df_keys["__ts_utc"], errors="coerce", utc=True)
+            else:
+                return df
+
+        df_norm = self._normalize_recovery_keys(df_keys, interval)
+        key_cols = self._recovery_key_columns(interval, df_norm)
+        if not key_cols or not all(c in df_norm.columns for c in key_cols):
+            return df
+
+        ts = pd.to_datetime(df_norm["timestamp"], errors="coerce", utc=True).dropna()
+        if ts.empty:
+            return df
+
+        start_utc = ts.min().tz_convert("UTC")
+        end_utc = (ts.max().tz_convert("UTC") + pd.Timedelta(seconds=1))
+        existing = self._influx_existing_keys_between(
+            measurement=measurement,
+            interval=interval,
+            start_utc=start_utc,
+            end_utc=end_utc,
+            key_cols=key_cols,
+        )
+        if not existing:
+            return df
+
+        key_tuples = df_norm[key_cols].apply(lambda row: tuple(row), axis=1)
+        keep_mask = ~key_tuples.isin(existing)
+        kept = int(keep_mask.sum())
+        dropped = len(df) - kept
+        if dropped > 0:
+            print(f"[INFLUX][DEDUP-DB] measurement={measurement} removed={dropped} kept={kept}")
+        return df.loc[keep_mask].copy()
+
+
+    def _recovery_key_columns(self, interval: str, df: pd.DataFrame, keys_df: Optional[pd.DataFrame] = None) -> list[str]:
+        cols = ["symbol", "expiration", "strike"]
+        if "right" in df.columns and (keys_df is None or "right" in keys_df.columns):
+            cols.append("right")
+        if interval != "1d":
+            if "timestamp" in df.columns and (keys_df is None or "timestamp" in keys_df.columns):
+                cols.insert(0, "timestamp")
+        if interval == "tick":
+            if "sequence" in df.columns and (keys_df is None or "sequence" in keys_df.columns):
+                cols.append("sequence")
+        return cols
+
+
+    def _filter_df_by_keys(self, df: pd.DataFrame, keys_df: pd.DataFrame, interval: str) -> pd.DataFrame:
+        if df is None or df.empty or keys_df is None or keys_df.empty:
+            return df
+        df_norm = self._normalize_recovery_keys(df, interval)
+        keys_norm = self._normalize_recovery_keys(keys_df, interval)
+        key_cols = self._recovery_key_columns(interval, df_norm, keys_norm)
+        if not key_cols or not all(c in df_norm.columns for c in key_cols):
+            return df
+        keys_unique = keys_norm[key_cols].dropna().drop_duplicates()
+        if keys_unique.empty:
+            return df_norm.iloc[0:0].copy()
+        # Align numeric key types to avoid int/float merge warnings (e.g., strike, sequence).
+        for col in ("strike", "sequence"):
+            if col in key_cols:
+                df_norm[col] = pd.to_numeric(df_norm[col], errors="coerce").astype(float)
+                keys_unique[col] = pd.to_numeric(keys_unique[col], errors="coerce").astype(float)
+        return df_norm.merge(keys_unique, on=key_cols, how="inner")
+
+
+    def _record_missing_enrichment_rows(
+        self,
+        asset: str,
+        symbol: str,
+        interval: str,
+        sink_lower: str,
+        day_iso: str,
+        df: pd.DataFrame,
+        missing_mask: pd.Series,
+        required_cols: list[str],
+    ) -> None:
+        if df is None or df.empty or missing_mask is None or not missing_mask.any():
+            return
+        missing_df = df.loc[missing_mask].copy()
+        if missing_df.empty:
+            return
+
+        if "symbol" not in missing_df.columns:
+            missing_df["symbol"] = symbol
+
+        # Normalize keys for stable matching.
+        if "timestamp" not in missing_df.columns:
+            time_candidates = ["trade_timestamp", "bar_timestamp", "datetime", "date", "created", "last_trade"]
+            tcol = next((c for c in time_candidates if c in missing_df.columns), None)
+            if tcol:
+                ts = pd.to_datetime(missing_df[tcol], errors="coerce", utc=True)
+                missing_df["timestamp"] = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+
+        if "expiration" in missing_df.columns:
+            missing_df["expiration"] = missing_df["expiration"].apply(self._normalize_expiration_value)
+        if "strike" in missing_df.columns:
+            strike_raw = missing_df["strike"].astype(str).str.strip()
+            strike_num = pd.to_numeric(strike_raw, errors="coerce")
+            missing_df["strike"] = [
+                (f"{n:.10f}".rstrip("0").rstrip(".") if pd.notna(n) else r)
+                for r, n in zip(strike_raw, strike_num)
+            ]
+        if "right" in missing_df.columns:
+            missing_df["right"] = (
+                missing_df["right"].astype(str).str.strip().str.lower()
+                .map({"c": "call", "p": "put", "call": "call", "put": "put"})
+                .fillna(missing_df["right"])
+            )
+
+        req_cols = [c for c in required_cols if c in missing_df.columns]
+        if req_cols:
+            missing_df["missing_cols"] = missing_df[req_cols].isna().apply(
+                lambda row: ",".join([req_cols[i] for i, isna in enumerate(row) if isna]),
+                axis=1,
+            )
+        else:
+            missing_df["missing_cols"] = ""
+
+        now_iso = dt.utcnow().replace(microsecond=0).isoformat() + "Z"
+        missing_df["day"] = day_iso
+        missing_df["asset"] = asset
+        missing_df["interval"] = interval
+        missing_df["first_seen_at"] = now_iso
+        missing_df["last_checked_at"] = now_iso
+        missing_df["attempt_count"] = 1
+        missing_df["recovered"] = False
+        missing_df["recovered_at"] = ""
+
+        out_cols = [
+            "day",
+            "timestamp",
+            "symbol",
+            "root",
+            "option_symbol",
+            "expiration",
+            "strike",
+            "right",
+            "sequence",
+            "missing_cols",
+            "asset",
+            "interval",
+            "first_seen_at",
+            "last_checked_at",
+            "attempt_count",
+            "recovered",
+            "recovered_at",
+        ]
+        out_cols = [c for c in out_cols if c in missing_df.columns]
+        missing_df = missing_df[out_cols].copy()
+
+        path = self._missing_enrichment_path(asset, symbol, interval, sink_lower, day_iso)
+        if os.path.exists(path):
+            try:
+                existing = pd.read_csv(path, dtype=str)
+            except Exception as e:
+                print(f"[WARN] Missing-enrichment read failed ({path}): {e}")
+                existing = pd.DataFrame()
+        else:
+            existing = pd.DataFrame()
+
+        key_cols = ["day", "timestamp", "symbol", "expiration", "strike"]
+        if "right" in missing_df.columns:
+            key_cols.append("right")
+        if interval == "tick" and "sequence" in missing_df.columns:
+            key_cols.append("sequence")
+
+        for col in key_cols:
+            if col not in missing_df.columns:
+                missing_df[col] = ""
+            if col not in existing.columns:
+                existing[col] = ""
+
+        merged = existing.copy()
+        if not existing.empty:
+            existing_norm = existing[key_cols].astype(str)
+            existing["__key__"] = existing_norm.apply(lambda row: tuple(row), axis=1)
+        else:
+            existing["__key__"] = pd.Series(dtype=object)
+
+        missing_norm = missing_df[key_cols].astype(str)
+        missing_df["__key__"] = missing_norm.apply(lambda row: tuple(row), axis=1)
+
+        existing_map = {}
+        if not existing.empty:
+            for idx, row in existing.iterrows():
+                existing_map[row["__key__"]] = idx
+
+        for _, row in missing_df.iterrows():
+            key = row["__key__"]
+            if key in existing_map:
+                idx = existing_map[key]
+                first_seen = existing.at[idx, "first_seen_at"] if "first_seen_at" in existing.columns else ""
+                if not first_seen or str(first_seen).strip() == "":
+                    first_seen = now_iso
+                attempt_raw = existing.at[idx, "attempt_count"] if "attempt_count" in existing.columns else "0"
+                try:
+                    attempt_count = int(float(attempt_raw))
+                except Exception:
+                    attempt_count = 0
+                attempt_count += 1
+                for col in missing_df.columns:
+                    if col == "__key__":
+                        continue
+                    merged.at[idx, col] = row[col]
+                merged.at[idx, "first_seen_at"] = first_seen
+                merged.at[idx, "last_checked_at"] = now_iso
+                merged.at[idx, "attempt_count"] = attempt_count
+                merged.at[idx, "recovered"] = False
+                merged.at[idx, "recovered_at"] = ""
+            else:
+                merged = pd.concat([merged, row.to_frame().T], ignore_index=True)
+
+        if "__key__" in merged.columns:
+            merged = merged.drop(columns=["__key__"])
+
+        merged.to_csv(path, index=False)
+        try:
+            self.logger.log_info(
+                symbol=symbol,
+                asset=asset,
+                interval=interval,
+                date_range=(day_iso, day_iso),
+                message=f"Missing-enrichment rows recorded: {len(missing_df)} -> {path}",
+                details={"file": path, "missing_rows": int(len(missing_df))},
+            )
+        except Exception:
+            pass
+
+
+    def _update_missing_enrichment_recovery(
+        self,
+        path: str,
+        interval: str,
+        attempted_keys: set[tuple],
+        recovered_keys: set[tuple],
+    ) -> int:
+        try:
+            df = pd.read_csv(path, dtype=str)
+        except Exception as e:
+            print(f"[WARN] Missing-enrichment read failed ({path}): {e}")
+            return 0
+
+        if df is None or df.empty:
+            return 0
+
+        now_iso = dt.utcnow().replace(microsecond=0).isoformat() + "Z"
+        norm = self._normalize_recovery_keys(df, interval)
+        key_cols = self._recovery_key_columns(interval, norm)
+        if not key_cols:
+            return 0
+
+        key_tuples = norm[key_cols].apply(lambda row: tuple(row), axis=1)
+
+        for idx, key in key_tuples.items():
+            if key in attempted_keys:
+                attempt_raw = df.at[idx, "attempt_count"] if "attempt_count" in df.columns else "0"
+                try:
+                    attempt_count = int(float(attempt_raw))
+                except Exception:
+                    attempt_count = 0
+                df.at[idx, "attempt_count"] = attempt_count + 1
+                df.at[idx, "last_checked_at"] = now_iso
+            if key in recovered_keys:
+                df.at[idx, "recovered"] = True
+                df.at[idx, "recovered_at"] = now_iso
+
+        df.to_csv(path, index=False)
+
+        pending = 0
+        if "recovered" in df.columns:
+            recovered_vals = df["recovered"].astype(str).str.strip().str.lower()
+            pending = int((~recovered_vals.isin(["true", "1", "yes"])).sum())
+        return pending
+
+
+    def _pending_missing_enrichment_rows(self, path: str) -> int:
+        try:
+            df = pd.read_csv(path, dtype=str)
+        except Exception:
+            return 0
+        if df is None or df.empty:
+            return 0
+        if "recovered" not in df.columns:
+            return int(len(df))
+        recovered_vals = df["recovered"].astype(str).str.strip().str.lower()
+        return int((~recovered_vals.isin(["true", "1", "yes"])).sum())
 
 
     
@@ -11963,6 +12960,92 @@ class ThetaSyncManager:
         et = et.replace(minute=(et.minute // minutes) * minutes)
         return et.astimezone(self.UTC)
 
+    def _floor_to_interval_seconds_et(self, ts_utc: dt, seconds: int) -> dt:
+        """Floors a UTC timestamp to the nearest second interval boundary in Eastern Time, then converts back to UTC."""
+        if seconds <= 0:
+            return ts_utc
+        et = ts_utc.astimezone(self.ET)
+        et = et.replace(second=(et.second // seconds) * seconds, microsecond=0)
+        return et.astimezone(self.UTC)
+
+    def _parse_interval_spec(self, interval: str) -> tuple[Optional[str], Optional[int]]:
+        """Parse ThetaData interval strings into (unit, step) for alignment."""
+        iv = (interval or "").strip().lower()
+        if iv == "tick":
+            return "tick", None
+        if iv.endswith("ms") and iv[:-2].isdigit():
+            return "ms", int(iv[:-2])
+        if iv.endswith("s") and iv[:-1].isdigit():
+            return "s", int(iv[:-1])
+        if iv.endswith("m") and iv[:-1].isdigit():
+            return "m", int(iv[:-1])
+        if iv.endswith("h") and iv[:-1].isdigit():
+            return "h", int(iv[:-1])
+        if iv == "1d":
+            return "d", 1
+        return None, None
+
+    def _align_start_time_from_last_ts(
+        self,
+        last_in_day: pd.Timestamp,
+        interval: str,
+        overlap_seconds: int,
+        use_next_when_no_overlap: bool = True,
+        prefer_last_when_aligned: bool = True,
+    ) -> str:
+        """Align start_time (HH:MM:SS ET) to the interval bucket for intraday resume."""
+        last_ts = pd.Timestamp(last_in_day)
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize(self.ET)
+        last_et = last_ts.tz_convert(self.ET)
+        unit, step = self._parse_interval_spec(interval)
+        ov = max(0, int(overlap_seconds or 0))
+
+        if unit in ("m", "h") and step:
+            minutes = step if unit == "m" else step * 60
+            if ov == 0 and use_next_when_no_overlap:
+                next_dt = last_et.to_pydatetime() + timedelta(minutes=minutes)
+                floored_utc = self._floor_to_interval_et(next_dt.astimezone(self.UTC), minutes)
+                return floored_utc.astimezone(self.ET).strftime("%H:%M:%S")
+            if (
+                prefer_last_when_aligned
+                and ov > 0
+                and last_et.second == 0
+                and last_et.microsecond == 0
+                and (last_et.minute % minutes) == 0
+            ):
+                return last_et.strftime("%H:%M:%S")
+            resume_et = last_et - pd.Timedelta(seconds=ov)
+            floored_utc = self._floor_to_interval_et(resume_et.tz_convert(self.UTC), minutes)
+            return floored_utc.astimezone(self.ET).strftime("%H:%M:%S")
+
+        if unit == "s" and step:
+            seconds = step
+            if ov == 0 and use_next_when_no_overlap:
+                next_dt = last_et.to_pydatetime() + timedelta(seconds=seconds)
+                floored_utc = self._floor_to_interval_seconds_et(next_dt.astimezone(self.UTC), seconds)
+                return floored_utc.astimezone(self.ET).strftime("%H:%M:%S")
+            if (
+                prefer_last_when_aligned
+                and ov > 0
+                and last_et.microsecond == 0
+                and (last_et.second % seconds) == 0
+            ):
+                return last_et.strftime("%H:%M:%S")
+            resume_et = last_et - pd.Timedelta(seconds=ov)
+            floored_utc = self._floor_to_interval_seconds_et(resume_et.tz_convert(self.UTC), seconds)
+            return floored_utc.astimezone(self.ET).strftime("%H:%M:%S")
+
+        if unit == "ms":
+            if prefer_last_when_aligned and ov > 0 and last_et.microsecond == 0:
+                return last_et.strftime("%H:%M:%S")
+            # start_time supports seconds only; align to second boundary to avoid drift.
+            resume_et = last_et - pd.Timedelta(seconds=ov)
+            return resume_et.replace(microsecond=0).strftime("%H:%M:%S")
+
+        resume_et = last_et - pd.Timedelta(seconds=ov)
+        return resume_et.replace(microsecond=0).strftime("%H:%M:%S")
+
     # === >>> DATE PARAM HELPERS — BEGIN
     def _iso_date_only(self, s: str) -> str:
         """Extracts the date portion from an ISO datetime string, returning only 'YYYY-MM-DD'.
@@ -12447,7 +13530,8 @@ class ThetaSyncManager:
                 "issues_count": len(report.issues),
                 "missing_days": len(report.missing_days),
                 "intraday_gaps": len(report.intraday_gaps),
-                "tick_volume_mismatches": len(report.tick_volume_mismatches)
+                "tick_volume_mismatches": len(report.tick_volume_mismatches),
+                "missing_enrichment_files": len(report.missing_enrichment_files)
             }
         )
 
@@ -12467,6 +13551,7 @@ class ThetaSyncManager:
                     "missing_days": len(report.missing_days),
                     "intraday_gaps": len(report.intraday_gaps),
                     "tick_volume_mismatches": len(report.tick_volume_mismatches),
+                    "missing_enrichment_files": len(report.missing_enrichment_files),
                     "enrich_greeks": enrich_greeks
                 }
             )
