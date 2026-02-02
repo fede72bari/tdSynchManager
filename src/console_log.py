@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import inspect
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
@@ -11,11 +12,14 @@ __all__ = [
     "log_console",
     "set_log_verbosity",
     "get_log_verbosity",
+    "set_log_context",
+    "reset_log_context",
 ]
 
 _ALLOWED_LOG_TYPES = {"OPERATION", "WARNING", "ERROR", "DEBUG"}
 _DEFAULT_LOG_VERBOSITY = 3
 _LOG_VERBOSITY = _DEFAULT_LOG_VERBOSITY
+_LOG_CONTEXT: ContextVar[Optional[dict]] = ContextVar("tdsynch_log_context", default=None)
 
 
 def set_log_verbosity(level: int) -> None:
@@ -30,6 +34,29 @@ def set_log_verbosity(level: int) -> None:
 def get_log_verbosity() -> int:
     """Return the current global console log verbosity."""
     return _LOG_VERBOSITY
+
+
+def set_log_context(
+    *,
+    symbol: Any = None,
+    asset: Any = None,
+    interval: Any = None,
+    class_func: Optional[str] = None,
+):
+    """Set a context for subsequent log lines (useful for async tasks)."""
+    return _LOG_CONTEXT.set(
+        {
+            "symbol": symbol,
+            "asset": asset,
+            "interval": interval,
+            "class_func": class_func,
+        }
+    )
+
+
+def reset_log_context(token) -> None:
+    """Reset context to the previous value."""
+    _LOG_CONTEXT.reset(token)
 
 
 def _get_raw_print():
@@ -155,6 +182,17 @@ def log_console(
     message = sep.join(str(arg) for arg in args)
     if end != "\n":
         message = f"{message}{end}"
+
+    ctx = _LOG_CONTEXT.get()
+    if ctx:
+        if symbol is None:
+            symbol = ctx.get("symbol")
+        if asset is None:
+            asset = ctx.get("asset")
+        if interval is None:
+            interval = ctx.get("interval")
+        if class_func is None:
+            class_func = ctx.get("class_func")
 
     frame = inspect.currentframe()
     caller = frame.f_back if frame else None

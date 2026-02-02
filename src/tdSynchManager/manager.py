@@ -26,7 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from clients.ThetaDataV3Client import Interval, ThetaDataV3Client, ResilientThetaClient
-from console_log import log_console, set_log_verbosity
+from console_log import log_console, set_log_verbosity, set_log_context, reset_log_context
 from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
 from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
@@ -941,8 +941,12 @@ class ThetaSyncManager:
         # This is an internal helper method called by:
         # - run() to spawn each symbol+interval sync job with concurrency control
         """
-        async with self._sem:
-            await self._sync_symbol(task, symbol, interval, first_date)
+        token = set_log_context(symbol=symbol, asset=task.asset, interval=interval)
+        try:
+            async with self._sem:
+                await self._sync_symbol(task, symbol, interval, first_date)
+        finally:
+            reset_log_context(token)
 
     async def _is_trading_day(self, date_obj: date) -> bool:
         """Check if a specific date is a trading day using ThetaData /calendar_on_date API.
