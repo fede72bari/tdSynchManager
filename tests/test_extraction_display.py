@@ -3,6 +3,7 @@
 Comprehensive test of get_* parameters with display output.
 Extracts 5 rows, 5 minutes, 2 days from beginning and end of all available databases.
 """
+from console_log import log_console
 
 import sys
 sys.path.insert(0, 'src')
@@ -17,18 +18,18 @@ from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 def display_extraction(title, df, warnings):
     """Display extraction results with first and last rows."""
-    print("\n" + "=" * 80)
-    print(title)
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console(title)
+    log_console("=" * 80)
 
     if warnings:
-        print(f"WARNING: {warnings}")
+        log_console(f"WARNING: {warnings}")
 
     if df is None or len(df) == 0:
-        print("FAIL: No data returned")
+        log_console("FAIL: No data returned")
         return
 
-    print(f"OK: Got {len(df)} rows")
+    log_console(f"OK: Got {len(df)} rows")
 
     # Show time range
     if 'timestamp' in df.columns:
@@ -37,8 +38,8 @@ def display_extraction(title, df, warnings):
         time_min = df_copy['timestamp'].min()
         time_max = df_copy['timestamp'].max()
         time_span = time_max - time_min
-        print(f"Time range: {time_min} to {time_max}")
-        print(f"Span: {time_span}")
+        log_console(f"Time range: {time_min} to {time_max}")
+        log_console(f"Span: {time_span}")
 
     # Display columns to show
     display_cols = []
@@ -57,20 +58,20 @@ def display_extraction(title, df, warnings):
         display_cols = list(df.columns[:5])
 
     # Show first 3 rows
-    print(f"\nFirst 3 rows:")
+    log_console(f"\nFirst 3 rows:")
     display(df[display_cols].head(3))
 
     # Show last 3 rows
     if len(df) > 3:
-        print(f"\nLast 3 rows:")
+        log_console(f"\nLast 3 rows:")
         display(df[display_cols].tail(3))
 
 
 async def main():
     """Main test function."""
-    print("=" * 80)
-    print("COMPREHENSIVE GET_* PARAMETERS TEST WITH DISPLAY OUTPUT")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("COMPREHENSIVE GET_* PARAMETERS TEST WITH DISPLAY OUTPUT")
+    log_console("=" * 80)
 
     # Create manager
     cfg = ManagerConfig(
@@ -85,12 +86,12 @@ async def main():
         manager = ThetaSyncManager(cfg, client)
 
         # Get available data
-        print("\nScanning available data...")
+        log_console("\nScanning available data...")
         available = manager.list_available_data()
-        print(f"OK: Found {len(available)} data series\n")
+        log_console(f"OK: Found {len(available)} data series\n")
 
         # Show available data
-        print("Available data series:")
+        log_console("Available data series:")
         display(available[['asset', 'symbol', 'interval', 'sink', 'first_datetime', 'last_datetime']])
 
         # Process each data series
@@ -101,9 +102,9 @@ async def main():
             sink = row['sink']
             start = pd.to_datetime(row['first_datetime']).strftime("%Y-%m-%d")
 
-            print("\n" + "=" * 80)
-            print(f"SERIES: {symbol} ({asset}) - {interval} - {sink}")
-            print("=" * 80)
+            log_console("\n" + "=" * 80)
+            log_console(f"SERIES: {symbol} ({asset}) - {interval} - {sink}")
+            log_console("=" * 80)
 
             # =====================================================================
             # TEST 1: get_first_n_rows=5
@@ -182,12 +183,12 @@ async def main():
         # =====================================================================
         # SUMMARY
         # =====================================================================
-        print("\n" + "=" * 80)
-        print("ALL EXTRACTION TESTS COMPLETED")
-        print("=" * 80)
-        print(f"Total data series tested: {len(available)}")
-        print(f"Tests per series: 6 (rows, minutes, days x 2)")
-        print(f"Total extractions performed: {len(available) * 6}")
+        log_console("\n" + "=" * 80)
+        log_console("ALL EXTRACTION TESTS COMPLETED")
+        log_console("=" * 80)
+        log_console(f"Total data series tested: {len(available)}")
+        log_console(f"Tests per series: 6 (rows, minutes, days x 2)")
+        log_console(f"Total extractions performed: {len(available) * 6}")
 
 
 if __name__ == "__main__":

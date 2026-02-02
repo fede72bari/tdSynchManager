@@ -6,6 +6,7 @@ This script mirrors the same configuration you use for sync jobs (explicit Manag
 and offers optional controls to include or skip the InfluxDB scan, which can take a while
 on large buckets. Adjust the constants below to match your workstation.
 """
+from console_log import log_console
 
 import os
 import sys
@@ -64,14 +65,14 @@ def _show_df(df):
     if _ipython_display:
         _ipython_display(df)
     else:
-        print(df.to_string())
+        log_console(df.to_string())
 
 
 def _print_view(title: str, df, columns=None) -> None:
     """Pretty-print a filtered DataFrame, handling empty frames and missing columns."""
-    print(f"\n{title}")
+    log_console(f"\n{title}")
     if df.empty:
-        print("   (no data)")
+        log_console("   (no data)")
         return
     view = df
     if columns:
@@ -85,17 +86,17 @@ def _collect_stats() -> pd.DataFrame:
     """Collect stats per sink, optionally including InfluxDB."""
     frames = []
 
-    print("[INFO] Scansione CSV...")
+    log_console("[INFO] Scansione CSV...")
     frames.append(manager.get_storage_stats(sink="csv"))
 
-    print("[INFO] Scansione Parquet...")
+    log_console("[INFO] Scansione Parquet...")
     frames.append(manager.get_storage_stats(sink="parquet"))
 
     if SCAN_INFLUX:
         symbol_filters = list(INFLUX_SYMBOL_FILTERS) if INFLUX_SYMBOL_FILTERS else [None]
         for sym in symbol_filters:
             label = sym or "tutti i simboli"
-            print(f"[INFO] Scansione InfluxDB ({label})... potrebbe richiedere tempo.")
+            log_console(f"[INFO] Scansione InfluxDB ({label})... potrebbe richiedere tempo.")
             stats_df = manager.get_storage_stats(sink="influxdb", symbol=sym)
             if DEBUG_INFLUX_SIZE and not stats_df.empty:
                 for _, row in stats_df.iterrows():
@@ -103,18 +104,18 @@ def _collect_stats() -> pd.DataFrame:
                     asset = row["asset"]
                     interval = row["interval"]
                     measurement = f"{symbol}-{asset}-{interval}"
-                    print(f"[DEBUG] Misura {measurement}")
+                    log_console(f"[DEBUG] Misura {measurement}")
                     total_size = 0
                     file_count = 0
                     for file_path in manager._iter_influx_parquet_files(measurement):
                         file_size = os.path.getsize(file_path)
                         total_size += file_size
                         file_count += 1
-                        print(f"    {file_path}: {file_size} bytes")
-                    print(f"    -> totale {file_count} file, {total_size} bytes\n")
+                        log_console(f"    {file_path}: {file_size} bytes")
+                    log_console(f"    -> totale {file_count} file, {total_size} bytes\n")
             frames.append(stats_df)
     else:
-        print("[INFO] Scansione InfluxDB disattivata (imposta SCAN_INFLUX=True per abilitarla).")
+        log_console("[INFO] Scansione InfluxDB disattivata (imposta SCAN_INFLUX=True per abilitarla).")
 
     frames = [df for df in frames if not df.empty]
     if not frames:
@@ -180,19 +181,19 @@ def _build_summary(stats: pd.DataFrame) -> dict:
     }
 
 
-print("=" * 80)
-print("STORAGE STATISTICS - DETAILED VIEW")
-print("=" * 80)
+log_console("=" * 80)
+log_console("STORAGE STATISTICS - DETAILED VIEW")
+log_console("=" * 80)
 
 stats = _collect_stats()
 
-print(f"\nFound {len(stats)} data series")
-print("\nDetailed statistics (sorted by size):")
+log_console(f"\nFound {len(stats)} data series")
+log_console("\nDetailed statistics (sorted by size):")
 _print_view("All series:", stats.sort_values("size_bytes", ascending=False))
 
-print("\n" + "=" * 80)
-print("FILTERED VIEWS")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("FILTERED VIEWS")
+log_console("=" * 80)
 
 _print_view(
     "1. Options only:",
@@ -215,43 +216,43 @@ _print_view(
     ["symbol", "asset", "sink", "size_mb"],
 )
 
-print("\n" + "=" * 80)
-print("STORAGE SUMMARY - AGGREGATED VIEW")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("STORAGE SUMMARY - AGGREGATED VIEW")
+log_console("=" * 80)
 
 summary = _build_summary(stats)
 
-print("\nTOTAL STORAGE:")
+log_console("\nTOTAL STORAGE:")
 total = summary["total"]
-print(f"   Size: {total['size_gb']:.3f} GB ({total['size_mb']:.2f} MB)")
-print(f"   Series: {total['series_count']}")
+log_console(f"   Size: {total['size_gb']:.3f} GB ({total['size_mb']:.2f} MB)")
+log_console(f"   Series: {total['series_count']}")
 
-print("\nBY SINK:")
+log_console("\nBY SINK:")
 for sink, data in summary["by_sink"].items():
-    print(
+    log_console(
         f"   {sink:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  "
         f"[{data['series_count']} series]"
     )
 
-print("\nBY ASSET:")
+log_console("\nBY ASSET:")
 for asset, data in summary["by_asset"].items():
-    print(
+    log_console(
         f"   {asset:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  "
         f"[{data['series_count']} series]"
     )
 
-print("\nBY INTERVAL:")
+log_console("\nBY INTERVAL:")
 for interval, data in summary["by_interval"].items():
-    print(
+    log_console(
         f"   {interval:12s}: {data['size_gb']:8.3f} GB  ({data['percentage']:5.1f}%)  "
         f"[{data['series_count']} series]"
     )
 
-print("\nTOP 10 SYMBOLS BY SIZE:")
+log_console("\nTOP 10 SYMBOLS BY SIZE:")
 for i, symbol_data in enumerate(summary["top_symbols"], 1):
     symbol = symbol_data["symbol"]
     size_gb = symbol_data["size_gb"]
     pct = symbol_data["percentage"]
-    print(f"   {i:2d}. {symbol:8s}: {size_gb:8.3f} GB  ({pct:5.1f}%)")
+    log_console(f"   {i:2d}. {symbol:8s}: {size_gb:8.3f} GB  ({pct:5.1f}%)")
 
-print("\n" + "=" * 80)
+log_console("\n" + "=" * 80)

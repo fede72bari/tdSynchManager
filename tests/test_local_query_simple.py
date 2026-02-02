@@ -1,4 +1,5 @@
 """Simple test for LOCAL DB QUERY functions without async client."""
+from console_log import log_console
 import sys
 import os
 sys.path.insert(0, 'src')
@@ -19,35 +20,35 @@ def test_list_available():
     cfg = ManagerConfig(root_dir="./", max_concurrency=5)
     manager = ThetaSyncManager(cfg, MockClient())
     
-    print("=" * 70)
-    print("TEST: list_available_data()")
-    print("=" * 70)
+    log_console("=" * 70)
+    log_console("TEST: list_available_data()")
+    log_console("=" * 70)
     
     # List all available data
     try:
         available = manager.list_available_data()
-        print(f"\nFound {len(available)} data series")
+        log_console(f"\nFound {len(available)} data series")
         
         if not available.empty:
-            print("\nAvailable data:")
-            print(available.to_string())
+            log_console("\nAvailable data:")
+            log_console(available.to_string())
             
-            print(f"\nColumns: {list(available.columns)}")
+            log_console(f"\nColumns: {list(available.columns)}")
             
             # Show first entry details
-            print(f"\nFirst entry:")
+            log_console(f"\nFirst entry:")
             first = available.iloc[0]
             for col in available.columns:
-                print(f"  {col}: {first[col]}")
+                log_console(f"  {col}: {first[col]}")
             
             return available
         else:
-            print("\nNo data found in ./data directory")
-            print("This is normal if you haven't synced any data yet.")
+            log_console("\nNo data found in ./data directory")
+            log_console("This is normal if you haven't synced any data yet.")
             return available
             
     except Exception as e:
-        print(f"Error: {e}")
+        log_console(f"Error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -57,16 +58,16 @@ def test_query_data(available):
     """Test query_local_data() function."""
     
     if available is None or available.empty:
-        print("\nSkipping query test - no data available")
+        log_console("\nSkipping query test - no data available")
         return
     
     # Initialize manager with mock client
     cfg = ManagerConfig(root_dir="./", max_concurrency=5)
     manager = ThetaSyncManager(cfg, MockClient())
     
-    print("\n" + "=" * 70)
-    print("TEST: query_local_data()")
-    print("=" * 70)
+    log_console("\n" + "=" * 70)
+    log_console("TEST: query_local_data()")
+    log_console("=" * 70)
     
     # Use first available series
     first = available.iloc[0]
@@ -75,7 +76,7 @@ def test_query_data(available):
     interval = first['interval']
     sink = first['sink']
     
-    print(f"\nQuerying: {asset}/{symbol}/{interval} from {sink}")
+    log_console(f"\nQuerying: {asset}/{symbol}/{interval} from {sink}")
     
     try:
         # Get start date
@@ -85,8 +86,8 @@ def test_query_data(available):
         else:
             start_date = "2024-01-01"  # fallback
         
-        print(f"  Start date: {start_date}")
-        print(f"  Max rows: 10")
+        log_console(f"  Start date: {start_date}")
+        log_console(f"  Max rows: 10")
         
         df, warnings = manager.query_local_data(
             asset=asset,
@@ -98,26 +99,26 @@ def test_query_data(available):
         )
         
         if warnings:
-            print(f"\nWarnings:")
+            log_console(f"\nWarnings:")
             for w in warnings:
-                print(f"  - {w}")
+                log_console(f"  - {w}")
         
         if df is not None:
-            print(f"\nSuccess! Retrieved {len(df)} rows")
-            print(f"Columns: {list(df.columns)}")
-            print(f"\nFirst 5 rows:")
-            print(df.head().to_string())
+            log_console(f"\nSuccess! Retrieved {len(df)} rows")
+            log_console(f"Columns: {list(df.columns)}")
+            log_console(f"\nFirst 5 rows:")
+            log_console(df.head().to_string())
         else:
-            print("\nNo data returned (check warnings above)")
+            log_console("\nNo data returned (check warnings above)")
             
     except Exception as e:
-        print(f"Error: {e}")
+        log_console(f"Error: {e}")
         import traceback
         traceback.print_exc()
 
 
 if __name__ == "__main__":
-    print("Testing LOCAL DB QUERY functions\n")
+    log_console("Testing LOCAL DB QUERY functions\n")
     
     # Test 1: List available data
     available = test_list_available()
@@ -126,6 +127,6 @@ if __name__ == "__main__":
     if available is not None:
         test_query_data(available)
     
-    print("\n" + "=" * 70)
-    print("Tests completed")
-    print("=" * 70)
+    log_console("\n" + "=" * 70)
+    log_console("Tests completed")
+    log_console("=" * 70)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from console_log import log_console
 
 import asyncio
 import json
@@ -5603,10 +5604,10 @@ async def test_all_endpoints():
     results = []
     
     async with client:
-        print(f"Testing {len(test_cases)} endpoints...")
+        log_console(f"Testing {len(test_cases)} endpoints...")
         
         for i, (test_name, func, args) in enumerate(test_cases, 1):
-            print(f"[{i:2d}/{len(test_cases)}] Testing {test_name}...")
+            log_console(f"[{i:2d}/{len(test_cases)}] Testing {test_name}...")
             
             try:
                 data, url = await func(*args)
@@ -5776,21 +5777,21 @@ async def test_all_endpoints():
     category_stats['Total'] = category_stats['Total'].astype(int)
     
     # Print comprehensive report
-    print(f"\n{'='*100}")
-    print(f"COMPREHENSIVE TEST REPORT - ThetaData v3 API Client")
-    print(f"{'='*100}")
-    print(f"Overall Statistics:")
-    print(f"  Total Tests: {total_tests}")
-    print(f"  Successful: {successful_tests}")
-    print(f"  Failed: {total_tests - successful_tests}")
-    print(f"  Overall Success Rate: {(successful_tests / total_tests * 100):.1f}%")
-    print(f"\nBy Category:")
+    log_console(f"\n{'='*100}")
+    log_console(f"COMPREHENSIVE TEST REPORT - ThetaData v3 API Client")
+    log_console(f"{'='*100}")
+    log_console(f"Overall Statistics:")
+    log_console(f"  Total Tests: {total_tests}")
+    log_console(f"  Successful: {successful_tests}")
+    log_console(f"  Failed: {total_tests - successful_tests}")
+    log_console(f"  Overall Success Rate: {(successful_tests / total_tests * 100):.1f}%")
+    log_console(f"\nBy Category:")
     for category, stats in category_stats.iterrows():
         successful = int(stats['Successful'])
         total = int(stats['Total'])
         success_rate = stats['Success Rate %']
-        print(f"  {category:<8}: {successful:2d}/{total:2d} ({success_rate:5.1f}%)")
-    print(f"{'='*100}\n")
+        log_console(f"  {category:<8}: {successful:2d}/{total:2d} ({success_rate:5.1f}%)")
+    log_console(f"{'='*100}\n")
     
     return df_results
     
@@ -5834,7 +5835,7 @@ async def test_all_endpoints():
 # Helper function for Jupyter Notebook execution
 async def run_comprehensive_tests():
     """Helper function to run all tests in Jupyter."""
-    print("Helper function to run all tests in Jupyter.")
+    log_console("Helper function to run all tests in Jupyter.")
     results_df = await test_all_endpoints()
     display(results_df)
     return results_df
@@ -6435,10 +6436,10 @@ async def test_all_endpoints():
     results = []
     
     async with client:
-        print(f"Testing {len(test_cases)} endpoints...")
+        log_console(f"Testing {len(test_cases)} endpoints...")
         
         for i, (test_name, func, args) in enumerate(test_cases, 1):
-            print(f"[{i:2d}/{len(test_cases)}] Testing {test_name}...")
+            log_console(f"[{i:2d}/{len(test_cases)}] Testing {test_name}...")
             
             try:
                 data, url = await func(*args)
@@ -6608,21 +6609,21 @@ async def test_all_endpoints():
     category_stats['Total'] = category_stats['Total'].astype(int)
     
     # Print comprehensive report
-    print(f"\n{'='*100}")
-    print(f"COMPREHENSIVE TEST REPORT - ThetaData v3 API Client")
-    print(f"{'='*100}")
-    print(f"Overall Statistics:")
-    print(f"  Total Tests: {total_tests}")
-    print(f"  Successful: {successful_tests}")
-    print(f"  Failed: {total_tests - successful_tests}")
-    print(f"  Overall Success Rate: {(successful_tests / total_tests * 100):.1f}%")
-    print(f"\nBy Category:")
+    log_console(f"\n{'='*100}")
+    log_console(f"COMPREHENSIVE TEST REPORT - ThetaData v3 API Client")
+    log_console(f"{'='*100}")
+    log_console(f"Overall Statistics:")
+    log_console(f"  Total Tests: {total_tests}")
+    log_console(f"  Successful: {successful_tests}")
+    log_console(f"  Failed: {total_tests - successful_tests}")
+    log_console(f"  Overall Success Rate: {(successful_tests / total_tests * 100):.1f}%")
+    log_console(f"\nBy Category:")
     for category, stats in category_stats.iterrows():
         successful = int(stats['Successful'])
         total = int(stats['Total'])
         success_rate = stats['Success Rate %']
-        print(f"  {category:<8}: {successful:2d}/{total:2d} ({success_rate:5.1f}%)")
-    print(f"{'='*100}\n")
+        log_console(f"  {category:<8}: {successful:2d}/{total:2d} ({success_rate:5.1f}%)")
+    log_console(f"{'='*100}\n")
     
     return df_results
     
@@ -6666,7 +6667,7 @@ async def test_all_endpoints():
 # Helper function for Jupyter Notebook execution
 async def run_comprehensive_tests():
     """Helper function to run all tests in Jupyter."""
-    print("Helper function to run all tests in Jupyter.")
+    log_console("Helper function to run all tests in Jupyter.")
     results_df = await test_all_endpoints()
     display(results_df)
     return results_df

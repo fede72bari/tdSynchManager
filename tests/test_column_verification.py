@@ -1,6 +1,7 @@
 """
 Verify actual column names returned by ThetaData API for EOD option data
 """
+from console_log import log_console
 
 import asyncio
 import pandas as pd
@@ -8,13 +9,13 @@ from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from datetime import datetime
 
 async def main():
-    print("\n" + "="*80)
-    print("COLUMN NAME VERIFICATION TEST")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("COLUMN NAME VERIFICATION TEST")
+    log_console("="*80)
 
     async with ThetaDataV3Client() as client:
         # Test EOD option data with greeks
-        print("\nFetching EOD option data for TLRY (2025-11-19)...")
+        log_console("\nFetching EOD option data for TLRY (2025-11-19)...")
 
         try:
             # Get option data with greeks for an intraday interval
@@ -29,37 +30,37 @@ async def main():
 
             df = pd.DataFrame(result)
 
-            print(f"\n[OK] Data fetched successfully!")
-            print(f"   Rows: {len(df)}")
-            print(f"\nActual columns returned by ThetaData API:")
-            print("="*80)
+            log_console(f"\n[OK] Data fetched successfully!")
+            log_console(f"   Rows: {len(df)}")
+            log_console(f"\nActual columns returned by ThetaData API:")
+            log_console("="*80)
             for i, col in enumerate(df.columns, 1):
-                print(f"  {i:2d}. {col}")
+                log_console(f"  {i:2d}. {col}")
 
-            print(f"\nColumn name check:")
-            print("="*80)
+            log_console(f"\nColumn name check:")
+            log_console("="*80)
             if 'implied_vol' in df.columns:
-                print("  [OK] 'implied_vol' - PRESENT (correct API V3 name)")
+                log_console("  [OK] 'implied_vol' - PRESENT (correct API V3 name)")
             else:
-                print("  [ERROR] 'implied_vol' - MISSING")
+                log_console("  [ERROR] 'implied_vol' - MISSING")
 
             if 'implied_volatility' in df.columns:
-                print("  [WARN] 'implied_volatility' - PRESENT (old name, unexpected)")
+                log_console("  [WARN] 'implied_volatility' - PRESENT (old name, unexpected)")
             else:
-                print("  [OK] 'implied_volatility' - ABSENT (as expected)")
+                log_console("  [OK] 'implied_volatility' - ABSENT (as expected)")
 
-            print(f"\nSample data (first 3 rows):")
-            print("="*80)
-            print(df.head(3).to_string())
+            log_console(f"\nSample data (first 3 rows):")
+            log_console("="*80)
+            log_console(df.head(3).to_string())
 
         except Exception as e:
-            print(f"\n[ERROR] Error fetching data: {e}")
+            log_console(f"\n[ERROR] Error fetching data: {e}")
             import traceback
             traceback.print_exc()
 
-    print("\n" + "="*80)
-    print("TEST COMPLETE")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST COMPLETE")
+    log_console("="*80)
 
 if __name__ == "__main__":
     asyncio.run(main())

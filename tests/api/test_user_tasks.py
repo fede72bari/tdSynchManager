@@ -1,6 +1,7 @@
 """
 Test complete user tasks (AAL + XOM, options 1d + 5m, mild_skip)
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -16,9 +17,9 @@ from tdSynchManager.credentials import get_influx_credentials
 
 
 async def main():
-    print("=" * 80)
-    print("TEST: User Tasks (AAL + XOM, options 1d + 5m, mild_skip)")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: User Tasks (AAL + XOM, options 1d + 5m, mild_skip)")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -72,13 +73,13 @@ async def main():
         ),
     ]
 
-    print(f"\nConfiguration:")
-    print(f"  Symbols: {symbols}")
-    print(f"  Intervals: 1d, 5m")
-    print(f"  Date range: 2020-01-02 to 2025-11-25")
-    print(f"  Discover policy: mild_skip")
-    print(f"  Max concurrency: {cfg.max_concurrency}")
-    print("-" * 80)
+    log_console(f"\nConfiguration:")
+    log_console(f"  Symbols: {symbols}")
+    log_console(f"  Intervals: 1d, 5m")
+    log_console(f"  Date range: 2020-01-02 to 2025-11-25")
+    log_console(f"  Discover policy: mild_skip")
+    log_console(f"  Max concurrency: {cfg.max_concurrency}")
+    log_console("-" * 80)
 
     async with ThetaDataV3Client(
         timeout_total=1800.0,
@@ -88,9 +89,9 @@ async def main():
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """
 Test TICK data on fresh/non-existent table to verify table creation handling
 """
+from console_log import log_console
 
 import asyncio
 import pandas as pd
@@ -38,13 +39,13 @@ cfg = ManagerConfig(
 
 async def main():
     """Test tick data on fresh table"""
-    print("\n" + "="*80)
-    print("TEST: TICK DATA ON FRESH/NON-EXISTENT TABLE")
-    print("="*80)
-    print(f"Testing symbols: {symbols}")
-    print(f"Validation enabled: {cfg.enable_data_validation}")
-    print(f"Strict mode: {cfg.validation_strict_mode}")
-    print("")
+    log_console("\n" + "="*80)
+    log_console("TEST: TICK DATA ON FRESH/NON-EXISTENT TABLE")
+    log_console("="*80)
+    log_console(f"Testing symbols: {symbols}")
+    log_console(f"Validation enabled: {cfg.enable_data_validation}")
+    log_console(f"Strict mode: {cfg.validation_strict_mode}")
+    log_console("")
 
     # First, check if table exists and drop it if present
     client = InfluxDBClient3(
@@ -55,19 +56,19 @@ async def main():
 
     try:
         measurement = "TLRY-option-tick"
-        print(f"[SETUP] Checking if {measurement} exists...")
+        log_console(f"[SETUP] Checking if {measurement} exists...")
         result = client.query("SHOW TABLES")
         tables_df = result.to_pandas()
         table_exists = measurement in tables_df['table_name'].values
 
         if table_exists:
-            print(f"[SETUP] Table {measurement} exists. Dropping it for fresh test...")
+            log_console(f"[SETUP] Table {measurement} exists. Dropping it for fresh test...")
             # Note: InfluxDB v3 doesn't support DROP TABLE, so we'll just proceed
-            print(f"[SETUP] NOTE: Cannot drop table in InfluxDB v3. Test will resume from existing data.")
+            log_console(f"[SETUP] NOTE: Cannot drop table in InfluxDB v3. Test will resume from existing data.")
         else:
-            print(f"[SETUP] Table {measurement} does not exist. Perfect for testing table creation!")
+            log_console(f"[SETUP] Table {measurement} does not exist. Perfect for testing table creation!")
     except Exception as e:
-        print(f"[SETUP] Error checking table: {e}")
+        log_console(f"[SETUP] Error checking table: {e}")
     finally:
         client.close()
 
@@ -84,13 +85,13 @@ async def main():
         discover_policy=DiscoverPolicy(mode="skip")
     )
 
-    print("\n[TEST] Starting download...")
+    log_console("\n[TEST] Starting download...")
     async with ThetaDataV3Client() as td_client:
         install_td_server_error_logger(td_client)
         manager = ThetaSyncManager(cfg, client=td_client)
         await manager.run([task])
 
-    print("\n[TEST] Download completed.")
+    log_console("\n[TEST] Download completed.")
 
     # Check if table was created
     client = InfluxDBClient3(
@@ -106,7 +107,7 @@ async def main():
         table_exists = measurement in tables_df['table_name'].values
 
         if table_exists:
-            print(f"\n[RESULT] ✅ Table {measurement} was created successfully!")
+            log_console(f"\n[RESULT] ✅ Table {measurement} was created successfully!")
 
             # Query some data
             query = f'''
@@ -117,12 +118,12 @@ async def main():
             '''
             result = client.query(query)
             df = result.to_pandas()
-            print(f"\n[RESULT] Sample data ({len(df)} rows):")
-            print(df.to_string())
+            log_console(f"\n[RESULT] Sample data ({len(df)} rows):")
+            log_console(df.to_string())
         else:
-            print(f"\n[RESULT] ❌ Table {measurement} was NOT created!")
+            log_console(f"\n[RESULT] ❌ Table {measurement} was NOT created!")
     except Exception as e:
-        print(f"\n[RESULT] Error querying table: {e}")
+        log_console(f"\n[RESULT] Error querying table: {e}")
     finally:
         client.close()
 
@@ -134,22 +135,22 @@ async def main():
         log_files = glob.glob(os.path.join(log_dir, "data_consistency_*.parquet"))
         if log_files:
             latest_log = max(log_files, key=os.path.getmtime)
-            print(f"\n[LOGGER] Latest log file: {os.path.basename(latest_log)}")
+            log_console(f"\n[LOGGER] Latest log file: {os.path.basename(latest_log)}")
             try:
                 log_df = pd.read_parquet(latest_log)
-                print(f"[LOGGER] Total log entries: {len(log_df)}")
-                print("\n[LOGGER] Last 10 entries:")
-                print(log_df.tail(10).to_string())
+                log_console(f"[LOGGER] Total log entries: {len(log_df)}")
+                log_console("\n[LOGGER] Last 10 entries:")
+                log_console(log_df.tail(10).to_string())
             except Exception as e:
-                print(f"[LOGGER] Error reading log: {e}")
+                log_console(f"[LOGGER] Error reading log: {e}")
         else:
-            print("\n[LOGGER] No log files found")
+            log_console("\n[LOGGER] No log files found")
     else:
-        print(f"\n[LOGGER] Log directory not found: {log_dir}")
+        log_console(f"\n[LOGGER] Log directory not found: {log_dir}")
 
-    print("\n" + "="*80)
-    print("TEST COMPLETED")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST COMPLETED")
+    log_console("="*80)
 
 
 if __name__ == "__main__":

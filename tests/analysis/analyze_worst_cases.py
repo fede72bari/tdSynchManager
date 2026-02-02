@@ -1,3 +1,4 @@
+from console_log import log_console
 import re
 from datetime import datetime
 from collections import defaultdict
@@ -104,10 +105,10 @@ for date in sorted(day_data.keys()):
 # Sort by duration
 day_stats_sorted = sorted(day_stats, key=lambda x: x['duration_sec'], reverse=True)
 
-print('=' * 80)
-print('ANALISI CASI PEGGIORI - GIORNATE PIÙ LENTE')
-print('=' * 80)
-print()
+log_console('=' * 80)
+log_console('ANALISI CASI PEGGIORI - GIORNATE PIÙ LENTE')
+log_console('=' * 80)
+log_console()
 
 # Distribuzione per tempo
 durations = [d['duration_sec'] for d in day_stats]
@@ -117,23 +118,23 @@ count_300s = len([d for d in durations if d > 300])
 count_600s = len([d for d in durations if d > 600])
 count_1800s = len([d for d in durations if d > 1800])
 
-print('DISTRIBUZIONE DURATE:')
-print('  Totale giorni: {}'.format(len(day_stats)))
-print('  >30s (0.5 min): {} giorni ({:.1f}%)'.format(count_30s, 100*count_30s/len(day_stats)))
-print('  >120s (2 min): {} giorni ({:.1f}%)'.format(count_120s, 100*count_120s/len(day_stats)))
-print('  >300s (5 min): {} giorni ({:.1f}%)'.format(count_300s, 100*count_300s/len(day_stats)))
-print('  >600s (10 min): {} giorni ({:.1f}%)'.format(count_600s, 100*count_600s/len(day_stats)))
-print('  >1800s (30 min): {} giorni ({:.1f}%)'.format(count_1800s, 100*count_1800s/len(day_stats)))
-print()
+log_console('DISTRIBUZIONE DURATE:')
+log_console('  Totale giorni: {}'.format(len(day_stats)))
+log_console('  >30s (0.5 min): {} giorni ({:.1f}%)'.format(count_30s, 100*count_30s/len(day_stats)))
+log_console('  >120s (2 min): {} giorni ({:.1f}%)'.format(count_120s, 100*count_120s/len(day_stats)))
+log_console('  >300s (5 min): {} giorni ({:.1f}%)'.format(count_300s, 100*count_300s/len(day_stats)))
+log_console('  >600s (10 min): {} giorni ({:.1f}%)'.format(count_600s, 100*count_600s/len(day_stats)))
+log_console('  >1800s (30 min): {} giorni ({:.1f}%)'.format(count_1800s, 100*count_1800s/len(day_stats)))
+log_console()
 
 # Top 10 giorni peggiori
-print('=' * 80)
-print('TOP 10 GIORNI PIÙ LENTI:')
-print('=' * 80)
+log_console('=' * 80)
+log_console('TOP 10 GIORNI PIÙ LENTI:')
+log_console('=' * 80)
 header = '{:<10} {:<10} {:<19} {:>10} {:>8} {:>8} {:>7}'.format(
     'Date', 'Symbol', 'Start Time', 'Duration', 'Greeks', 'Slow', 'Rows')
-print(header)
-print('-' * 80)
+log_console(header)
+log_console('-' * 80)
 
 for i, d in enumerate(day_stats_sorted[:10]):
     symbols_str = ','.join(sorted(d['symbols']))[:10]
@@ -143,24 +144,24 @@ for i, d in enumerate(day_stats_sorted[:10]):
         d['date'], symbols_str, start_str, dur_min,
         d['greek_total_ms']/1000, d['greek_slow'], d['total_rows']
     )
-    print(row)
-print()
+    log_console(row)
+log_console()
 
 # Analisi dettagliata del caso peggiore
 worst = day_stats_sorted[0]
-print('=' * 80)
-print('DETTAGLIO CASO PEGGIORE: {} (durata: {:.1f} minuti)'.format(
+log_console('=' * 80)
+log_console('DETTAGLIO CASO PEGGIORE: {} (durata: {:.1f} minuti)'.format(
     worst['date'], worst['duration_sec']/60))
-print('=' * 80)
-print('Simbolo: {}'.format(','.join(worst['symbols'])))
-print('Inizio: {}'.format(worst['start_time']))
-print('Fine: {}'.format(worst['end_time']))
-print('Durata: {:.1f} secondi ({:.1f} minuti)'.format(worst['duration_sec'], worst['duration_sec']/60))
-print('Greek calls: {} (totale: {:.1f}s, slow: {})'.format(
+log_console('=' * 80)
+log_console('Simbolo: {}'.format(','.join(worst['symbols'])))
+log_console('Inizio: {}'.format(worst['start_time']))
+log_console('Fine: {}'.format(worst['end_time']))
+log_console('Durata: {:.1f} secondi ({:.1f} minuti)'.format(worst['duration_sec'], worst['duration_sec']/60))
+log_console('Greek calls: {} (totale: {:.1f}s, slow: {})'.format(
     worst['greek_calls'], worst['greek_total_ms']/1000, worst['greek_slow']))
-print('InfluxDB batches: {}'.format(worst['influx_batches']))
-print('Righe: {}'.format(worst['total_rows']))
-print()
+log_console('InfluxDB batches: {}'.format(worst['influx_batches']))
+log_console('Righe: {}'.format(worst['total_rows']))
+log_console()
 
 # Trova la pausa più lunga tra eventi
 events = worst['events']
@@ -173,34 +174,34 @@ for i in range(1, len(events)):
         max_gap_info = (events[i-1], events[i])
 
 if max_gap_info:
-    print('PAUSA PIÙ LUNGA: {:.1f} secondi ({:.1f} minuti)'.format(max_gap, max_gap/60))
-    print('  Tra: {} -> {}'.format(
+    log_console('PAUSA PIÙ LUNGA: {:.1f} secondi ({:.1f} minuti)'.format(max_gap, max_gap/60))
+    log_console('  Tra: {} -> {}'.format(
         max_gap_info[0][1].strftime('%H:%M:%S'),
         max_gap_info[1][1].strftime('%H:%M:%S')))
-    print('  Evento prima: {}'.format(max_gap_info[0][0]))
-    print('  Evento dopo: {}'.format(max_gap_info[1][0]))
-print()
+    log_console('  Evento prima: {}'.format(max_gap_info[0][0]))
+    log_console('  Evento dopo: {}'.format(max_gap_info[1][0]))
+log_console()
 
 # Breakdown tempo per questo giorno
 greek_time = worst['greek_total_ms'] / 1000
 other_time = worst['duration_sec'] - greek_time
-print('BREAKDOWN TEMPO:')
-print('  Greek API: {:.1f}s ({:.1f}%)'.format(greek_time, 100*greek_time/worst['duration_sec']))
-print('  Altro (InfluxDB + processing): {:.1f}s ({:.1f}%)'.format(
+log_console('BREAKDOWN TEMPO:')
+log_console('  Greek API: {:.1f}s ({:.1f}%)'.format(greek_time, 100*greek_time/worst['duration_sec']))
+log_console('  Altro (InfluxDB + processing): {:.1f}s ({:.1f}%)'.format(
     other_time, 100*other_time/worst['duration_sec']))
-print()
+log_console()
 
 # Analizza top 5 peggiori
-print('=' * 80)
-print('BREAKDOWN TEMPO TOP 5 GIORNI PEGGIORI:')
-print('=' * 80)
+log_console('=' * 80)
+log_console('BREAKDOWN TEMPO TOP 5 GIORNI PEGGIORI:')
+log_console('=' * 80)
 header = '{:<10} {:>10} {:>10} {:>8} {:>8}'.format('Date', 'Duration', 'Greeks', 'InfluxDB', 'Other')
-print(header)
-print('-' * 80)
+log_console(header)
+log_console('-' * 80)
 for d in day_stats_sorted[:5]:
     greek_time = d['greek_total_ms'] / 1000
     influx_time = d['influx_batches'] * 1.0  # Rough estimate: 1s per batch
     other_time = d['duration_sec'] - greek_time - influx_time
-    print('{} {:8.1f}m {:8.1f}s {:6.1f}s {:6.1f}s'.format(
+    log_console('{} {:8.1f}m {:8.1f}s {:6.1f}s {:6.1f}s'.format(
         d['date'], d['duration_sec']/60, greek_time, influx_time, other_time
     ))

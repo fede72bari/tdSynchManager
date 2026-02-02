@@ -2,6 +2,7 @@
 Esempio: Come usare AutoClearOutputManager con ThetaSyncManager
 Per evitare crash del notebook durante sincronizzazioni lunghe
 """
+from console_log import log_console
 
 import sys
 import os
@@ -52,12 +53,12 @@ async def run_sync_with_autoclear(cfg, tasks, max_output_lines=100):
 
         # Mostra stats finali
         stats = output_mgr.get_stats()
-        print(f"\n{'='*80}")
-        print(f"STATISTICHE OUTPUT:")
-        print(f"  Pulizie eseguite: {stats['total_clears']}")
-        print(f"  Tempo totale: {stats['elapsed_time']:.1f}s")
-        print(f"  Righe finali: {stats['line_count']}")
-        print(f"{'='*80}")
+        log_console(f"\n{'='*80}")
+        log_console(f"STATISTICHE OUTPUT:")
+        log_console(f"  Pulizie eseguite: {stats['total_clears']}")
+        log_console(f"  Tempo totale: {stats['elapsed_time']:.1f}s")
+        log_console(f"  Righe finali: {stats['line_count']}")
+        log_console(f"{'='*80}")
 
 
 # =============================================================================
@@ -113,7 +114,7 @@ async def notebook_friendly_sync(cfg, tasks):
 
         # Monitora progresso con auto-pulizia
         start_time = time.time()
-        print("Sincronizzazione avviata...")
+        log_console("Sincronizzazione avviata...")
 
         # Esegui (questo produrrà molto output)
         await manager.run(tasks)
@@ -121,7 +122,7 @@ async def notebook_friendly_sync(cfg, tasks):
         # Summary finale
         clear_output(wait=True)
         elapsed = time.time() - start_time
-        print(f"✓ Sincronizzazione completata in {elapsed:.1f}s")
+        log_console(f"✓ Sincronizzazione completata in {elapsed:.1f}s")
 
 
 # =============================================================================
@@ -131,9 +132,9 @@ async def notebook_friendly_sync(cfg, tasks):
 async def test_autoclear():
     from tdSynchManager.credentials import get_influx_credentials
 
-    print("=" * 80)
-    print("TEST: ThetaSyncManager con AutoClearOutputManager")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: ThetaSyncManager con AutoClearOutputManager")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -163,14 +164,14 @@ async def test_autoclear():
         ),
     ]
 
-    print("\nEsecuzione con auto-pulizia (max 30 righe)...")
-    print("-" * 80)
+    log_console("\nEsecuzione con auto-pulizia (max 30 righe)...")
+    log_console("-" * 80)
 
     await run_sync_with_autoclear(cfg, tasks, max_output_lines=30)
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETATO")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETATO")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

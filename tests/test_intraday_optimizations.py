@@ -11,6 +11,7 @@ Expected behavior:
 - Second run: Loads OI from cache (no API call)
 - Single-day downloads: Skip expensive API date discovery
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -50,9 +51,9 @@ async def test_single_day_optimization():
     - "[API-DATES] Single-day download (YYYY-MM-DD), skipping API date fetch"
     - NO "[API-DATES] Fetching available dates..." message
     """
-    print("\n" + "="*80)
-    print("TEST 1: Single-Day Download Optimization (Skip API Date Fetch)")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST 1: Single-Day Download Optimization (Skip API Date Fetch)")
+    log_console("="*80)
 
     # Create task for single-day intraday download (today only)
     tasks = [
@@ -70,16 +71,16 @@ async def test_single_day_optimization():
         ),
     ]
 
-    print("\n[TEST] Running single-day download...")
-    print("Expected: '[API-DATES] Single-day download' message")
-    print("Expected: NO '[API-DATES] Fetching available dates' message\n")
+    log_console("\n[TEST] Running single-day download...")
+    log_console("Expected: '[API-DATES] Single-day download' message")
+    log_console("Expected: NO '[API-DATES] Fetching available dates' message\n")
 
     async with ThetaDataV3Client() as client:
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n[TEST] ✓ Single-day download completed")
-    print("[TEST] Check logs above for '[API-DATES] Single-day download' message")
+    log_console("\n[TEST] ✓ Single-day download completed")
+    log_console("[TEST] Check logs above for '[API-DATES] Single-day download' message")
 
 
 async def test_oi_cache():
@@ -94,9 +95,9 @@ async def test_oi_cache():
     - Run 1: "[OI-CACHE][SAVE] TLRY date=20250102 - Cached N OI records"
     - Run 2: "[OI-CACHE][HIT] Using cached OI for TLRY/20250102"
     """
-    print("\n" + "="*80)
-    print("TEST 2: OI Cache Optimization")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST 2: OI Cache Optimization")
+    log_console("="*80)
 
     tasks = [
         Task(
@@ -114,29 +115,29 @@ async def test_oi_cache():
     ]
 
     # First download - should cache OI
-    print("\n[TEST] === FIRST DOWNLOAD (expect cache MISS, API download) ===")
-    print("Expected: '[OI-CACHE][SAVE]' message after OI download\n")
+    log_console("\n[TEST] === FIRST DOWNLOAD (expect cache MISS, API download) ===")
+    log_console("Expected: '[OI-CACHE][SAVE]' message after OI download\n")
 
     async with ThetaDataV3Client() as client:
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n[TEST] First download completed")
+    log_console("\n[TEST] First download completed")
 
     # Wait a moment
     await asyncio.sleep(2)
 
     # Second download - should use cached OI
-    print("\n[TEST] === SECOND DOWNLOAD (expect cache HIT, no API call) ===")
-    print("Expected: '[OI-CACHE][HIT] Using cached OI for TLRY/20250102' message")
-    print("Expected: NO OI API download\n")
+    log_console("\n[TEST] === SECOND DOWNLOAD (expect cache HIT, no API call) ===")
+    log_console("Expected: '[OI-CACHE][HIT] Using cached OI for TLRY/20250102' message")
+    log_console("Expected: NO OI API download\n")
 
     async with ThetaDataV3Client() as client:
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n[TEST] ✓ OI cache test completed")
-    print("[TEST] Check logs above for cache HIT on second download")
+    log_console("\n[TEST] ✓ OI cache test completed")
+    log_console("[TEST] Check logs above for cache HIT on second download")
 
 
 async def test_multi_day_still_fetches():
@@ -149,9 +150,9 @@ async def test_multi_day_still_fetches():
     - "[API-DATES] Fetching available dates for TLRY (option/5m)..."
     - "[API-DATES] Found N available dates, iterating only those"
     """
-    print("\n" + "="*80)
-    print("TEST 3: Multi-Day Download (Should STILL Fetch API Dates)")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST 3: Multi-Day Download (Should STILL Fetch API Dates)")
+    log_console("="*80)
 
     tasks = [
         Task(
@@ -168,27 +169,27 @@ async def test_multi_day_still_fetches():
         ),
     ]
 
-    print("\n[TEST] Running multi-day download...")
-    print("Expected: '[API-DATES] Fetching available dates' message")
-    print("Expected: '[API-DATES] Found N available dates' message\n")
+    log_console("\n[TEST] Running multi-day download...")
+    log_console("Expected: '[API-DATES] Fetching available dates' message")
+    log_console("Expected: '[API-DATES] Found N available dates' message\n")
 
     async with ThetaDataV3Client() as client:
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n[TEST] ✓ Multi-day download completed")
-    print("[TEST] Check logs above for API date fetch messages")
+    log_console("\n[TEST] ✓ Multi-day download completed")
+    log_console("[TEST] Check logs above for API date fetch messages")
 
 
 async def main():
     """Run all optimization tests"""
-    print("\n" + "="*80)
-    print("INTRADAY PIPELINE OPTIMIZATION TEST SUITE")
-    print("="*80)
-    print("Testing:")
-    print("  1. Single-day API date fetch skip")
-    print("  2. OI caching (cache miss → cache hit)")
-    print("  3. Multi-day still fetches dates (regression test)")
+    log_console("\n" + "="*80)
+    log_console("INTRADAY PIPELINE OPTIMIZATION TEST SUITE")
+    log_console("="*80)
+    log_console("Testing:")
+    log_console("  1. Single-day API date fetch skip")
+    log_console("  2. OI caching (cache miss → cache hit)")
+    log_console("  3. Multi-day still fetches dates (regression test)")
 
     try:
         # Test 1: Single-day optimization
@@ -200,16 +201,16 @@ async def main():
         # Test 3: Multi-day regression
         await test_multi_day_still_fetches()
 
-        print("\n" + "="*80)
-        print("ALL OPTIMIZATION TESTS COMPLETED")
-        print("="*80)
-        print("\n✓ Review the logs above to verify:")
-        print("  1. Single-day downloads skip API date fetch")
-        print("  2. Second OI download uses cache (cache HIT)")
-        print("  3. Multi-day downloads still fetch API dates")
+        log_console("\n" + "="*80)
+        log_console("ALL OPTIMIZATION TESTS COMPLETED")
+        log_console("="*80)
+        log_console("\n✓ Review the logs above to verify:")
+        log_console("  1. Single-day downloads skip API date fetch")
+        log_console("  2. Second OI download uses cache (cache HIT)")
+        log_console("  3. Multi-day downloads still fetch API dates")
 
     except Exception as e:
-        print(f"\n[ERROR] Test failed: {e}")
+        log_console(f"\n[ERROR] Test failed: {e}")
         import traceback
         traceback.print_exc()
         raise

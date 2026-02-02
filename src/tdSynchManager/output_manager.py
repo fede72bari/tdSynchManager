@@ -3,6 +3,7 @@ Output manager con auto-pulizia per ambienti Jupyter Notebook.
 
 Previene il crash del notebook quando l'output diventa troppo grande.
 """
+from console_log import log_console
 
 import sys
 import time
@@ -79,7 +80,7 @@ class AutoClearOutputManager:
         """Context manager exit."""
         if self.enabled and self.show_stats and self.total_clears > 0:
             elapsed = time.time() - self.start_time
-            print(f"\n[AutoClear] Sessione completata: {self.total_clears} pulizie in {elapsed:.1f}s")
+            log_console(f"\n[AutoClear] Sessione completata: {self.total_clears} pulizie in {elapsed:.1f}s")
 
     def _should_clear(self) -> bool:
         """Verifica se è necessario pulire l'output."""
@@ -97,7 +98,7 @@ class AutoClearOutputManager:
 
             # Ristampa le righe mantenute
             for line in self.buffer:
-                print(line)
+                log_console(line)
 
             # Aggiorna contatori
             self.line_count = len(self.buffer)
@@ -113,7 +114,7 @@ class AutoClearOutputManager:
 
         if self.show_stats:
             elapsed = self.last_clear_time - self.start_time
-            print(f"[AutoClear #{self.total_clears}] Output pulito dopo {elapsed:.1f}s "
+            log_console(f"[AutoClear #{self.total_clears}] Output pulito dopo {elapsed:.1f}s "
                   f"(mantenute ultime {len(self.buffer)} righe)")
 
     def print(self, *args, **kwargs):
@@ -135,7 +136,7 @@ class AutoClearOutputManager:
             self._do_clear()
         else:
             # Stampa normalmente
-            print(output, **kwargs)
+            log_console(output, **kwargs)
 
     def clear(self):
         """Pulisci manualmente l'output."""

@@ -3,6 +3,7 @@
 Complete test suite for query_local_data() with all parameter combinations.
 Tests all sinks (CSV, Parquet, InfluxDB) and all get_* parameters.
 """
+from console_log import log_console
 
 import os
 import sys
@@ -18,9 +19,9 @@ from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 
 async def main():
     """Main test function."""
-    print("=" * 80)
-    print("COMPLETE QUERY TEST SUITE")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("COMPLETE QUERY TEST SUITE")
+    log_console("=" * 80)
 
     # Create manager with InfluxDB config
     cfg = ManagerConfig(
@@ -35,9 +36,9 @@ async def main():
         manager = ThetaSyncManager(cfg, client)
 
 # Get available data
-print("\nScanning available data...")
+log_console("\nScanning available data...")
 available = manager.list_available_data()
-print(f"Found {len(available)} data series\n")
+log_console(f"Found {len(available)} data series\n")
 
 # Group by sink
 sinks = available.groupby('sink')
@@ -46,12 +47,12 @@ test_results = []
 
 def run_test(name, asset, symbol, interval, sink, start_date, **kwargs):
     """Run a single test and return results."""
-    print(f"\n{'='*80}")
-    print(f"TEST: {name}")
-    print(f"{'='*80}")
-    print(f"  Asset: {asset}, Symbol: {symbol}, Interval: {interval}, Sink: {sink}")
-    print(f"  Start: {start_date}")
-    print(f"  Params: {kwargs}")
+    log_console(f"\n{'='*80}")
+    log_console(f"TEST: {name}")
+    log_console(f"{'='*80}")
+    log_console(f"  Asset: {asset}, Symbol: {symbol}, Interval: {interval}, Sink: {sink}")
+    log_console(f"  Start: {start_date}")
+    log_console(f"  Params: {kwargs}")
 
     try:
         df, warnings = manager.query_local_data(
@@ -64,14 +65,14 @@ def run_test(name, asset, symbol, interval, sink, start_date, **kwargs):
         )
 
         if warnings:
-            print(f"  ⚠ Warnings: {warnings}")
+            log_console(f"  ⚠ Warnings: {warnings}")
 
         if df is not None and len(df) > 0:
-            print(f"  ✓ SUCCESS: {len(df)} rows returned")
+            log_console(f"  ✓ SUCCESS: {len(df)} rows returned")
 
             # Check ordering
             if 'timestamp' in df.columns:
-                print(f"  Timestamp range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+                log_console(f"  Timestamp range: {df['timestamp'].min()} to {df['timestamp'].max()}")
 
             # For options, check if ordered correctly
             if asset == "option" and len(df) > 1:
@@ -87,29 +88,29 @@ def run_test(name, asset, symbol, interval, sink, start_date, **kwargs):
                         elif exp1 == exp2 and strike1 > strike2:
                             is_sorted = False
                             break
-                    print(f"  Ordering check (exp, strike, ts DESC): {'✓ PASS' if is_sorted else '✗ FAIL'}")
+                    log_console(f"  Ordering check (exp, strike, ts DESC): {'✓ PASS' if is_sorted else '✗ FAIL'}")
 
             # For non-options, check timestamp DESC
             elif 'timestamp' in df.columns and len(df) > 1:
                 timestamps = pd.to_datetime(df['timestamp'])
                 is_desc = all(timestamps.iloc[i] >= timestamps.iloc[i+1] for i in range(len(timestamps)-1))
-                print(f"  Ordering check (ts DESC): {'✓ PASS' if is_desc else '✗ FAIL'}")
+                log_console(f"  Ordering check (ts DESC): {'✓ PASS' if is_desc else '✗ FAIL'}")
 
             # Show sample
-            print(f"\n  First 3 rows:")
+            log_console(f"\n  First 3 rows:")
             if 'expiration' in df.columns and 'strike' in df.columns:
                 cols = ['expiration', 'strike', 'timestamp'] if 'timestamp' in df.columns else ['expiration', 'strike']
-                print(df[cols].head(3).to_string(index=False))
+                log_console(df[cols].head(3).to_string(index=False))
             elif 'timestamp' in df.columns:
-                print(df[['timestamp']].head(3).to_string(index=False))
+                log_console(df[['timestamp']].head(3).to_string(index=False))
 
             return {'test': name, 'status': 'PASS', 'rows': len(df), 'warnings': len(warnings)}
         else:
-            print(f"  ✗ FAIL: No data returned")
+            log_console(f"  ✗ FAIL: No data returned")
             return {'test': name, 'status': 'FAIL', 'rows': 0, 'warnings': len(warnings)}
 
     except Exception as e:
-        print(f"  ✗ ERROR: {type(e).__name__}: {e}")
+        log_console(f"  ✗ ERROR: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
         return {'test': name, 'status': 'ERROR', 'rows': 0, 'error': str(e)}
@@ -253,19 +254,19 @@ if not available[(available['sink'] == 'csv') & (available['asset'] == 'option')
 # ============================================================================
 # SUMMARY
 # ============================================================================
-print("\n" + "=" * 80)
-print("TEST SUMMARY")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("TEST SUMMARY")
+log_console("=" * 80)
 
 df_results = pd.DataFrame(test_results)
-print(df_results.to_string(index=False))
+log_console(df_results.to_string(index=False))
 
 passed = len([r for r in test_results if r['status'] == 'PASS'])
 failed = len([r for r in test_results if r['status'] == 'FAIL'])
 errors = len([r for r in test_results if r['status'] == 'ERROR'])
 
-print(f"\nTotal tests: {len(test_results)}")
-print(f"  ✓ Passed: {passed}")
-print(f"  ✗ Failed: {failed}")
-print(f"  ⚠ Errors: {errors}")
-print(f"\nSuccess rate: {100 * passed / len(test_results):.1f}%")
+log_console(f"\nTotal tests: {len(test_results)}")
+log_console(f"  ✓ Passed: {passed}")
+log_console(f"  ✗ Failed: {failed}")
+log_console(f"  ⚠ Errors: {errors}")
+log_console(f"\nSuccess rate: {100 * passed / len(test_results):.1f}%")

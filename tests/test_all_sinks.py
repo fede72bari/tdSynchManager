@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Test all sinks (CSV, Parquet, InfluxDB) with get_* parameters."""
+from console_log import log_console
 
 import sys
 sys.path.insert(0, 'src')
@@ -23,15 +24,15 @@ async def main():
     async with ThetaDataV3Client(base_url='http://localhost:25503/v3') as client:
         manager = ThetaSyncManager(cfg, client)
 
-        print("=" * 80)
-        print("COMPLETE TEST: ALL SINKS + ALL GET_* PARAMETERS")
-        print("=" * 80)
+        log_console("=" * 80)
+        log_console("COMPLETE TEST: ALL SINKS + ALL GET_* PARAMETERS")
+        log_console("=" * 80)
 
         available = manager.list_available_data()
-        print(f"\nTotal available: {len(available)} series")
-        print(f"  CSV: {len(available[available['sink'] == 'csv'])}")
-        print(f"  Parquet: {len(available[available['sink'] == 'parquet'])}")
-        print(f"  InfluxDB: {len(available[available['sink'] == 'influxdb'])}")
+        log_console(f"\nTotal available: {len(available)} series")
+        log_console(f"  CSV: {len(available[available['sink'] == 'csv'])}")
+        log_console(f"  Parquet: {len(available[available['sink'] == 'parquet'])}")
+        log_console(f"  InfluxDB: {len(available[available['sink'] == 'influxdb'])}")
 
         results = []
 
@@ -44,38 +45,38 @@ async def main():
             row = sink_data.iloc[0]
             start = pd.to_datetime(row['first_datetime']).strftime("%Y-%m-%d")
 
-            print(f"\n{'='*80}")
-            print(f"TESTING SINK: {sink.upper()}")
-            print(f"  Symbol: {row['symbol']}, Interval: {row['interval']}")
-            print(f"{'='*80}")
+            log_console(f"\n{'='*80}")
+            log_console(f"TESTING SINK: {sink.upper()}")
+            log_console(f"  Symbol: {row['symbol']}, Interval: {row['interval']}")
+            log_console(f"{'='*80}")
 
             # TEST 1: get_first_n_rows
-            print(f"\n  [1] get_first_n_rows=5")
+            log_console(f"\n  [1] get_first_n_rows=5")
             df, warn = manager.query_local_data(
                 asset=row['asset'], symbol=row['symbol'], interval=row['interval'],
                 sink=sink, start_date=start, get_first_n_rows=5
             )
             if df is not None:
                 status = "PASS" if len(df) == 5 else f"FAIL (got {len(df)})"
-                print(f"      Result: {status}")
+                log_console(f"      Result: {status}")
                 results.append({'sink': sink, 'test': 'get_first_n_rows', 'status': status, 'rows': len(df)})
             else:
-                print(f"      Result: FAIL (no data)")
+                log_console(f"      Result: FAIL (no data)")
                 results.append({'sink': sink, 'test': 'get_first_n_rows', 'status': 'FAIL', 'rows': 0})
 
             # TEST 2: get_last_n_rows
-            print(f"  [2] get_last_n_rows=3")
+            log_console(f"  [2] get_last_n_rows=3")
             df, warn = manager.query_local_data(
                 asset=row['asset'], symbol=row['symbol'], interval=row['interval'],
                 sink=sink, start_date=start, get_last_n_rows=3
             )
             if df is not None:
                 status = "PASS" if len(df) == 3 else f"FAIL (got {len(df)})"
-                print(f"      Result: {status}")
+                log_console(f"      Result: {status}")
                 results.append({'sink': sink, 'test': 'get_last_n_rows', 'status': status, 'rows': len(df)})
 
             # TEST 3: get_first_n_days
-            print(f"  [3] get_first_n_days=1")
+            log_console(f"  [3] get_first_n_days=1")
             df, warn = manager.query_local_data(
                 asset=row['asset'], symbol=row['symbol'], interval=row['interval'],
                 sink=sink, start_date=start, get_first_n_days=1
@@ -84,11 +85,11 @@ async def main():
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 days = (df['timestamp'].max() - df['timestamp'].min()).days
                 status = "PASS" if days <= 1 else f"FAIL (got {days} days)"
-                print(f"      Result: {status} ({len(df)} rows, {days} days)")
+                log_console(f"      Result: {status} ({len(df)} rows, {days} days)")
                 results.append({'sink': sink, 'test': 'get_first_n_days', 'status': status, 'rows': len(df)})
 
             # TEST 4: get_last_n_days (no start_date)
-            print(f"  [4] get_last_n_days=1 (no start_date)")
+            log_console(f"  [4] get_last_n_days=1 (no start_date)")
             df, warn = manager.query_local_data(
                 asset=row['asset'], symbol=row['symbol'], interval=row['interval'],
                 sink=sink, get_last_n_days=1
@@ -97,11 +98,11 @@ async def main():
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 days = (df['timestamp'].max() - df['timestamp'].min()).days
                 status = "PASS" if days <= 1 else f"FAIL (got {days} days)"
-                print(f"      Result: {status} ({len(df)} rows, {days} days)")
+                log_console(f"      Result: {status} ({len(df)} rows, {days} days)")
                 results.append({'sink': sink, 'test': 'get_last_n_days', 'status': status, 'rows': len(df)})
 
             # TEST 5: Ordering check (options)
-            print(f"  [5] Ordering check (exp, strike, ts DESC)")
+            log_console(f"  [5] Ordering check (exp, strike, ts DESC)")
             df, warn = manager.query_local_data(
                 asset=row['asset'], symbol=row['symbol'], interval=row['interval'],
                 sink=sink, start_date=start, max_rows=20
@@ -124,22 +125,22 @@ async def main():
                         break
 
                 status = "PASS" if ordered else "FAIL"
-                print(f"      Result: {status}")
+                log_console(f"      Result: {status}")
                 results.append({'sink': sink, 'test': 'ordering', 'status': status, 'rows': len(df)})
 
         # SUMMARY
-        print("\n" + "=" * 80)
-        print("SUMMARY")
-        print("=" * 80)
+        log_console("\n" + "=" * 80)
+        log_console("SUMMARY")
+        log_console("=" * 80)
 
         df_results = pd.DataFrame(results)
-        print(df_results.to_string(index=False))
+        log_console(df_results.to_string(index=False))
 
         total = len(results)
         passed = len([r for r in results if 'PASS' in str(r['status'])])
-        print(f"\nTotal tests: {total}")
-        print(f"Passed: {passed}")
-        print(f"Success rate: {100 * passed / total:.1f}%")
+        log_console(f"\nTotal tests: {total}")
+        log_console(f"Passed: {passed}")
+        log_console(f"Success rate: {100 * passed / total:.1f}%")
 
 
 if __name__ == "__main__":

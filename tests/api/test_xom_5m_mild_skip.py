@@ -2,6 +2,7 @@
 Test XOM option 5m with mild_skip policy
 This should now be FAST with metadata queries
 """
+from console_log import log_console
 
 import asyncio
 from tdSynchManager.manager import ThetaSyncManager, install_td_server_error_logger
@@ -10,9 +11,9 @@ from tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
 from tdSynchManager.credentials import get_influx_credentials
 
 async def main():
-    print("=" * 80)
-    print("TEST: XOM option 5m with mild_skip (should be FAST now)")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: XOM option 5m with mild_skip (should be FAST now)")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -43,13 +44,13 @@ async def main():
         ),
     ]
 
-    print(f"\nConfiguration:")
-    print(f"  Symbol: XOM")
-    print(f"  Interval: 5m (intraday - previously SLOW)")
-    print(f"  Date range: 2020-01-02 to 2025-11-25")
-    print(f"  Discover policy: mild_skip")
-    print(f"  Expected: Fast metadata query (<1s instead of 4+ minutes)")
-    print("-" * 80)
+    log_console(f"\nConfiguration:")
+    log_console(f"  Symbol: XOM")
+    log_console(f"  Interval: 5m (intraday - previously SLOW)")
+    log_console(f"  Date range: 2020-01-02 to 2025-11-25")
+    log_console(f"  Discover policy: mild_skip")
+    log_console(f"  Expected: Fast metadata query (<1s instead of 4+ minutes)")
+    log_console("-" * 80)
 
     async with ThetaDataV3Client(
         timeout_total=1800.0,
@@ -59,9 +60,9 @@ async def main():
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 if __name__ == "__main__":
     asyncio.run(main())

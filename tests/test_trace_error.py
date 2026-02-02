@@ -1,6 +1,7 @@
 """
 Minimal test to trace the total_seconds error with full traceback
 """
+from console_log import log_console
 import asyncio
 import traceback
 from src.tdSynchManager.ThetaDataV3Client import ThetaDataV3Client
@@ -42,11 +43,11 @@ async def main():
         try:
             await manager.run([task])
         except Exception as e:
-            print("\n" + "="*80)
-            print("FULL TRACEBACK:")
-            print("="*80)
+            log_console("\n" + "="*80)
+            log_console("FULL TRACEBACK:")
+            log_console("="*80)
             traceback.print_exc()
-            print("="*80)
+            log_console("="*80)
 
 if __name__ == "__main__":
     asyncio.run(main())

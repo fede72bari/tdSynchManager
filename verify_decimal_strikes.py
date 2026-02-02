@@ -2,6 +2,7 @@
 Verify decimal strikes in InfluxDB vs ThetaData raw data
 Checks if decimal strikes (e.g., 174.78) exist in both sources
 """
+from console_log import log_console
 import asyncio
 import pandas as pd
 from datetime import datetime, timezone
@@ -36,15 +37,15 @@ async def main():
     start_time = "14:00:00"
     end_time = "14:30:00"
 
-    print("=" * 80)
-    print("VERIFICATION: Decimal Strikes in QQQ 0DTE Options")
-    print("=" * 80)
-    print(f"Symbol: {symbol}")
-    print(f"Date: {date_str}")
-    print(f"Expiration (0DTE): {expiration_0dte}")
-    print(f"Time Range: {start_time} - {end_time} ET")
-    print(f"Interval: {interval}")
-    print()
+    log_console("=" * 80)
+    log_console("VERIFICATION: Decimal Strikes in QQQ 0DTE Options")
+    log_console("=" * 80)
+    log_console(f"Symbol: {symbol}")
+    log_console(f"Date: {date_str}")
+    log_console(f"Expiration (0DTE): {expiration_0dte}")
+    log_console(f"Time Range: {start_time} - {end_time} ET")
+    log_console(f"Interval: {interval}")
+    log_console()
 
     async with ThetaDataV3Client() as client:
         manager = ThetaSyncManager(cfg, client=client)
@@ -52,8 +53,8 @@ async def main():
         # ================================================================
         # STEP 1: Query InfluxDB via Manager
         # ================================================================
-        print("[STEP 1] Querying InfluxDB via Manager...")
-        print("-" * 80)
+        log_console("[STEP 1] Querying InfluxDB via Manager...")
+        log_console("-" * 80)
 
         # Build timestamp range (ET -> UTC)
         et_tz = ZoneInfo("America/New_York")
@@ -62,8 +63,8 @@ async def main():
         end_dt = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M:%S")
         end_dt = end_dt.replace(tzinfo=et_tz)
 
-        print(f"Start (ET): {start_dt}")
-        print(f"End (ET): {end_dt}")
+        log_console(f"Start (ET): {start_dt}")
+        log_console(f"End (ET): {end_dt}")
 
         df_influx, warnings = manager.query_local_data(
             asset="option",
@@ -75,7 +76,7 @@ async def main():
         )
 
         if df_influx is None or df_influx.empty:
-            print(f"[X] No data in InfluxDB: {warnings}")
+            log_console(f"[X] No data in InfluxDB: {warnings}")
             return
 
         # Filter by time range and 0DTE expiration
@@ -90,15 +91,15 @@ async def main():
             df_influx['expiration'] = df_influx['expiration'].astype(str).str.replace('-', '')
             df_influx = df_influx[df_influx['expiration'] == expiration_0dte]
 
-        print(f"[OK] InfluxDB rows after filtering: {len(df_influx)}")
+        log_console(f"[OK] InfluxDB rows after filtering: {len(df_influx)}")
 
         if df_influx.empty:
-            print("[X] No data in specified time range")
+            log_console("[X] No data in specified time range")
             return
 
         # Check strikes
         if 'strike' not in df_influx.columns:
-            print("[X] No 'strike' column in data")
+            log_console("[X] No 'strike' column in data")
             return
 
         df_influx['strike'] = pd.to_numeric(df_influx['strike'], errors='coerce')
@@ -109,23 +110,23 @@ async def main():
         decimal_strikes_influx = [s for s in strikes_influx if s % 1 != 0]
         integer_strikes_influx = [s for s in strikes_influx if s % 1 == 0]
 
-        print()
-        print(f"Total unique strikes: {len(strikes_influx)}")
-        print(f"Integer strikes: {len(integer_strikes_influx)}")
-        print(f"Decimal strikes: {len(decimal_strikes_influx)} ({len(decimal_strikes_influx)/len(strikes_influx)*100:.1f}%)")
+        log_console()
+        log_console(f"Total unique strikes: {len(strikes_influx)}")
+        log_console(f"Integer strikes: {len(integer_strikes_influx)}")
+        log_console(f"Decimal strikes: {len(decimal_strikes_influx)} ({len(decimal_strikes_influx)/len(strikes_influx)*100:.1f}%)")
 
         if decimal_strikes_influx:
-            print(f"\n[DETAIL] Sample decimal strikes from InfluxDB (first 10):")
+            log_console(f"\n[DETAIL] Sample decimal strikes from InfluxDB (first 10):")
             for strike in sorted(decimal_strikes_influx)[:10]:
                 count = len(df_influx[df_influx['strike'] == strike])
-                print(f"  - {strike:.2f} ({count} rows)")
+                log_console(f"  - {strike:.2f} ({count} rows)")
 
         # ================================================================
         # STEP 2: Query ThetaData API directly
         # ================================================================
-        print()
-        print("[STEP 2] Querying ThetaData API directly...")
-        print("-" * 80)
+        log_console()
+        log_console("[STEP 2] Querying ThetaData API directly...")
+        log_console("-" * 80)
 
         import io
         csv_ohlc, _ = await client.option_history_ohlc(
@@ -140,15 +141,15 @@ async def main():
         )
 
         if not csv_ohlc:
-            print("[X] No data from ThetaData API")
+            log_console("[X] No data from ThetaData API")
             return
 
         df_theta = pd.read_csv(io.StringIO(csv_ohlc))
-        print(f"[OK] ThetaData API rows: {len(df_theta)}")
+        log_console(f"[OK] ThetaData API rows: {len(df_theta)}")
 
         if 'strike' not in df_theta.columns:
-            print("[X] No 'strike' column in ThetaData response")
-            print(f"Columns: {df_theta.columns.tolist()}")
+            log_console("[X] No 'strike' column in ThetaData response")
+            log_console(f"Columns: {df_theta.columns.tolist()}")
             return
 
         # Check strikes from ThetaData
@@ -159,91 +160,91 @@ async def main():
         decimal_strikes_theta = [s for s in strikes_theta if s % 1 != 0]
         integer_strikes_theta = [s for s in strikes_theta if s % 1 == 0]
 
-        print()
-        print(f"Total unique strikes: {len(strikes_theta)}")
-        print(f"Integer strikes: {len(integer_strikes_theta)}")
-        print(f"Decimal strikes: {len(decimal_strikes_theta)} ({len(decimal_strikes_theta)/len(strikes_theta)*100:.1f}%)")
+        log_console()
+        log_console(f"Total unique strikes: {len(strikes_theta)}")
+        log_console(f"Integer strikes: {len(integer_strikes_theta)}")
+        log_console(f"Decimal strikes: {len(decimal_strikes_theta)} ({len(decimal_strikes_theta)/len(strikes_theta)*100:.1f}%)")
 
         if decimal_strikes_theta:
-            print(f"\n[DETAIL] Sample decimal strikes from ThetaData (first 10):")
+            log_console(f"\n[DETAIL] Sample decimal strikes from ThetaData (first 10):")
             for strike in sorted(decimal_strikes_theta)[:10]:
                 count = len(df_theta[df_theta['strike'] == strike])
-                print(f"  - {strike:.2f} ({count} rows)")
+                log_console(f"  - {strike:.2f} ({count} rows)")
 
         # ================================================================
         # STEP 3: Compare Results
         # ================================================================
-        print()
-        print("[STEP 3] Comparison")
-        print("=" * 80)
+        log_console()
+        log_console("[STEP 3] Comparison")
+        log_console("=" * 80)
 
         decimal_in_influx = len(decimal_strikes_influx) > 0
         decimal_in_theta = len(decimal_strikes_theta) > 0
 
         if decimal_in_influx and decimal_in_theta:
-            print("[OK] RESULT: Decimal strikes exist in BOTH InfluxDB and ThetaData")
-            print("   -> This is CORRECT data from ThetaData API")
-            print("   -> No parsing issue in tdSynchManager")
+            log_console("[OK] RESULT: Decimal strikes exist in BOTH InfluxDB and ThetaData")
+            log_console("   -> This is CORRECT data from ThetaData API")
+            log_console("   -> No parsing issue in tdSynchManager")
         elif decimal_in_influx and not decimal_in_theta:
-            print("[ERROR] RESULT: Decimal strikes ONLY in InfluxDB")
-            print("   -> PARSING BUG in tdSynchManager!")
-            print("   -> Data corruption during download/storage")
+            log_console("[ERROR] RESULT: Decimal strikes ONLY in InfluxDB")
+            log_console("   -> PARSING BUG in tdSynchManager!")
+            log_console("   -> Data corruption during download/storage")
         elif not decimal_in_influx and decimal_in_theta:
-            print("[WARNING] RESULT: Decimal strikes ONLY in ThetaData")
-            print("   -> Filtering issue in query?")
+            log_console("[WARNING] RESULT: Decimal strikes ONLY in ThetaData")
+            log_console("   -> Filtering issue in query?")
         else:
-            print("[OK] RESULT: NO decimal strikes in either source")
-            print("   -> All strikes are integer values")
+            log_console("[OK] RESULT: NO decimal strikes in either source")
+            log_console("   -> All strikes are integer values")
 
         # Detailed comparison
         if decimal_in_influx or decimal_in_theta:
-            print()
-            print("Detailed Strike Comparison:")
-            print("-" * 80)
+            log_console()
+            log_console("Detailed Strike Comparison:")
+            log_console("-" * 80)
 
             common_decimals = set(decimal_strikes_influx) & set(decimal_strikes_theta)
             only_influx = set(decimal_strikes_influx) - set(decimal_strikes_theta)
             only_theta = set(decimal_strikes_theta) - set(decimal_strikes_influx)
 
             if common_decimals:
-                print(f"Common decimal strikes: {len(common_decimals)}")
-                print(f"  Examples: {sorted(common_decimals)[:5]}")
+                log_console(f"Common decimal strikes: {len(common_decimals)}")
+                log_console(f"  Examples: {sorted(common_decimals)[:5]}")
 
             if only_influx:
-                print(f"Decimal strikes ONLY in InfluxDB: {len(only_influx)}")
-                print(f"  Examples: {sorted(only_influx)[:5]}")
-                print("  [WARNING] These might be parsing errors!")
+                log_console(f"Decimal strikes ONLY in InfluxDB: {len(only_influx)}")
+                log_console(f"  Examples: {sorted(only_influx)[:5]}")
+                log_console("  [WARNING] These might be parsing errors!")
 
             if only_theta:
-                print(f"Decimal strikes ONLY in ThetaData: {len(only_theta)}")
-                print(f"  Examples: {sorted(only_theta)[:5]}")
+                log_console(f"Decimal strikes ONLY in ThetaData: {len(only_theta)}")
+                log_console(f"  Examples: {sorted(only_theta)[:5]}")
 
         # ================================================================
         # STEP 4: Sample Data Inspection
         # ================================================================
         if decimal_strikes_influx:
-            print()
-            print("[STEP 4] Sample Data Inspection")
-            print("=" * 80)
+            log_console()
+            log_console("[STEP 4] Sample Data Inspection")
+            log_console("=" * 80)
 
             sample_strike = sorted(decimal_strikes_influx)[0]
-            print(f"\nInspecting strike: {sample_strike:.2f}")
+            log_console(f"\nInspecting strike: {sample_strike:.2f}")
 
             # InfluxDB sample
             sample_influx = df_influx[df_influx['strike'] == sample_strike].head(3)
-            print(f"\nInfluxDB sample ({len(sample_influx)} rows):")
-            print(sample_influx[['timestamp', 'strike', 'expiration', 'right']].to_string())
+            log_console(f"\nInfluxDB sample ({len(sample_influx)} rows):")
+            log_console(sample_influx[['timestamp', 'strike', 'expiration', 'right']].to_string())
 
             # ThetaData sample
             if sample_strike in strikes_theta:
                 sample_theta = df_theta[df_theta['strike'] == sample_strike].head(3)
-                print(f"\nThetaData sample ({len(sample_theta)} rows):")
+                log_console(f"\nThetaData sample ({len(sample_theta)} rows):")
                 cols = ['strike']
                 if 'ms_of_day' in df_theta.columns:
                     cols.append('ms_of_day')
                 if 'right' in df_theta.columns:
                     cols.append('right')
-                print(sample_theta[cols].to_string())
+                log_console(sample_theta[cols].to_string())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """
 Quick test to debug where option_list_expirations is blocking
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -16,9 +17,9 @@ from tdSynchManager import ThetaDataV3Client, ManagerConfig, ThetaSyncManager
 async def test_option_blocking():
     """Test where option API calls block."""
 
-    print("=" * 80)
-    print("TEST: Option API Blocking Debug")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: Option API Blocking Debug")
+    log_console("=" * 80)
 
     async with ThetaDataV3Client() as client:
         config = ManagerConfig(root_dir="./test_data")
@@ -28,10 +29,10 @@ async def test_option_blocking():
         start_dt = date(2020, 1, 2)
         end_dt = date(2025, 11, 25)
 
-        print(f"\nSymbol: {symbol}")
-        print(f"Date range: {start_dt} to {end_dt}")
-        print(f"About to call _fetch_available_dates_from_api...")
-        print("-" * 80)
+        log_console(f"\nSymbol: {symbol}")
+        log_console(f"Date range: {start_dt} to {end_dt}")
+        log_console(f"About to call _fetch_available_dates_from_api...")
+        log_console("-" * 80)
 
         try:
             dates = await manager._fetch_available_dates_from_api(
@@ -43,12 +44,12 @@ async def test_option_blocking():
                 use_api_discovery=True
             )
 
-            print("-" * 80)
-            print(f"\n[SUCCESS] Returned from _fetch_available_dates_from_api")
-            print(f"Found {len(dates) if dates else 0} dates")
+            log_console("-" * 80)
+            log_console(f"\n[SUCCESS] Returned from _fetch_available_dates_from_api")
+            log_console(f"Found {len(dates) if dates else 0} dates")
 
         except Exception as e:
-            print(f"\n[ERROR] Exception: {e}")
+            log_console(f"\n[ERROR] Exception: {e}")
             import traceback
             traceback.print_exc()
 

@@ -86,6 +86,7 @@ class ManagerConfig:
     enable_data_validation: bool = True       # Enable validation before saving
     validation_strict_mode: bool = True       # True = "all or nothing", False = save partial with log
     log_verbose_console: bool = True          # Print logs to console in addition to log tables
+    log_verbosity: int = 3                    # 0=none, 1=warnings+errors, 2=operations, 3=debug
     eod_check_max_attempts: int = 1           # Additional retry attempts for EOD tick data check
     tick_eod_volume_tolerance: float = 0.01   # Tolerance for tick vs EOD volume comparison (1%)
     intraday_bucket_tolerance: float = 0.0    # Allowed fraction of missing time buckets (0 = require 100%)

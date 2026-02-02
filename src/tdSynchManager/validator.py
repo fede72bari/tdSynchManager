@@ -1,4 +1,5 @@
 """Data validation utilities for completeness and consistency checks."""
+from console_log import log_console
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -238,7 +239,7 @@ class DataValidator:
             if expected_combos is not None:
                 for bucket_time, count in per_bucket.items():
                     # Log per-bucket atteso vs trovato
-                    print(
+                    log_console(
                         f"[VALIDATION][BUCKET] {date_iso} {bucket_time.strftime('%H:%M:%S')} "
                         f"combos_found={count} expected>={int(expected_combos)} "
                         f"(total_combos={total_combos}, tol={bucket_tolerance:.2%})"
@@ -395,9 +396,9 @@ class DataValidator:
             is_valid = diff_call_pct <= tolerance and diff_put_pct <= tolerance
 
             # Log volume validation results (console + structured log)
-            print(f"[TICK-VOLUME] {date_iso} Call: sum({volume_col})={int(tick_call_volume)} eod_volume={int(eod_volume_call)} diff={diff_call_pct:.2%}")
-            print(f"[TICK-VOLUME] {date_iso} Put: sum({volume_col})={int(tick_put_volume)} eod_volume={int(eod_volume_put)} diff={diff_put_pct:.2%}")
-            print(f"[TICK-VOLUME] {date_iso} Total: tick={int(tick_call_volume + tick_put_volume)} eod={int(eod_volume_call + eod_volume_put)} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
+            log_console(f"[TICK-VOLUME] {date_iso} Call: sum({volume_col})={int(tick_call_volume)} eod_volume={int(eod_volume_call)} diff={diff_call_pct:.2%}")
+            log_console(f"[TICK-VOLUME] {date_iso} Put: sum({volume_col})={int(tick_put_volume)} eod_volume={int(eod_volume_put)} diff={diff_put_pct:.2%}")
+            log_console(f"[TICK-VOLUME] {date_iso} Total: tick={int(tick_call_volume + tick_put_volume)} eod={int(eod_volume_call + eod_volume_put)} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             # Structured log for volume validation statistics
             # Note: DataValidator is stateless and doesn't have access to manager.logger
@@ -459,7 +460,7 @@ class DataValidator:
             is_valid = diff_pct <= tolerance
 
             # Log volume validation results (console + structured log)
-            print(f"[TICK-VOLUME] {date_iso} sum({volume_col})={int(tick_volume)} eod_volume={int(eod_volume)} diff={diff_pct:.2%} diff_abs={int(abs(tick_volume - eod_volume))} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
+            log_console(f"[TICK-VOLUME] {date_iso} sum({volume_col})={int(tick_volume)} eod_volume={int(eod_volume)} diff={diff_pct:.2%} diff_abs={int(abs(tick_volume - eod_volume))} tolerance={tolerance:.2%} {'PASS' if is_valid else 'FAIL'}")
 
             # Structured log for volume validation statistics
             # Note: DataValidator is stateless and doesn't have access to manager.logger

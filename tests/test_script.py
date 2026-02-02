@@ -1,2 +1,3 @@
+from console_log import log_console
 import re
-print("Test works")
+log_console("Test works")

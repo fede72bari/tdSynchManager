@@ -8,6 +8,7 @@ These functions allow you to:
 Author: Claude Code
 Date: 2025-11-14
 """
+from console_log import log_console
 
 import asyncio
 from tdSynchManager import ManagerConfig, ThetaSyncManager
@@ -26,59 +27,59 @@ async def example_usage():
         # =====================================================================
         # EXAMPLE 1: List all available data
         # =====================================================================
-        print("=" * 70)
-        print("EXAMPLE 1: List all available data")
-        print("=" * 70)
+        log_console("=" * 70)
+        log_console("EXAMPLE 1: List all available data")
+        log_console("=" * 70)
         
         available = manager.list_available_data()
-        print(f"\nFound {len(available)} data series\n")
-        print(available)
+        log_console(f"\nFound {len(available)} data series\n")
+        log_console(available)
         
         # =====================================================================
         # EXAMPLE 2: List only stock data
         # =====================================================================
-        print("\n" + "=" * 70)
-        print("EXAMPLE 2: List only stock data")
-        print("=" * 70)
+        log_console("\n" + "=" * 70)
+        log_console("EXAMPLE 2: List only stock data")
+        log_console("=" * 70)
         
         stocks = manager.list_available_data(asset="stock")
-        print(f"\nFound {len(stocks)} stock series\n")
-        print(stocks)
+        log_console(f"\nFound {len(stocks)} stock series\n")
+        log_console(stocks)
         
         # =====================================================================
         # EXAMPLE 3: List AAPL data in all formats
         # =====================================================================
-        print("\n" + "=" * 70)
-        print("EXAMPLE 3: List AAPL data in all formats")
-        print("=" * 70)
+        log_console("\n" + "=" * 70)
+        log_console("EXAMPLE 3: List AAPL data in all formats")
+        log_console("=" * 70)
         
         aapl = manager.list_available_data(symbol="AAPL")
-        print(f"\nFound {len(aapl)} AAPL series\n")
-        print(aapl)
+        log_console(f"\nFound {len(aapl)} AAPL series\n")
+        log_console(aapl)
         
         # =====================================================================
         # EXAMPLE 4: List all 5-minute interval data
         # =====================================================================
-        print("\n" + "=" * 70)
-        print("EXAMPLE 4: List all 5-minute interval data")
-        print("=" * 70)
+        log_console("\n" + "=" * 70)
+        log_console("EXAMPLE 4: List all 5-minute interval data")
+        log_console("=" * 70)
         
         five_min = manager.list_available_data(interval="5m")
-        print(f"\nFound {len(five_min)} 5-minute series\n")
-        print(five_min)
+        log_console(f"\nFound {len(five_min)} 5-minute series\n")
+        log_console(five_min)
         
         # =====================================================================
         # EXAMPLE 5: Query specific data with date range
         # =====================================================================
         if not available.empty:
-            print("\n" + "=" * 70)
-            print("EXAMPLE 5: Query data with date range")
-            print("=" * 70)
+            log_console("\n" + "=" * 70)
+            log_console("EXAMPLE 5: Query data with date range")
+            log_console("=" * 70)
             
             # Use first available series as example
             first = available.iloc[0]
             
-            print(f"\nQuerying {first['symbol']} {first['interval']} from {first['sink']}")
+            log_console(f"\nQuerying {first['symbol']} {first['interval']} from {first['sink']}")
             
             # Query with just start date (gets all data from that date onwards)
             df, warnings = manager.query_local_data(
@@ -91,20 +92,20 @@ async def example_usage():
             )
             
             if warnings:
-                print(f"\nWarnings: {warnings}")
+                log_console(f"\nWarnings: {warnings}")
             
             if df is not None:
-                print(f"\nRetrieved {len(df)} rows")
-                print(f"Columns: {list(df.columns)}")
-                print(f"\nFirst 5 rows:")
-                print(df.head())
+                log_console(f"\nRetrieved {len(df)} rows")
+                log_console(f"Columns: {list(df.columns)}")
+                log_console(f"\nFirst 5 rows:")
+                log_console(df.head())
             
             # ================================================================= 
             # EXAMPLE 6: Query with specific datetime range
             # =================================================================
-            print("\n" + "=" * 70)
-            print("EXAMPLE 6: Query with specific datetime range")
-            print("=" * 70)
+            log_console("\n" + "=" * 70)
+            log_console("EXAMPLE 6: Query with specific datetime range")
+            log_console("=" * 70)
             
             df2, warnings2 = manager.query_local_data(
                 asset=first['asset'],
@@ -117,17 +118,17 @@ async def example_usage():
             )
             
             if warnings2:
-                print(f"\nWarnings: {warnings2}")
+                log_console(f"\nWarnings: {warnings2}")
             
             if df2 is not None:
-                print(f"\nRetrieved {len(df2)} rows between market hours")
-                print(f"\nFirst 5 rows:")
-                print(df2.head())
+                log_console(f"\nRetrieved {len(df2)} rows between market hours")
+                log_console(f"\nFirst 5 rows:")
+                log_console(df2.head())
         
         else:
-            print("\n" + "=" * 70)
-            print("No data available - sync some data first!")
-            print("=" * 70)
+            log_console("\n" + "=" * 70)
+            log_console("No data available - sync some data first!")
+            log_console("=" * 70)
 
 
 if __name__ == "__main__":

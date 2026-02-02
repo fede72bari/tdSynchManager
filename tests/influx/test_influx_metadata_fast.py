@@ -1,6 +1,7 @@
 """
 Test the new fast metadata query approach
 """
+from console_log import log_console
 
 import time
 import sys
@@ -29,14 +30,14 @@ test_measurements = [
     ("AAL-option-1d", "smaller table")
 ]
 
-print("=" * 80)
-print("Testing FAST Parquet metadata query")
-print("=" * 80)
+log_console("=" * 80)
+log_console("Testing FAST Parquet metadata query")
+log_console("=" * 80)
 
 for meas, desc in test_measurements:
-    print(f"\n{'=' * 80}")
-    print(f"Measurement: {meas} ({desc})")
-    print(f"{'=' * 80}")
+    log_console(f"\n{'=' * 80}")
+    log_console(f"Measurement: {meas} ({desc})")
+    log_console(f"{'=' * 80}")
 
     sql = f"""
     SELECT MIN(min_time) AS start_ts, MAX(max_time) AS end_ts
@@ -44,7 +45,7 @@ for meas, desc in test_measurements:
     WHERE table_name = '{meas}'
     """
 
-    print(f"[QUERY] {sql.strip()}")
+    log_console(f"[QUERY] {sql.strip()}")
 
     t0 = time.time()
     try:
@@ -70,16 +71,16 @@ for meas, desc in test_measurements:
             else:
                 last_iso = "N/A"
 
-            print(f"[RESULT] SUCCESS - Elapsed: {elapsed:.3f}s")
-            print(f"[RESULT] First timestamp: {first_iso}")
-            print(f"[RESULT] Last timestamp:  {last_iso}")
+            log_console(f"[RESULT] SUCCESS - Elapsed: {elapsed:.3f}s")
+            log_console(f"[RESULT] First timestamp: {first_iso}")
+            log_console(f"[RESULT] Last timestamp:  {last_iso}")
         else:
-            print(f"[RESULT] WARNING - No data found (table might be empty or not exist)")
+            log_console(f"[RESULT] WARNING - No data found (table might be empty or not exist)")
 
     except Exception as e:
         elapsed = time.time() - t0
-        print(f"[ERROR] FAILED after {elapsed:.3f}s: {e}")
+        log_console(f"[ERROR] FAILED after {elapsed:.3f}s: {e}")
 
-print(f"\n{'=' * 80}")
-print("TEST COMPLETED")
-print("=" * 80)
+log_console(f"\n{'=' * 80}")
+log_console("TEST COMPLETED")
+log_console("=" * 80)

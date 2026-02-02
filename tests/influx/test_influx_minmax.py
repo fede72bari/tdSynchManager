@@ -1,6 +1,7 @@
 """
 Test InfluxDB MIN/MAX query performance
 """
+from console_log import log_console
 
 import sys
 from pathlib import Path
@@ -14,9 +15,9 @@ from tdSynchManager.manager import ThetaSyncManager
 from tdSynchManager.credentials import get_influx_credentials
 
 def main():
-    print("=" * 80)
-    print("TEST: InfluxDB MIN/MAX Query Performance")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: InfluxDB MIN/MAX Query Performance")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -34,32 +35,32 @@ def main():
     manager = ThetaSyncManager(cfg, client=None)
 
     # Test 1: XOM option 5m (the problematic measurement)
-    print(f"\n{'='*80}")
-    print("Test 1: XOM option 5m")
-    print('='*80)
+    log_console(f"\n{'='*80}")
+    log_console("Test 1: XOM option 5m")
+    log_console('='*80)
 
     t0 = time.time()
     first, last = manager._get_first_last_day_from_sink("option", "XOM", "5m", "influxdb")
     elapsed = time.time() - t0
 
-    print(f"\n[RESULT] first={first}, last={last}")
-    print(f"[RESULT] Total elapsed: {elapsed:.2f}s")
+    log_console(f"\n[RESULT] first={first}, last={last}")
+    log_console(f"[RESULT] Total elapsed: {elapsed:.2f}s")
 
     # Test 2: AAL option 1d
-    print(f"\n{'='*80}")
-    print("Test 2: AAL option 1d")
-    print('='*80)
+    log_console(f"\n{'='*80}")
+    log_console("Test 2: AAL option 1d")
+    log_console('='*80)
 
     t0 = time.time()
     first, last = manager._get_first_last_day_from_sink("option", "AAL", "1d", "influxdb")
     elapsed = time.time() - t0
 
-    print(f"\n[RESULT] first={first}, last={last}")
-    print(f"[RESULT] Total elapsed: {elapsed:.2f}s")
+    log_console(f"\n[RESULT] first={first}, last={last}")
+    log_console(f"[RESULT] Total elapsed: {elapsed:.2f}s")
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

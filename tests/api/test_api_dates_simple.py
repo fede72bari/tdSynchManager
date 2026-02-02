@@ -1,6 +1,7 @@
 """
 Simple test of API date discovery with detailed logging
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -16,9 +17,9 @@ from tdSynchManager.credentials import get_influx_credentials
 
 
 async def main():
-    print("=" * 80)
-    print("TEST: API Date Discovery - Single Symbol (AAL)")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: API Date Discovery - Single Symbol (AAL)")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -50,12 +51,12 @@ async def main():
         ),
     ]
 
-    print(f"\nConfiguration:")
-    print(f"  Symbol: AAL (SINGLE)")
-    print(f"  Interval: 1d")
-    print(f"  Date range: 2020-01-02 to 2025-11-25")
-    print(f"  API date discovery: ENABLED")
-    print("-" * 80)
+    log_console(f"\nConfiguration:")
+    log_console(f"  Symbol: AAL (SINGLE)")
+    log_console(f"  Interval: 1d")
+    log_console(f"  Date range: 2020-01-02 to 2025-11-25")
+    log_console(f"  API date discovery: ENABLED")
+    log_console("-" * 80)
 
     async with ThetaDataV3Client(
         timeout_total=1800.0,
@@ -64,13 +65,13 @@ async def main():
         install_td_server_error_logger(client)
         manager = ThetaSyncManager(cfg, client=client)
 
-        print("\n[MAIN] Starting manager.run()...")
+        log_console("\n[MAIN] Starting manager.run()...")
         await manager.run(tasks)
-        print("[MAIN] manager.run() completed")
+        log_console("[MAIN] manager.run() completed")
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

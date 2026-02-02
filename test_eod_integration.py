@@ -12,6 +12,7 @@ Usage:
 
 Note: This requires ThetaData terminal to be running.
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -25,9 +26,9 @@ from tdSynchManager import ThetaSyncManager, ManagerConfig, Task, ThetaDataV3Cli
 
 async def test_eod_download_small_range():
     """Test EOD download with small date range to verify OI logic."""
-    print("\n" + "="*80)
-    print("INTEGRATION TEST: EOD Download with OI Date-Shift")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("INTEGRATION TEST: EOD Download with OI Date-Shift")
+    log_console("="*80)
 
     # Create minimal config for testing
     config = ManagerConfig(
@@ -55,54 +56,54 @@ async def test_eod_download_small_range():
         use_api_date_discovery=True,  # Enable API date discovery
     )
 
-    print(f"\nTest configuration:")
-    print(f"  Symbols: {test_task.symbols}")
-    print(f"  Intervals: {test_task.intervals}")
-    print(f"  Date range: {test_task.first_date_override} to {test_task.end_date_override}")
-    print(f"  Sink: {test_task.sink}")
-    print(f"  Enrich Greeks: {test_task.enrich_bar_greeks}")
-    print(f"  API Date Discovery: {test_task.use_api_date_discovery}")
+    log_console(f"\nTest configuration:")
+    log_console(f"  Symbols: {test_task.symbols}")
+    log_console(f"  Intervals: {test_task.intervals}")
+    log_console(f"  Date range: {test_task.first_date_override} to {test_task.end_date_override}")
+    log_console(f"  Sink: {test_task.sink}")
+    log_console(f"  Enrich Greeks: {test_task.enrich_bar_greeks}")
+    log_console(f"  API Date Discovery: {test_task.use_api_date_discovery}")
 
-    print("\n" + "-"*80)
-    print("Expected behavior:")
-    print("  1. Fetch available dates from ThetaData API")
-    print("  2. Build next_trading_date_map")
-    print("  3. For each EOD date D:")
-    print("     - Request OI for next_trading_date(D)")
-    print("     - Merge OI with effective_date matching D")
-    print("  4. Skip last available date (no next_trading_date)")
-    print("-"*80)
+    log_console("\n" + "-"*80)
+    log_console("Expected behavior:")
+    log_console("  1. Fetch available dates from ThetaData API")
+    log_console("  2. Build next_trading_date_map")
+    log_console("  3. For each EOD date D:")
+    log_console("     - Request OI for next_trading_date(D)")
+    log_console("     - Merge OI with effective_date matching D")
+    log_console("  4. Skip last available date (no next_trading_date)")
+    log_console("-"*80)
 
     try:
-        print("\nStarting download...")
-        print("(Watch for [EOD-OI-SHIFT] and [OI-EOD] log messages)")
-        print("")
+        log_console("\nStarting download...")
+        log_console("(Watch for [EOD-OI-SHIFT] and [OI-EOD] log messages)")
+        log_console("")
 
         await manager.run(tasks=[test_task])
 
-        print("\n" + "="*80)
-        print("INTEGRATION TEST COMPLETED")
-        print("="*80)
+        log_console("\n" + "="*80)
+        log_console("INTEGRATION TEST COMPLETED")
+        log_console("="*80)
 
         # Check output files
         output_dir = Path("./test_output/data/option/AAL/1d/csv")
         if output_dir.exists():
             files = sorted(output_dir.glob("*.csv"))
-            print(f"\nOutput files created: {len(files)}")
+            log_console(f"\nOutput files created: {len(files)}")
             for f in files:
-                print(f"  - {f.name}")
+                log_console(f"  - {f.name}")
 
             # Verify that last available date was skipped
             if files:
                 last_file = files[-1]
                 last_date = last_file.name.split("T")[0]
-                print(f"\nLast downloaded date: {last_date}")
-                print(f"Expected: Should NOT be the last available date from ThetaData")
+                log_console(f"\nLast downloaded date: {last_date}")
+                log_console(f"Expected: Should NOT be the last available date from ThetaData")
         else:
-            print("\nWARNING: No output files found")
+            log_console("\nWARNING: No output files found")
 
     except Exception as e:
-        print(f"\n[FAIL] Integration test failed: {e}")
+        log_console(f"\n[FAIL] Integration test failed: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -114,23 +115,23 @@ async def test_eod_download_small_range():
 
 def main():
     """Run integration test."""
-    print("\n" + "#"*80)
-    print("# EOD OI DATE-SHIFT INTEGRATION TEST")
-    print("#"*80)
-    print("\nPre-requisites:")
-    print("  1. ThetaData terminal must be running")
-    print("  2. Valid ThetaData credentials in credentials.json")
-    print("  3. Internet connection")
-    print("\nThis test will download a few days of AAL option EOD data")
-    print("to verify the new OI date-shift logic.")
-    print("")
+    log_console("\n" + "#"*80)
+    log_console("# EOD OI DATE-SHIFT INTEGRATION TEST")
+    log_console("#"*80)
+    log_console("\nPre-requisites:")
+    log_console("  1. ThetaData terminal must be running")
+    log_console("  2. Valid ThetaData credentials in credentials.json")
+    log_console("  3. Internet connection")
+    log_console("\nThis test will download a few days of AAL option EOD data")
+    log_console("to verify the new OI date-shift logic.")
+    log_console("")
 
     try:
         asyncio.run(test_eod_download_small_range())
     except KeyboardInterrupt:
-        print("\n\nTest interrupted by user")
+        log_console("\n\nTest interrupted by user")
     except Exception as e:
-        print(f"\n\n[FAIL] Test failed: {e}")
+        log_console(f"\n\n[FAIL] Test failed: {e}")
         sys.exit(1)
 
 

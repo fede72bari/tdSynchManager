@@ -1,6 +1,7 @@
 """
 Test minimale: scarica UN SOLO giorno per vedere i debug log.
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -18,9 +19,9 @@ sys.path.insert(0, str(PKG_SRC))
 from tdSynchManager import ThetaSyncManager, ManagerConfig, Task, ThetaDataV3Client
 
 async def test_single_day():
-    print("=" * 80)
-    print("TEST: Single day download con debug logging")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: Single day download con debug logging")
+    log_console("=" * 80)
 
     config = ManagerConfig(
         root_dir="./test_output",
@@ -43,22 +44,22 @@ async def test_single_day():
         use_api_date_discovery=True,
     )
 
-    print(f"\nDownload: {task.symbols[0]} {task.intervals[0]} date={task.first_date_override}")
-    print("\nCerca questi log:")
-    print("  [DEBUG-EDOI-1] Created effective_date_oi")
-    print("  [DEBUG-EDOI-2] After normalize")
-    print("  [DEBUG-EDOI-3-4-5] Merge process")
-    print("  [DEBUG-EDOI-6-7] Before/After _ensure_ts_utc_column")
-    print("  [INFLUX-TS-CONV] Processing column 'effective_date_oi'")
-    print("")
+    log_console(f"\nDownload: {task.symbols[0]} {task.intervals[0]} date={task.first_date_override}")
+    log_console("\nCerca questi log:")
+    log_console("  [DEBUG-EDOI-1] Created effective_date_oi")
+    log_console("  [DEBUG-EDOI-2] After normalize")
+    log_console("  [DEBUG-EDOI-3-4-5] Merge process")
+    log_console("  [DEBUG-EDOI-6-7] Before/After _ensure_ts_utc_column")
+    log_console("  [INFLUX-TS-CONV] Processing column 'effective_date_oi'")
+    log_console("")
 
     try:
         await manager.run(tasks=[task])
-        print("\n" + "=" * 80)
-        print("TEST COMPLETATO - Controlla i log sopra")
-        print("=" * 80)
+        log_console("\n" + "=" * 80)
+        log_console("TEST COMPLETATO - Controlla i log sopra")
+        log_console("=" * 80)
     except Exception as e:
-        print(f"\nERRORE: {e}")
+        log_console(f"\nERRORE: {e}")
         import traceback
         traceback.print_exc()
     finally:

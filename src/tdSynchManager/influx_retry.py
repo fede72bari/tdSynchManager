@@ -2,6 +2,7 @@
 Retry logic con exponential backoff per InfluxDB writes
 Gestisce timeout e salva batch falliti per recovery
 """
+from console_log import log_console
 
 import time
 import os
@@ -77,7 +78,7 @@ class InfluxWriteRetry:
                 self.stats['successful'] += 1
                 if attempt > 0:
                     self.stats['recovered_on_retry'] += 1
-                    print(f"[INFLUX][RETRY-SUCCESS] measurement={measurement} "
+                    log_console(f"[INFLUX][RETRY-SUCCESS] measurement={measurement} "
                           f"batch={batch_idx} recovered after {attempt} retries")
 
                 return True
@@ -89,7 +90,7 @@ class InfluxWriteRetry:
 
                 # Auth errors: non retry, rilancia subito
                 if is_auth_error:
-                    print(f"[INFLUX][FATAL] Auth error - no retry: {e}")
+                    log_console(f"[INFLUX][FATAL] Auth error - no retry: {e}")
                     raise
 
                 # Timeout o errore generico
@@ -98,7 +99,7 @@ class InfluxWriteRetry:
                     delay = min(self.base_delay * (2 ** attempt), self.max_delay)
 
                     self.stats['retried'] += 1
-                    print(f"[INFLUX][RETRY] measurement={measurement} batch={batch_idx} "
+                    log_console(f"[INFLUX][RETRY] measurement={measurement} batch={batch_idx} "
                           f"attempt={attempt+1}/{self.max_retries} error={error_type} "
                           f"waiting {delay:.1f}s before retry...")
 
@@ -106,7 +107,7 @@ class InfluxWriteRetry:
                 else:
                     # Fallito dopo tutti i retry
                     self.stats['failed'] += 1
-                    print(f"[INFLUX][FAILED] measurement={measurement} batch={batch_idx} "
+                    log_console(f"[INFLUX][FAILED] measurement={measurement} batch={batch_idx} "
                           f"failed after {self.max_retries} attempts: {error_type}: {e}")
 
                     # Salva batch fallito per recovery manuale
@@ -149,9 +150,9 @@ class InfluxWriteRetry:
         try:
             with open(filepath, 'w') as f:
                 json.dump(failed_batch, f, indent=2)
-            print(f"[INFLUX][SAVED-FAILED] Batch salvato in: {filepath}")
+            log_console(f"[INFLUX][SAVED-FAILED] Batch salvato in: {filepath}")
         except Exception as e:
-            print(f"[INFLUX][ERROR] Impossibile salvare batch fallito: {e}")
+            log_console(f"[INFLUX][ERROR] Impossibile salvare batch fallito: {e}")
 
     def get_stats(self) -> Dict[str, int]:
         """Restituisce statistiche retry."""
@@ -168,19 +169,19 @@ class InfluxWriteRetry:
         retry_rate = 100 * s['retried'] / total
         recovery_rate = 100 * s['recovered_on_retry'] / total if s['retried'] > 0 else 0
 
-        print("\n" + "=" * 80)
-        print("INFLUX WRITE SUMMARY")
-        print("=" * 80)
-        print(f"Total batches:          {total}")
-        print(f"Successful (1st try):   {s['successful'] - s['recovered_on_retry']}")
-        print(f"Retried:                {s['retried']}")
-        print(f"Recovered on retry:     {s['recovered_on_retry']}")
-        print(f"Failed (permanent):     {s['failed']}")
-        print(f"Success rate:           {success_rate:.1f}%")
-        print(f"Retry rate:             {retry_rate:.1f}%")
+        log_console("\n" + "=" * 80)
+        log_console("INFLUX WRITE SUMMARY")
+        log_console("=" * 80)
+        log_console(f"Total batches:          {total}")
+        log_console(f"Successful (1st try):   {s['successful'] - s['recovered_on_retry']}")
+        log_console(f"Retried:                {s['retried']}")
+        log_console(f"Recovered on retry:     {s['recovered_on_retry']}")
+        log_console(f"Failed (permanent):     {s['failed']}")
+        log_console(f"Success rate:           {success_rate:.1f}%")
+        log_console(f"Retry rate:             {retry_rate:.1f}%")
         if s['retried'] > 0:
-            print(f"Recovery rate:          {recovery_rate:.1f}%")
-        print("=" * 80)
+            log_console(f"Recovery rate:          {recovery_rate:.1f}%")
+        log_console("=" * 80)
 
 
 def recover_failed_batches(
@@ -203,17 +204,17 @@ def recover_failed_batches(
     delete_recovered : bool
         Se True, elimina il file dopo un recovery riuscito. Se False, rinomina a .recovered.
     """
-    print("=" * 80)
-    print(f"RECOVERING FAILED BATCHES from {failed_batch_dir}")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console(f"RECOVERING FAILED BATCHES from {failed_batch_dir}")
+    log_console("=" * 80)
 
     failed_files = list(Path(failed_batch_dir).glob("failed_*.json"))
 
     if not failed_files:
-        print("[RECOVERY] No failed batches found")
+        log_console("[RECOVERY] No failed batches found")
         return
 
-    print(f"[RECOVERY] Found {len(failed_files)} failed batches")
+    log_console(f"[RECOVERY] Found {len(failed_files)} failed batches")
 
     recovered = 0
     still_failed = 0
@@ -228,25 +229,25 @@ def recover_failed_batches(
             batch_idx = batch_data['batch_idx']
             original_error = batch_data.get('error', 'unknown')
 
-            print(f"\n[RECOVERY] Processing {filepath.name}")
-            print(f"[RECOVERY]   Measurement: {measurement}")
-            print(f"[RECOVERY]   Lines: {len(lines)}")
-            print(f"[RECOVERY]   Original error: {original_error[:100]}...")
+            log_console(f"\n[RECOVERY] Processing {filepath.name}")
+            log_console(f"[RECOVERY]   Measurement: {measurement}")
+            log_console(f"[RECOVERY]   Lines: {len(lines)}")
+            log_console(f"[RECOVERY]   Original error: {original_error[:100]}...")
 
             if dry_run:
-                print(f"[RECOVERY]   DRY-RUN: Would attempt to write {len(lines)} lines")
+                log_console(f"[RECOVERY]   DRY-RUN: Would attempt to write {len(lines)} lines")
                 continue
 
             # Tentativo di recovery
             try:
                 client.write(record=lines)
-                print("[RECOVERY]   SUCCESS - Batch recovered!")
+                log_console("[RECOVERY]   SUCCESS - Batch recovered!")
 
                 if delete_recovered:
                     try:
                         filepath.unlink()
                     except Exception as e:
-                        print(f"[RECOVERY]   WARN - Could not delete {filepath.name}: {e}")
+                        log_console(f"[RECOVERY]   WARN - Could not delete {filepath.name}: {e}")
                 else:
                     recovered_path = filepath.with_suffix('.recovered')
                     filepath.rename(recovered_path)
@@ -254,21 +255,21 @@ def recover_failed_batches(
                 recovered += 1
 
             except Exception as e:
-                print(f"[RECOVERY]   STILL FAILING: {type(e).__name__}: {e}")
+                log_console(f"[RECOVERY]   STILL FAILING: {type(e).__name__}: {e}")
                 still_failed += 1
 
         except Exception as e:
-            print(f"[RECOVERY] Error processing {filepath}: {e}")
+            log_console(f"[RECOVERY] Error processing {filepath}: {e}")
             still_failed += 1
 
-    print("\n" + "=" * 80)
-    print("RECOVERY SUMMARY")
-    print("=" * 80)
-    print(f"Total files:      {len(failed_files)}")
-    print(f"Recovered:        {recovered}")
-    print(f"Still failing:    {still_failed}")
-    print(f"Skipped (dry):    {len(failed_files) - recovered - still_failed if dry_run else 0}")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("RECOVERY SUMMARY")
+    log_console("=" * 80)
+    log_console(f"Total files:      {len(failed_files)}")
+    log_console(f"Recovered:        {recovered}")
+    log_console(f"Still failing:    {still_failed}")
+    log_console(f"Skipped (dry):    {len(failed_files) - recovered - still_failed if dry_run else 0}")
+    log_console("=" * 80)
 
 
 def delete_failed_batch(

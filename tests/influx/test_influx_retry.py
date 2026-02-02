@@ -1,6 +1,7 @@
 """
 Test del sistema di retry e recovery per InfluxDB writes
 """
+from console_log import log_console
 
 import sys
 import os
@@ -14,9 +15,9 @@ def test_retry_logic():
     """Test del retry logic con batch simulati."""
     from tdSynchManager.credentials import get_influx_credentials
 
-    print("=" * 80)
-    print("TEST: InfluxDB Retry Logic")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: InfluxDB Retry Logic")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -39,9 +40,9 @@ def test_retry_logic():
     )
 
     # Simula scrittura di 5 batch
-    print("\n" + "-" * 80)
-    print("Writing 5 batches...")
-    print("-" * 80)
+    log_console("\n" + "-" * 80)
+    log_console("Writing 5 batches...")
+    log_console("-" * 80)
 
     now_ns = int(time.time() * 1e9)
 
@@ -58,7 +59,7 @@ def test_retry_logic():
             'date': '2025-12-05'
         }
 
-        print(f"\n[BATCH {batch_idx}] Writing {len(lines)} points...")
+        log_console(f"\n[BATCH {batch_idx}] Writing {len(lines)} points...")
         success = retry_mgr.write_with_retry(
             client=client,
             lines=lines,
@@ -68,32 +69,32 @@ def test_retry_logic():
         )
 
         if success:
-            print(f"[BATCH {batch_idx}] ✓ SUCCESS")
+            log_console(f"[BATCH {batch_idx}] ✓ SUCCESS")
         else:
-            print(f"[BATCH {batch_idx}] ✗ FAILED after retries - saved for recovery")
+            log_console(f"[BATCH {batch_idx}] ✗ FAILED after retries - saved for recovery")
 
     # Mostra statistiche
     retry_mgr.print_summary()
 
     # Test recovery
-    print("\n\n" + "=" * 80)
-    print("TEST: Failed Batch Recovery")
-    print("=" * 80)
+    log_console("\n\n" + "=" * 80)
+    log_console("TEST: Failed Batch Recovery")
+    log_console("=" * 80)
 
     failed_dir = "./failed_influx_batches"
     if os.path.exists(failed_dir) and os.listdir(failed_dir):
-        print("\n[RECOVERY] Attempting to recover failed batches...")
+        log_console("\n[RECOVERY] Attempting to recover failed batches...")
         recover_failed_batches(
             failed_batch_dir=failed_dir,
             client=client,
             dry_run=False  # Cambia a True per solo simulazione
         )
     else:
-        print("[RECOVERY] No failed batches to recover")
+        log_console("[RECOVERY] No failed batches to recover")
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

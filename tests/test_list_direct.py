@@ -1,4 +1,5 @@
 """Direct test without full imports"""
+from console_log import log_console
 import sys
 import os
 import importlib.util
@@ -27,21 +28,21 @@ spec.loader.exec_module(manager_module)
 ThetaSyncManager = manager_module.ThetaSyncManager
 manager = ThetaSyncManager(MockConfig(), MockClient())
 
-print("=" * 70)
-print("Testing list_available_data()")
-print("=" * 70)
+log_console("=" * 70)
+log_console("Testing list_available_data()")
+log_console("=" * 70)
 
 # Test
-print("\nListing all available data...")
+log_console("\nListing all available data...")
 try:
     result = manager.list_available_data()
-    print(f"Found {len(result)} series\n")
+    log_console(f"Found {len(result)} series\n")
     if not result.empty:
-        print(result.to_string())
+        log_console(result.to_string())
     else:
-        print("No data found - is the path correct?")
-        print(f"Looking in: {MockConfig.root_dir}/data/")
+        log_console("No data found - is the path correct?")
+        log_console(f"Looking in: {MockConfig.root_dir}/data/")
 except Exception as e:
-    print(f"ERROR: {e}")
+    log_console(f"ERROR: {e}")
     import traceback
     traceback.print_exc()

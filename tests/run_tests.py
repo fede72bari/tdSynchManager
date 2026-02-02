@@ -2,6 +2,7 @@
 Test Data Consistency - Real Execution
 Tests real-time validation, retry, InfluxDB verification, and post-hoc coherence checking
 """
+from console_log import log_console
 
 import asyncio
 import pandas as pd
@@ -40,9 +41,9 @@ cfg = ManagerConfig(
 
 async def test_1_real_time_download():
     """Test 1: Real-time download with validation and retry"""
-    print("\n" + "="*80)
-    print("TEST 1: Real-Time Download with Validation and Retry")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST 1: Real-Time Download with Validation and Retry")
+    log_console("="*80)
 
     tasks = [
         Task(
@@ -69,32 +70,32 @@ async def test_1_real_time_download():
         ),
     ]
 
-    print("\n[TEST] Running download tasks...")
-    print("Expected behavior:")
-    print("  - Download data for TLRY options")
-    print("  - Validate completeness (candles, columns, volume)")
-    print("  - Retry up to N times if validation fails")
-    print("  - Write to InfluxDB with verification")
-    print("  - Retry only missing rows if partial write detected")
-    print("")
+    log_console("\n[TEST] Running download tasks...")
+    log_console("Expected behavior:")
+    log_console("  - Download data for TLRY options")
+    log_console("  - Validate completeness (candles, columns, volume)")
+    log_console("  - Retry up to N times if validation fails")
+    log_console("  - Write to InfluxDB with verification")
+    log_console("  - Retry only missing rows if partial write detected")
+    log_console("")
 
     async with ThetaDataV3Client() as client:
         install_td_server_error_logger(client)
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n[TEST] Download completed. Check logs above for:")
-    print("  [OK] [VALIDATION] messages showing validation results")
-    print("  [OK] [INFLUX][WRITE] messages showing write operations")
-    print("  [OK] Retry attempts if validation failed")
-    print("  [OK] Verification after write")
+    log_console("\n[TEST] Download completed. Check logs above for:")
+    log_console("  [OK] [VALIDATION] messages showing validation results")
+    log_console("  [OK] [INFLUX][WRITE] messages showing write operations")
+    log_console("  [OK] Retry attempts if validation failed")
+    log_console("  [OK] Verification after write")
 
 
 async def test_2_list_measurements():
     """Test 2: List available measurements in InfluxDB"""
-    print("\n" + "="*80)
-    print("TEST 2: List Available InfluxDB Measurements")
-    print("="*80 + "\n")
+    log_console("\n" + "="*80)
+    log_console("TEST 2: List Available InfluxDB Measurements")
+    log_console("="*80 + "\n")
 
     client = InfluxDBClient3(
         host=influx_url,
@@ -107,24 +108,24 @@ async def test_2_list_measurements():
         result = client.query(query)
         df_tables = result.to_pandas()
 
-        print(df_tables)
-        print(f"\nTotal measurements: {len(df_tables)}")
+        log_console(df_tables)
+        log_console(f"\nTotal measurements: {len(df_tables)}")
 
         measurements = df_tables['table_name'].tolist()
         client.close()
         return measurements
 
     except Exception as e:
-        print(f"Error listing tables: {e}")
+        log_console(f"Error listing tables: {e}")
         client.close()
         return []
 
 
 async def test_3_coherence_checking(measurements):
     """Test 3: Post-hoc coherence checking on all measurements"""
-    print("\n" + "="*80)
-    print("TEST 3: Post-Hoc Coherence Checking on All Measurements")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("TEST 3: Post-Hoc Coherence Checking on All Measurements")
+    log_console("="*80)
 
     async with ThetaDataV3Client() as client:
         install_td_server_error_logger(client)
@@ -135,9 +136,9 @@ async def test_3_coherence_checking(measurements):
         tlry_measurements = [m for m in measurements if 'TLRY' in m]
 
         for measurement in tlry_measurements:
-            print(f"\n{'='*60}")
-            print(f"Checking: {measurement}")
-            print(f"{'='*60}")
+            log_console(f"\n{'='*60}")
+            log_console(f"Checking: {measurement}")
+            log_console(f"{'='*60}")
 
             try:
                 parts = measurement.split('-')
@@ -149,8 +150,8 @@ async def test_3_coherence_checking(measurements):
                     end_date = pd.Timestamp.now().date()
                     start_date = end_date - pd.Timedelta(days=30)
 
-                    print(f"Symbol: {symbol}, Asset: {asset}, Interval: {interval}")
-                    print(f"Checking range: {start_date} to {end_date}")
+                    log_console(f"Symbol: {symbol}, Asset: {asset}, Interval: {interval}")
+                    log_console(f"Checking range: {start_date} to {end_date}")
 
                     report = await checker.check(
                         symbol=symbol,
@@ -162,20 +163,20 @@ async def test_3_coherence_checking(measurements):
                     )
 
                     if report.issues:
-                        print(f"\n[WARNING] Found {len(report.issues)} issues:")
+                        log_console(f"\n[WARNING] Found {len(report.issues)} issues:")
                         for issue in report.issues:
-                            print(f"  - {issue.issue_type}: {issue.description}")
+                            log_console(f"  - {issue.issue_type}: {issue.description}")
                             if 'problem_segments' in issue.details:
                                 for seg in issue.details['problem_segments'][:5]:
                                     seg_start = seg.get('segment_start', 'N/A')
                                     seg_end = seg.get('segment_end', 'N/A')
                                     seg_issue = seg.get('issue', 'N/A')
-                                    print(f"    {seg_start}-{seg_end}: {seg_issue}")
+                                    log_console(f"    {seg_start}-{seg_end}: {seg_issue}")
                     else:
-                        print("[OK] No coherence issues found")
+                        log_console("[OK] No coherence issues found")
 
             except Exception as e:
-                print(f"[ERROR] Error checking {measurement}: {e}")
+                log_console(f"[ERROR] Error checking {measurement}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -185,9 +186,9 @@ async def test_4_check_logs():
     import os
     import glob
 
-    print("\n" + "="*80)
-    print("TEST 4: Data Consistency Logs")
-    print("="*80 + "\n")
+    log_console("\n" + "="*80)
+    log_console("TEST 4: Data Consistency Logs")
+    log_console("="*80 + "\n")
 
     log_dir = os.path.join(cfg.root_dir, "logs")
 
@@ -195,39 +196,39 @@ async def test_4_check_logs():
         log_files = glob.glob(os.path.join(log_dir, "data_consistency_*.parquet"))
 
         if log_files:
-            print(f"Found {len(log_files)} log files:\n")
+            log_console(f"Found {len(log_files)} log files:\n")
 
             latest_log = max(log_files, key=os.path.getmtime)
-            print(f"Latest log: {os.path.basename(latest_log)}")
+            log_console(f"Latest log: {os.path.basename(latest_log)}")
 
             try:
                 log_df = pd.read_parquet(latest_log)
-                print(f"\nLog entries: {len(log_df)}")
-                print("\nRecent log entries (last 20):")
-                print(log_df.tail(20).to_string())
+                log_console(f"\nLog entries: {len(log_df)}")
+                log_console("\nRecent log entries (last 20):")
+                log_console(log_df.tail(20).to_string())
 
-                print("\n" + "-"*80)
-                print("Summary by event type:")
-                print(log_df['event_type'].value_counts())
+                log_console("\n" + "-"*80)
+                log_console("Summary by event type:")
+                log_console(log_df['event_type'].value_counts())
 
-                print("\n" + "-"*80)
-                print("Summary by severity:")
+                log_console("\n" + "-"*80)
+                log_console("Summary by severity:")
                 if 'severity' in log_df.columns:
-                    print(log_df['severity'].value_counts())
+                    log_console(log_df['severity'].value_counts())
 
             except Exception as e:
-                print(f"Error reading log: {e}")
+                log_console(f"Error reading log: {e}")
         else:
-            print("No log files found")
+            log_console("No log files found")
     else:
-        print(f"Log directory not found: {log_dir}")
+        log_console(f"Log directory not found: {log_dir}")
 
 
 async def test_5_query_specific_data():
     """Test 5: Query specific data from InfluxDB to verify writes"""
-    print("\n" + "="*80)
-    print("TEST 5: Query Recent Data from InfluxDB")
-    print("="*80 + "\n")
+    log_console("\n" + "="*80)
+    log_console("TEST 5: Query Recent Data from InfluxDB")
+    log_console("="*80 + "\n")
 
     client = InfluxDBClient3(
         host=influx_url,
@@ -240,7 +241,7 @@ async def test_5_query_specific_data():
         measurements = ["TLRY-option-1d", "TLRY-option-5m"]
 
         for measurement in measurements:
-            print(f"\nQuerying {measurement}...")
+            log_console(f"\nQuerying {measurement}...")
 
             # Get last 10 rows
             query = f'''
@@ -255,28 +256,28 @@ async def test_5_query_specific_data():
                 df = result.to_pandas()
 
                 if not df.empty:
-                    print(f"[OK] Found {len(df)} rows:")
-                    print(df.to_string())
+                    log_console(f"[OK] Found {len(df)} rows:")
+                    log_console(df.to_string())
                 else:
-                    print(f"[WARNING] No data found in {measurement}")
+                    log_console(f"[WARNING] No data found in {measurement}")
 
             except Exception as e:
-                print(f"[ERROR] Error querying {measurement}: {e}")
+                log_console(f"[ERROR] Error querying {measurement}: {e}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        log_console(f"Error: {e}")
     finally:
         client.close()
 
 
 async def main():
     """Run all tests"""
-    print("\n" + "="*80)
-    print("DATA CONSISTENCY COMPREHENSIVE TEST SUITE")
-    print("="*80)
-    print(f"Testing symbols: {symbols}")
-    print(f"Validation enabled: {cfg.enable_data_validation}")
-    print(f"Strict mode: {cfg.validation_strict_mode}")
+    log_console("\n" + "="*80)
+    log_console("DATA CONSISTENCY COMPREHENSIVE TEST SUITE")
+    log_console("="*80)
+    log_console(f"Testing symbols: {symbols}")
+    log_console(f"Validation enabled: {cfg.enable_data_validation}")
+    log_console(f"Strict mode: {cfg.validation_strict_mode}")
 
     # Test 1: Real-time download
     await test_1_real_time_download()
@@ -294,9 +295,9 @@ async def main():
     # Test 5: Query data
     await test_5_query_specific_data()
 
-    print("\n" + "="*80)
-    print("ALL TESTS COMPLETED")
-    print("="*80)
+    log_console("\n" + "="*80)
+    log_console("ALL TESTS COMPLETED")
+    log_console("="*80)
 
 
 if __name__ == "__main__":

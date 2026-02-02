@@ -1,6 +1,7 @@
 """
 Test with single symbol (AAL only) to isolate parallel execution issues
 """
+from console_log import log_console
 
 import asyncio
 import sys
@@ -16,9 +17,9 @@ from tdSynchManager.credentials import get_influx_credentials
 
 
 async def main():
-    print("=" * 80)
-    print("TEST: Two Symbols (AAL + XOM, option 1d, mild_skip)")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: Two Symbols (AAL + XOM, option 1d, mild_skip)")
+    log_console("=" * 80)
 
     # Get InfluxDB credentials
     influx = get_influx_credentials()
@@ -49,12 +50,12 @@ async def main():
         ),
     ]
 
-    print(f"\nConfiguration:")
-    print(f"  Symbols: ['AAL', 'XOM'] (TWO)")
-    print(f"  Intervals: 1d")
-    print(f"  Date range: 2020-01-02 to 2025-11-25")
-    print(f"  Discover policy: mild_skip")
-    print("-" * 80)
+    log_console(f"\nConfiguration:")
+    log_console(f"  Symbols: ['AAL', 'XOM'] (TWO)")
+    log_console(f"  Intervals: 1d")
+    log_console(f"  Date range: 2020-01-02 to 2025-11-25")
+    log_console(f"  Discover policy: mild_skip")
+    log_console("-" * 80)
 
     async with ThetaDataV3Client(
         timeout_total=1800.0,
@@ -64,9 +65,9 @@ async def main():
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 
 if __name__ == "__main__":

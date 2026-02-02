@@ -1,3 +1,4 @@
+from console_log import log_console
 import sys
 import os
 import pandas as pd
@@ -25,7 +26,7 @@ files = manager._list_series_files(
     sink="csv"
 )
 
-print(f"Found {len(files)} files for QQQ options 5m CSV")
+log_console(f"Found {len(files)} files for QQQ options 5m CSV")
 
 # Extract last row from each file
 last_rows = []
@@ -45,30 +46,30 @@ for file_path in sorted(files):
             last_row['file_date'] = date_str
             last_row['file_path'] = file_path
             last_rows.append(last_row)
-            print(f"  {date_str}: {len(df)} rows, last timestamp: {last_row.get('timestamp', 'N/A')}")
+            log_console(f"  {date_str}: {len(df)} rows, last timestamp: {last_row.get('timestamp', 'N/A')}")
         else:
-            print(f"  {date_str}: EMPTY FILE")
+            log_console(f"  {date_str}: EMPTY FILE")
             
     except Exception as e:
-        print(f"  Error reading {file_path}: {e}")
+        log_console(f"  Error reading {file_path}: {e}")
 
 # Create final DataFrame
 if last_rows:
     result_df = pd.DataFrame(last_rows)
     
-    print(f"\n=== SUMMARY ===")
-    print(f"Total days processed: {len(result_df)}")
-    print(f"Date range: {result_df['file_date'].min()} to {result_df['file_date'].max()}")
+    log_console(f"\n=== SUMMARY ===")
+    log_console(f"Total days processed: {len(result_df)}")
+    log_console(f"Date range: {result_df['file_date'].min()} to {result_df['file_date'].max()}")
     
     # Save to CSV
     output_file = "examples/data/qqq_5m_last_rows.csv"
     result_df.to_csv(output_file, index=False)
-    print(f"\nSaved to: {output_file}")
+    log_console(f"\nSaved to: {output_file}")
     
     # Show first few rows
-    print(f"\nFirst 5 rows:")
-    print(result_df.head())
+    log_console(f"\nFirst 5 rows:")
+    log_console(result_df.head())
     
-    print(f"\nColumns: {list(result_df.columns)}")
+    log_console(f"\nColumns: {list(result_df.columns)}")
 else:
-    print("\nNo data found!")
+    log_console("\nNo data found!")

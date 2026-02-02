@@ -26,6 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from clients.ThetaDataV3Client import Interval, ThetaDataV3Client, ResilientThetaClient
+from console_log import log_console, set_log_verbosity
 from .config import DiscoverPolicy, ManagerConfig, Task, config_from_env
 from .logger import DataConsistencyLogger
 from .validator import DataValidator, ValidationResult
@@ -56,7 +57,7 @@ def _print_shell_version_banner():
     """Emit a single banner line so operators can verify the loaded build."""
     global _SHELL_VERSION_PRINTED
     if not _SHELL_VERSION_PRINTED:
-        print(f"[VERSION] tdSynchManager shell v{SHELL_LOG_VERSION} (EOD timestamp fix {EOD_TIMESTAMP_FIX_VERSION})")
+        log_console(f"[VERSION] tdSynchManager shell v{SHELL_LOG_VERSION} (EOD timestamp fix {EOD_TIMESTAMP_FIX_VERSION})")
         _SHELL_VERSION_PRINTED = True
 
 # -*- coding: utf-8 -*-
@@ -120,7 +121,7 @@ def install_td_server_error_logger(client):
     """
     orig = getattr(client, "_make_request", None)
     if not callable(orig):
-        print("[TD-HTTP-ERROR] _make_request non trovato sul client; impossibile installare il logger.")
+        log_console("[TD-HTTP-ERROR] _make_request non trovato sul client; impossibile installare il logger.")
         return
 
     async def _wrapped(endpoint: str, params: dict):
@@ -137,15 +138,15 @@ def install_td_server_error_logger(client):
             except Exception:
                 url  = f"{endpoint}  params={params}"
 
-            print(f"\n[TD-HTTP-ERROR] status={status} url={url}")
+            log_console(f"\n[TD-HTTP-ERROR] status={status} url={url}")
             if body is not None:
                 if isinstance(body, (bytes, bytearray)):
                     try: body = body.decode("utf-8", "replace")
                     except Exception: body = str(body)
                 # stampa max ~4000 char per non inondare la console
-                print(f"[TD-HTTP-ERROR-BODY]\n{str(body)[:4000]}\n")
+                log_console(f"[TD-HTTP-ERROR-BODY]\n{str(body)[:4000]}\n")
             else:
-                print(f"[TD-HTTP-ERROR-EXC] {type(e).__name__}: {e}\n")
+                log_console(f"[TD-HTTP-ERROR-EXC] {type(e).__name__}: {e}\n")
             raise  # Rilancia sempre
     client._make_request = _wrapped
 
@@ -326,6 +327,10 @@ class ThetaSyncManager:
         """
         _print_shell_version_banner()
         self.cfg = cfg
+        verbosity = getattr(cfg, "log_verbosity", 3)
+        if not getattr(cfg, "log_verbose_console", True):
+            verbosity = 0
+        set_log_verbosity(verbosity)
 
         # Initialize logger for data consistency tracking
         self.logger = DataConsistencyLogger(
@@ -464,7 +469,7 @@ class ThetaSyncManager:
                     'display.max_colwidth', None,
                     'display.width', 0
                 ):
-                    print(df)
+                    log_console(df)
             return None
 
         return df
@@ -598,7 +603,7 @@ class ThetaSyncManager:
             if asset == "option":
                 expected_combo_total = await self._expected_option_combos_for_day(symbol, day_iso)
                 if expected_combo_total:
-                    print(f"[VALIDATION][INFO] {symbol} {interval} {day_iso}: attese_combo={expected_combo_total} (exp x strike x right)")
+                    log_console(f"[VALIDATION][INFO] {symbol} {interval} {day_iso}: attese_combo={expected_combo_total} (exp x strike x right)")
 
             # Intraday OHLC: validate candle completeness
             validation_result = DataValidator.validate_intraday_completeness(
@@ -612,7 +617,7 @@ class ThetaSyncManager:
             # Log esito anche quando passa, con expected/actual
             if validation_result.valid:
                 det = validation_result.details or {}
-                print(f"[VALIDATION][OK] {symbol} {interval} {day_iso} buckets={det.get('actual_buckets')} exp_buckets=~{det.get('expected')} "
+                log_console(f"[VALIDATION][OK] {symbol} {interval} {day_iso} buckets={det.get('actual_buckets')} exp_buckets=~{det.get('expected')} "
                       f"combos_min={det.get('min_combos_per_bucket')} expected_combo_total={det.get('expected_combo_total')}")
                 # Log INFO anche nel logger
                 self.logger.log_info(
@@ -974,7 +979,7 @@ class ThetaSyncManager:
             elif isinstance(calendar_response, list) and len(calendar_response) > 0:
                 schedule_type = calendar_response[0].get("type", "")
             else:
-                print(f"[CALENDAR] Unexpected response format for {date_str}: {calendar_response}")
+                log_console(f"[CALENDAR] Unexpected response format for {date_str}: {calendar_response}")
                 return False
 
             # Normalize to a set of tokens (API can return a list like ['open']).
@@ -985,11 +990,11 @@ class ThetaSyncManager:
 
             # Check if it's a trading day
             is_trading = bool(tokens & {"open", "early_close"})
-            print(f"[CALENDAR] {date_str}: type={schedule_type}, tokens={sorted(tokens)}, is_trading={is_trading}")
+            log_console(f"[CALENDAR] {date_str}: type={schedule_type}, tokens={sorted(tokens)}, is_trading={is_trading}")
             return is_trading
 
         except Exception as e:
-            print(f"[CALENDAR][ERROR] Failed to check trading day for {date_obj}: {e}")
+            log_console(f"[CALENDAR][ERROR] Failed to check trading day for {date_obj}: {e}")
             # Fallback: assume weekend check only
             return date_obj.weekday() < 5
 
@@ -1016,10 +1021,10 @@ class ThetaSyncManager:
         """
         # Early exit if API discovery is disabled
         if not use_api_discovery:
-            print(f"[API-DATES] API date discovery disabled for {symbol} - using fallback")
+            log_console(f"[API-DATES] API date discovery disabled for {symbol} - using fallback")
             return None
 
-        print(f"[API-DATES][ENTER] asset={asset} symbol={symbol} interval={interval} start={start_date} end={end_date}")
+        log_console(f"[API-DATES][ENTER] asset={asset} symbol={symbol} interval={interval} start={start_date} end={end_date}")
 
         try:
             api_dates = None
@@ -1039,31 +1044,31 @@ class ThetaSyncManager:
                 # 1. Get all expirations
                 # 2. Find ONE expiration >= end_date (or closest if none >= end_date)
                 # 3. Get dates for ONLY that expiration (trading dates are same for all expirations)
-                print(f"[API-DATES][OPTION] Step 1: Fetching expirations for {symbol}...")
-                print(f"[API-DATES][OPTION] DEBUG: About to call option_list_expirations({symbol}, format_type='json')")
+                log_console(f"[API-DATES][OPTION] Step 1: Fetching expirations for {symbol}...")
+                log_console(f"[API-DATES][OPTION] DEBUG: About to call option_list_expirations({symbol}, format_type='json')")
 
                 # Build URL for logging
                 exp_url = f"http://localhost:25503/v3/option/list/expirations?symbol={symbol}&format=json"
-                print(f"[API-DATES][OPTION] DEBUG: URL will be: {exp_url}")
+                log_console(f"[API-DATES][OPTION] DEBUG: URL will be: {exp_url}")
 
                 try:
-                    print(f"[API-DATES][OPTION] DEBUG: CALLING await client.option_list_expirations() NOW for {symbol}...")
+                    log_console(f"[API-DATES][OPTION] DEBUG: CALLING await client.option_list_expirations() NOW for {symbol}...")
                     # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
                     exp_response, exp_url_returned = await self.client.option_list_expirations(symbol, format_type="json")
-                    print(f"[API-DATES][OPTION] DEBUG: RETURNED from option_list_expirations for {symbol}")
-                    print(f"[API-DATES][OPTION] DEBUG: URL returned: {exp_url_returned}")
-                    print(f"[API-DATES][OPTION] DEBUG: Response type={type(exp_response)}")
+                    log_console(f"[API-DATES][OPTION] DEBUG: RETURNED from option_list_expirations for {symbol}")
+                    log_console(f"[API-DATES][OPTION] DEBUG: URL returned: {exp_url_returned}")
+                    log_console(f"[API-DATES][OPTION] DEBUG: Response type={type(exp_response)}")
                 except Exception as e:
-                    print(f"[API-DATES][OPTION] ERROR: option_list_expirations failed for {symbol}: {e}")
+                    log_console(f"[API-DATES][OPTION] ERROR: option_list_expirations failed for {symbol}: {e}")
                     import traceback
                     traceback.print_exc()
                     return None
 
                 expirations = exp_response.get("expiration", exp_response) if isinstance(exp_response, dict) else exp_response
-                print(f"[API-DATES][OPTION] DEBUG: Extracted {len(expirations) if expirations else 0} expirations")
+                log_console(f"[API-DATES][OPTION] DEBUG: Extracted {len(expirations) if expirations else 0} expirations")
 
                 if not expirations:
-                    print(f"[API-DATES][OPTION] No expirations found for {symbol}")
+                    log_console(f"[API-DATES][OPTION] No expirations found for {symbol}")
                     return None
 
                 # ITERATIVE BACKWARD COVERAGE: Query multiple expirations to cover full historical range
@@ -1077,7 +1082,7 @@ class ThetaSyncManager:
                         continue
 
                 if not exp_dates:
-                    print(f"[API-DATES][OPTION] No valid expiration dates for {symbol}")
+                    log_console(f"[API-DATES][OPTION] No valid expiration dates for {symbol}")
                     return None
 
                 # Sort by expiration date
@@ -1089,7 +1094,7 @@ class ThetaSyncManager:
                 iteration = 0
                 max_iterations = 100  # Safety limit to prevent infinite loops (increased from 10)
 
-                print(f"[API-DATES][OPTION] Starting iterative backward coverage from {current_end} to {start_date}")
+                log_console(f"[API-DATES][OPTION] Starting iterative backward coverage from {current_end} to {start_date}")
 
                 while iteration < max_iterations:
                     iteration += 1
@@ -1105,7 +1110,7 @@ class ThetaSyncManager:
                     if not target_expiration:
                         target_expiration = exp_dates[-1][0]
 
-                    print(f"[API-DATES][OPTION] Iteration {iteration}: Fetching dates for expiration {target_expiration}...")
+                    log_console(f"[API-DATES][OPTION] Iteration {iteration}: Fetching dates for expiration {target_expiration}...")
 
                     try:
                         # Don't use asyncio.wait_for to avoid deadlock with ResilientThetaClient wrapper
@@ -1118,7 +1123,7 @@ class ThetaSyncManager:
 
                         dates = dates_response.get("date", dates_response) if isinstance(dates_response, dict) else dates_response
                         if not dates:
-                            print(f"[API-DATES][OPTION] No dates found for expiration {target_expiration}")
+                            log_console(f"[API-DATES][OPTION] No dates found for expiration {target_expiration}")
                             break
 
                         # Convert to date objects and add to set
@@ -1132,41 +1137,41 @@ class ThetaSyncManager:
                                 continue
 
                         if not iteration_dates:
-                            print(f"[API-DATES][OPTION] No valid dates from expiration {target_expiration}")
+                            log_console(f"[API-DATES][OPTION] No valid dates from expiration {target_expiration}")
                             break
 
                         # Find earliest date in this batch
                         first_date = min(iteration_dates)
-                        print(f"[API-DATES][OPTION] Collected {len(iteration_dates)} dates, earliest={first_date}, total_unique={len(all_api_dates)}")
+                        log_console(f"[API-DATES][OPTION] Collected {len(iteration_dates)} dates, earliest={first_date}, total_unique={len(all_api_dates)}")
 
                         # Check if we've covered the start_date
                         if not start_date or first_date <= start_date:
-                            print(f"[API-DATES][OPTION] Coverage complete: first_date={first_date} <= start_date={start_date}")
+                            log_console(f"[API-DATES][OPTION] Coverage complete: first_date={first_date} <= start_date={start_date}")
                             break
 
                         # Move backward to cover the gap
                         current_end = first_date
-                        print(f"[API-DATES][OPTION] Gap remaining, moving backward to {current_end}")
+                        log_console(f"[API-DATES][OPTION] Gap remaining, moving backward to {current_end}")
 
                     except Exception as e:
-                        print(f"[API-DATES][OPTION] Error querying expiration {target_expiration}: {e}")
+                        log_console(f"[API-DATES][OPTION] Error querying expiration {target_expiration}: {e}")
                         import traceback
                         traceback.print_exc()
                         break
 
                 if iteration >= max_iterations:
-                    print(f"[API-DATES][OPTION] WARNING: Reached max iterations ({max_iterations}), may not have full coverage")
+                    log_console(f"[API-DATES][OPTION] WARNING: Reached max iterations ({max_iterations}), may not have full coverage")
 
                 # Convert set to list for api_dates
                 api_dates = list(all_api_dates)
-                print(f"[API-DATES][OPTION] Final: Collected {len(api_dates)} unique dates across {iteration} expiration(s)")
+                log_console(f"[API-DATES][OPTION] Final: Collected {len(api_dates)} unique dates across {iteration} expiration(s)")
 
                 # Debug: Show all discovered dates and coverage
                 if api_dates:
                     sorted_dates = sorted(api_dates)
-                    print(f"[API-DATES][DEBUG] Discovered dates - First 10: {sorted_dates[:10]}")
-                    print(f"[API-DATES][DEBUG] Discovered dates - Last 10: {sorted_dates[-10:]}")
-                    print(f"[API-DATES][DEBUG] Date range: {sorted_dates[0]} to {sorted_dates[-1]}")
+                    log_console(f"[API-DATES][DEBUG] Discovered dates - First 10: {sorted_dates[:10]}")
+                    log_console(f"[API-DATES][DEBUG] Discovered dates - Last 10: {sorted_dates[-10:]}")
+                    log_console(f"[API-DATES][DEBUG] Date range: {sorted_dates[0]} to {sorted_dates[-1]}")
 
                     # Show coverage gaps (weekends/holidays are normal, show gaps > 5 days)
                     from datetime import timedelta
@@ -1178,11 +1183,11 @@ class ThetaSyncManager:
                         if gap_days > 5:  # Only show gaps > 5 days (weekends are normal)
                             gaps.append(f"{current} to {next_date} ({gap_days} days)")
                     if gaps:
-                        print(f"[API-DATES][DEBUG] Large gaps found (>5 days): {len(gaps)} gaps")
+                        log_console(f"[API-DATES][DEBUG] Large gaps found (>5 days): {len(gaps)} gaps")
                         for gap in gaps[:10]:  # Show first 10 gaps
-                            print(f"[API-DATES][DEBUG]   Gap: {gap}")
+                            log_console(f"[API-DATES][DEBUG]   Gap: {gap}")
                         if len(gaps) > 10:
-                            print(f"[API-DATES][DEBUG]   ... and {len(gaps) - 10} more gaps")
+                            log_console(f"[API-DATES][DEBUG]   ... and {len(gaps) - 10} more gaps")
 
                     # Show expected vs actual coverage
                     if start_date and end_date:
@@ -1192,12 +1197,12 @@ class ThetaSyncManager:
                         actual_last = sorted_dates[-1]
 
                         if actual_first > expected_first:
-                            print(f"[API-DATES][DEBUG] WARNING: Missing coverage at start - Expected: {expected_first}, Got: {actual_first}")
+                            log_console(f"[API-DATES][DEBUG] WARNING: Missing coverage at start - Expected: {expected_first}, Got: {actual_first}")
                         if actual_last < expected_last:
-                            print(f"[API-DATES][DEBUG] WARNING: Missing coverage at end - Expected: {expected_last}, Got: {actual_last}")
+                            log_console(f"[API-DATES][DEBUG] WARNING: Missing coverage at end - Expected: {expected_last}, Got: {actual_last}")
 
                         if actual_first <= expected_first and actual_last >= expected_last:
-                            print(f"[API-DATES][DEBUG] Full coverage achieved: {actual_first} to {actual_last}")
+                            log_console(f"[API-DATES][DEBUG] Full coverage achieved: {actual_first} to {actual_last}")
 
             if not api_dates:
                 return None
@@ -1213,14 +1218,14 @@ class ThetaSyncManager:
                     except Exception:
                         continue
 
-                print(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol} (range: {start_date} to {end_date})")
+                log_console(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol} (range: {start_date} to {end_date})")
                 return valid_dates if valid_dates else None
 
-            print(f"[API-DATES][EXIT] Returning {len(api_dates)} unfiltered dates for {symbol}")
+            log_console(f"[API-DATES][EXIT] Returning {len(api_dates)} unfiltered dates for {symbol}")
             return set(api_dates) if api_dates else None
 
         except Exception as e:
-            print(f"[API-DATES][ERROR] Failed to fetch available dates for {symbol} ({asset}): {e}")
+            log_console(f"[API-DATES][ERROR] Failed to fetch available dates for {symbol} ({asset}): {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -1270,7 +1275,7 @@ class ThetaSyncManager:
         if hasattr(task, 'end_date_override') and task.end_date_override:
             end_date_str = self._normalize_date_str(task.end_date_override)
             end_dt = dt.fromisoformat(end_date_str).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
-            print(f"[END-DATE-OVERRIDE] Using end_date={end_date_str} instead of today")
+            log_console(f"[END-DATE-OVERRIDE] Using end_date={end_date_str} instead of today")
         else:
             end_dt = dt.now(timezone.utc)
 
@@ -1322,10 +1327,10 @@ class ThetaSyncManager:
         try:
             if 'start_date_et' in locals() and start_date_et is not None:
                 if start_date_et < resume_start_day:
-                    print(f"[RESUME][OVERRIDE] forcing resume_start_day={start_date_et} (was {resume_start_day}) due to first_date/override")
+                    log_console(f"[RESUME][OVERRIDE] forcing resume_start_day={start_date_et} (was {resume_start_day}) due to first_date/override")
                     resume_start_day = start_date_et
         except Exception as _e:
-            print(f"[RESUME][OVERRIDE][WARN] {type(_e).__name__}: {_e}")
+            log_console(f"[RESUME][OVERRIDE][WARN] {type(_e).__name__}: {_e}")
         # <<< RESUME-START OVERRIDE – END
 
         # --- DEFINIZIONE POLICY (deve stare QUI, prima di usarle) ---
@@ -1351,10 +1356,10 @@ class ThetaSyncManager:
                 task.asset, symbol, interval, sink_lower
             )
             if _mild_skip_policy:
-                print(f"[MILD-SKIP][PRE-LOOP] asset={task.asset} sink={sink_lower} "
+                log_console(f"[MILD-SKIP][PRE-LOOP] asset={task.asset} sink={sink_lower} "
                       f"first_db={_first_day_db} last_db={_last_day_db}")
             else:
-                print(f"[STRONG-SKIP][PRE-LOOP] asset={task.asset} sink={sink_lower} "
+                log_console(f"[STRONG-SKIP][PRE-LOOP] asset={task.asset} sink={sink_lower} "
                       f"first_db={_first_day_db} last_db={_last_day_db}")
 
         # Determina lo start effettivo del loop
@@ -1376,15 +1381,15 @@ class ThetaSyncManager:
                 # Retrograde: parte da user_start (verrà gestito dal retrograde fill)
                 loop_start_date = user_start
                 _edge_jump_after_retro = True 
-                print(f"[STRONG-SKIP] retrograde mode: start={loop_start_date} (user < first_db={first_db_date})")
+                log_console(f"[STRONG-SKIP] retrograde mode: start={loop_start_date} (user < first_db={first_db_date})")
             else:
                 # Normal skip: per 1d salta a last_day_db+1, per intraday a last_day_db
                 if interval == "1d":
                     loop_start_date = last_db_date + timedelta(days=1)
-                    print(f"[STRONG-SKIP] jump to last_db+1 (daily): start={loop_start_date} (skip {first_db_date}..{last_db_date})")
+                    log_console(f"[STRONG-SKIP] jump to last_db+1 (daily): start={loop_start_date} (skip {first_db_date}..{last_db_date})")
                 else:
                     loop_start_date = last_db_date
-                    print(f"[STRONG-SKIP] jump to last_db (intraday): start={loop_start_date} (may have incomplete data)")
+                    log_console(f"[STRONG-SKIP] jump to last_db (intraday): start={loop_start_date} (may have incomplete data)")
         else:
             loop_start_date = resume_start_day
         
@@ -1401,7 +1406,7 @@ class ThetaSyncManager:
             # Se la data di partenza è prima del primo dato presente, scarica in batch fino a first_db-1
             if (_strong_skip_policy or _mild_skip_policy) and _first_day_db and start_date_et < dt.fromisoformat(_first_day_db).date():
                 retro_end = dt.fromisoformat(_first_day_db).date() - timedelta(days=1)
-                print(f"[EOD-BATCH][RETRO] Retrograde update: {cur_date.isoformat()}..{retro_end.isoformat()}")
+                log_console(f"[EOD-BATCH][RETRO] Retrograde update: {cur_date.isoformat()}..{retro_end.isoformat()}")
 
                 while cur_date <= retro_end:
                     start_iso = cur_date.isoformat()
@@ -1409,7 +1414,7 @@ class ThetaSyncManager:
                     end_iso = chunk_end.isoformat()
 
                     try:
-                        print(f"[EOD-BATCH][RETRO] {task.asset} {symbol} {start_iso}..{end_iso}")
+                        log_console(f"[EOD-BATCH][RETRO] {task.asset} {symbol} {start_iso}..{end_iso}")
                         await self._download_and_store_equity_or_index(
                             asset=task.asset,
                             symbol=symbol,
@@ -1419,7 +1424,7 @@ class ThetaSyncManager:
                             range_end_iso=end_iso,
                         )
                     except Exception as e:
-                        print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
+                        log_console(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
 
                     cur_date = chunk_end + timedelta(days=1)
 
@@ -1427,7 +1432,7 @@ class ThetaSyncManager:
             if _strong_skip_policy and _last_day_db:
                 # Per 1d salta a last_db+1 (giorno completo)
                 cur_date = dt.fromisoformat(_last_day_db).date() + timedelta(days=1)
-                print(f"[SKIP-MODE][EOD-BATCH] jump to last_db+1: {cur_date}")
+                log_console(f"[SKIP-MODE][EOD-BATCH] jump to last_db+1: {cur_date}")
 
             # STEP 3: MILD-SKIP MODE - controlla giorni mancanti e scarica solo quelli
             elif _mild_skip_policy and _first_day_db and _last_day_db:
@@ -1441,32 +1446,32 @@ class ThetaSyncManager:
                 # STRATEGIA: Prima prova a ottenere le date di trading valide dall'API
                 # Se l'API fornisce le date, usa quelle (evita weekend/festivi)
                 # Se l'API fallisce, controlla ogni giorno (metodo vecchio)
-                print(f"[MILD-SKIP][API] Fetching valid trading dates for {symbol} (asset={task.asset})...")
+                log_console(f"[MILD-SKIP][API] Fetching valid trading dates for {symbol} (asset={task.asset})...")
                 valid_trading_dates = await self._fetch_available_dates_from_api(
                     task.asset, symbol, interval, check_start, check_end,
                     use_api_discovery=task.use_api_date_discovery
                 )
 
                 if valid_trading_dates:
-                    print(f"[MILD-SKIP][API] Found {len(valid_trading_dates)} valid trading dates in range {check_start}..{check_end}")
+                    log_console(f"[MILD-SKIP][API] Found {len(valid_trading_dates)} valid trading dates in range {check_start}..{check_end}")
                     if len(valid_trading_dates) > 0:
                         sorted_dates = sorted(valid_trading_dates)
-                        print(f"[MILD-SKIP][API-DEBUG] First 3 dates: {sorted_dates[:3] if len(sorted_dates) >= 3 else sorted_dates}")
+                        log_console(f"[MILD-SKIP][API-DEBUG] First 3 dates: {sorted_dates[:3] if len(sorted_dates) >= 3 else sorted_dates}")
                 else:
-                    print(f"[MILD-SKIP][API] Falling back to day-by-day checking")
+                    log_console(f"[MILD-SKIP][API] Falling back to day-by-day checking")
 
                 # Trova date mancanti
                 missing_dates = []
 
                 if valid_trading_dates:
                     # METODO PREFERITO: Usa le date valide dall'API
-                    print(f"[MILD-SKIP] Using API-provided valid trading dates")
+                    log_console(f"[MILD-SKIP] Using API-provided valid trading dates")
                     for date_iso in sorted(valid_trading_dates):
                         if date_iso not in existing_dates:
                             missing_dates.append(dt.fromisoformat(date_iso).date())
                 else:
                     # FALLBACK: Controlla ogni giorno (include weekend/festivi)
-                    print(f"[MILD-SKIP] Using day-by-day checking (may include weekends/holidays)")
+                    log_console(f"[MILD-SKIP] Using day-by-day checking (may include weekends/holidays)")
                     check_date = check_start
                     while check_date <= check_end:
                         if check_date.isoformat() not in existing_dates:
@@ -1474,7 +1479,7 @@ class ThetaSyncManager:
                         check_date += timedelta(days=1)
 
                 if missing_dates:
-                    print(f"[MILD-SKIP][EOD-BATCH] Found {len(missing_dates)} missing dates between {_first_day_db}..{_last_day_db}")
+                    log_console(f"[MILD-SKIP][EOD-BATCH] Found {len(missing_dates)} missing dates between {_first_day_db}..{_last_day_db}")
 
                     # Crea batch per date mancanti adiacenti
                     batch_start = None
@@ -1491,7 +1496,7 @@ class ThetaSyncManager:
                             end_iso = missing_date.isoformat()
 
                             try:
-                                print(f"[EOD-BATCH][MILD-SKIP] {task.asset} {symbol} {start_iso}..{end_iso}")
+                                log_console(f"[EOD-BATCH][MILD-SKIP] {task.asset} {symbol} {start_iso}..{end_iso}")
                                 await self._download_and_store_equity_or_index(
                                     asset=task.asset,
                                     symbol=symbol,
@@ -1501,15 +1506,15 @@ class ThetaSyncManager:
                                     range_end_iso=end_iso,
                                 )
                             except Exception as e:
-                                print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
+                                log_console(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
 
                             batch_start = None
                 else:
-                    print(f"[MILD-SKIP][EOD-BATCH] No missing dates between {_first_day_db}..{_last_day_db}")
+                    log_console(f"[MILD-SKIP][EOD-BATCH] No missing dates between {_first_day_db}..{_last_day_db}")
 
                 # Dopo mild_skip, salta a last_db+1
                 cur_date = dt.fromisoformat(_last_day_db).date() + timedelta(days=1)
-                print(f"[MILD-SKIP][EOD-BATCH] Jump to last_db+1: {cur_date}")
+                log_console(f"[MILD-SKIP][EOD-BATCH] Jump to last_db+1: {cur_date}")
 
             # STEP 4: Continua in batch da cur_date a end_date
             while cur_date <= end_date:
@@ -1518,7 +1523,7 @@ class ThetaSyncManager:
                 end_iso = chunk_end.isoformat()
 
                 try:
-                    print(f"[EOD-BATCH] {task.asset} {symbol} {start_iso}..{end_iso}")
+                    log_console(f"[EOD-BATCH] {task.asset} {symbol} {start_iso}..{end_iso}")
                     await self._download_and_store_equity_or_index(
                         asset=task.asset,
                         symbol=symbol,
@@ -1530,7 +1535,7 @@ class ThetaSyncManager:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    print(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
+                    log_console(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
 
                 cur_date = chunk_end + timedelta(days=1)
 
@@ -1543,11 +1548,11 @@ class ThetaSyncManager:
 
         if is_single_day:
             # Single-day download (real-time intraday): skip API fetch, use the specific date
-            print(f"[API-DATES] Single-day download ({cur_date.isoformat()}), skipping API date fetch")
+            log_console(f"[API-DATES] Single-day download ({cur_date.isoformat()}), skipping API date fetch")
             api_available_dates = None
         else:
             # Multi-day range: fetch available dates from ThetaData API to iterate ONLY over real dates
-            print(f"[API-DATES] Fetching available dates for {symbol} ({task.asset}/{interval})...")
+            log_console(f"[API-DATES] Fetching available dates for {symbol} ({task.asset}/{interval})...")
             api_available_dates = await self._fetch_available_dates_from_api(
                 task.asset, symbol, interval, cur_date, end_date,
                 use_api_discovery=task.use_api_date_discovery
@@ -1555,7 +1560,7 @@ class ThetaSyncManager:
 
         # Determine iteration strategy: API dates or fallback to day-by-day
         if api_available_dates:
-            print(f"[API-DATES] Found {len(api_available_dates)} available dates, iterating only those")
+            log_console(f"[API-DATES] Found {len(api_available_dates)} available dates, iterating only those")
             # ITERATE ONLY OVER AVAILABLE DATES (no weekends/holidays)
             dates_to_process = sorted(api_available_dates)
 
@@ -1566,8 +1571,8 @@ class ThetaSyncManager:
                 last_in_list = dt.fromisoformat(last_in_list_str).date()
 
                 if end_date > last_in_list:
-                    print(f"[GAP-FILLING] Detected gap: last_in_list={last_in_list}, end_date={end_date}")
-                    print(f"[GAP-FILLING] Filling gap with /calendar_on_date checks...")
+                    log_console(f"[GAP-FILLING] Detected gap: last_in_list={last_in_list}, end_date={end_date}")
+                    log_console(f"[GAP-FILLING] Filling gap with /calendar_on_date checks...")
 
                     gap_start = last_in_list + timedelta(days=1)
                     temp_date = gap_start
@@ -1581,11 +1586,11 @@ class ThetaSyncManager:
                                 gap_count += 1
                         temp_date += timedelta(days=1)
 
-                    print(f"[GAP-FILLING] Added {gap_count} trading days from gap {gap_start} to {end_date}")
+                    log_console(f"[GAP-FILLING] Added {gap_count} trading days from gap {gap_start} to {end_date}")
                     # Re-sort after adding gap dates
                     dates_to_process = sorted(dates_to_process)
         else:
-            print(f"[API-DATES] API query failed, using fallback day-by-day with /calendar_on_date")
+            log_console(f"[API-DATES] API query failed, using fallback day-by-day with /calendar_on_date")
             # Fallback: use /calendar_on_date to filter all days in range
             dates_to_process = []
             temp_date = cur_date
@@ -1597,7 +1602,7 @@ class ThetaSyncManager:
                         dates_to_process.append(temp_date.isoformat())
                 temp_date += timedelta(days=1)
 
-            print(f"[FALLBACK] Generated {len(dates_to_process)} trading days using /calendar_on_date")
+            log_console(f"[FALLBACK] Generated {len(dates_to_process)} trading days using /calendar_on_date")
 
         # MILD-SKIP: reduce work to only missing days (keep edge policies intact)
         if _mild_skip_policy and _first_day_db and _last_day_db:
@@ -1632,7 +1637,7 @@ class ThetaSyncManager:
                 edge_days &= expected_days
 
                 dates_to_process = sorted(missing_days.union(edge_days))
-                print(f"[MILD-SKIP] missing_days={len(missing_days)} edges_kept={len(edge_days)}")
+                log_console(f"[MILD-SKIP] missing_days={len(missing_days)} edges_kept={len(edge_days)}")
 
         # For EOD (1d): build next_trading_date map for OI date-shift logic
         # Request OI for next trading day to get same-session close OI
@@ -1641,10 +1646,10 @@ class ThetaSyncManager:
             sorted_api_dates = sorted(api_available_dates)
             for i, date in enumerate(sorted_api_dates[:-1]):  # Exclude last (no next)
                 next_trading_date_map[date] = sorted_api_dates[i + 1]
-            print(f"[EOD-OI-SHIFT] Built next_trading_date_map with {len(next_trading_date_map)} entries")
+            log_console(f"[EOD-OI-SHIFT] Built next_trading_date_map with {len(next_trading_date_map)} entries")
             if sorted_api_dates:
                 last_date = sorted_api_dates[-1]
-                print(f"[EOD-OI-SHIFT] Last available date {last_date} has no next_trading_date - will skip or use fallback")
+                log_console(f"[EOD-OI-SHIFT] Last available date {last_date} has no next_trading_date - will skip or use fallback")
 
         # Main iteration loop over dates
         for day_iso in dates_to_process:
@@ -1656,7 +1661,7 @@ class ThetaSyncManager:
             if _edge_jump_after_retro and _first_day_db and day_iso >= _first_day_db:
                 if _last_day_db and day_iso < _last_day_db:
                     # Skip all dates until we reach last_db
-                    print(f"[SKIP-MODE][JUMP] Skip {day_iso} (< last_db={_last_day_db})")
+                    log_console(f"[SKIP-MODE][JUMP] Skip {day_iso} (< last_db={_last_day_db})")
                     continue
                 elif _last_day_db and day_iso >= _last_day_db:
                     # Reached last_db, stop skipping
@@ -1684,7 +1689,7 @@ class ThetaSyncManager:
                     )
 
                 if _day_complete:
-                    print(f"[SKIP-MODE] skip first_day (complete) day={day_iso}")
+                    log_console(f"[SKIP-MODE] skip first_day (complete) day={day_iso}")
                     continue
 
             # >>> EARLY-SKIP MIDDLE-DAY (UNIVERSALE) <
@@ -1692,7 +1697,7 @@ class ThetaSyncManager:
                 asset=task.asset, symbol=symbol, interval=interval, sink=task.sink, day_iso=day_iso,
                 first_last_hint=(_first_day_db, _last_day_db)
             ):
-                print(f"[SKIP-MODE] skip middle day={day_iso}")
+                log_console(f"[SKIP-MODE] skip middle day={day_iso}")
                 continue
 
 
@@ -1702,7 +1707,7 @@ class ThetaSyncManager:
             # >>> MILD-SKIP: salta last_day se interval=1d (giorno completo)
             if _mild_skip_policy and _last_day_db and day_iso == _last_day_db:
                 if interval == "1d":
-                    print(f"[MILD-SKIP] skip last_day (1d complete): {day_iso}")
+                    log_console(f"[MILD-SKIP] skip last_day (1d complete): {day_iso}")
                     continue
 
             # >>> EOD-OI-SHIFT: Skip EOD dates without next_trading_date (last available date)
@@ -1713,7 +1718,7 @@ class ThetaSyncManager:
                     next_trading_date_for_oi = next_trading_date_map[day_iso]
                 else:
                     # No next_trading_date available - skip this EOD date
-                    print(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: no next_trading_date in map (likely last available date)")
+                    log_console(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: no next_trading_date in map (likely last available date)")
                     continue
 
             try:
@@ -1740,7 +1745,7 @@ class ThetaSyncManager:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print(f"[WARN] {task.asset} {symbol} {interval} {day_iso}: {e}")
+                log_console(f"[WARN] {task.asset} {symbol} {interval} {day_iso}: {e}")
                 # CRITICAL: Log to persistent storage (not just console)
                 self.logger.log_failure(
                     symbol=symbol,
@@ -1870,7 +1875,7 @@ class ThetaSyncManager:
         """
 
         # Log start of download (console + parquet with ALL parameters)
-        print(f"[DOWNLOAD-START] {symbol} option/{interval} day={day_iso} sink={sink} enrich_greeks={enrich_greeks}")
+        log_console(f"[DOWNLOAD-START] {symbol} option/{interval} day={day_iso} sink={sink} enrich_greeks={enrich_greeks}")
         self.logger.log_info(
             symbol=symbol,
             asset="option",
@@ -1914,7 +1919,7 @@ class ThetaSyncManager:
                 os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, f"{day_iso}T00-00-00Z-{symbol}-option-{interval}.{ext}")
             if skip_if_exists and os.path.exists(out_file) and not getattr(self, "_force_rewrite", False):
-                print(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - File already exists")
+                log_console(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - File already exists")
                 self.logger.log_info(
                     symbol=symbol,
                     asset="option",
@@ -2072,22 +2077,22 @@ class ThetaSyncManager:
 
                                     # --- >>> DEBUG: Show which greeks columns are missing — BEGIN
                                     if greeks_missing_mask is not None and greeks_missing_mask.any():
-                                        print(f"[DEBUG-GREEKS] Missing greeks values detected:")
-                                        print(f"  Total rows: {len(df_pass)}")
-                                        print(f"  Rows with missing greeks: {greeks_missing_mask.sum()}")
+                                        log_console(f"[DEBUG-GREEKS] Missing greeks values detected:")
+                                        log_console(f"  Total rows: {len(df_pass)}")
+                                        log_console(f"  Rows with missing greeks: {greeks_missing_mask.sum()}")
                                         for col in req_cols:
                                             if col in df_pass.columns:
                                                 missing_count = df_pass[col].isna().sum()
-                                                print(f"    {col}: {missing_count} missing")
+                                                log_console(f"    {col}: {missing_count} missing")
                                             else:
-                                                print(f"    {col}: COLUMN NOT FOUND")
+                                                log_console(f"    {col}: COLUMN NOT FOUND")
                                         # Show sample of missing rows
-                                        print(f"  Sample of rows with missing greeks (first 5):")
+                                        log_console(f"  Sample of rows with missing greeks (first 5):")
                                         missing_sample = df_pass[greeks_missing_mask].head(5)
                                         for idx, row in missing_sample.iterrows():
                                             if on_cols:
                                                 key_vals = {k: row.get(k) for k in on_cols}
-                                                print(f"    {key_vals}")
+                                                log_console(f"    {key_vals}")
                                     # --- >>> DEBUG — END
 
                                     if greeks_missing_mask is not None and greeks_missing_mask.any():
@@ -2120,11 +2125,11 @@ class ThetaSyncManager:
                         # Days without next_trading_date are skipped before reaching this function.
                         if next_trading_date:
                             oi_request_date = next_trading_date
-                            print(f"[OI-EOD] Requesting OI for next trading date {oi_request_date} to get day_iso={day_iso} close OI")
+                            log_console(f"[OI-EOD] Requesting OI for next trading date {oi_request_date} to get day_iso={day_iso} close OI")
                         else:
                             # This should not happen with new logic - fallback to old behavior as safety measure
                             oi_request_date = day_iso
-                            print(f"[OI-EOD][WARN] No next_trading_date provided for EOD {day_iso} - using fallback (old logic, returns prior-session OI)")
+                            log_console(f"[OI-EOD][WARN] No next_trading_date provided for EOD {day_iso} - using fallback (old logic, returns prior-session OI)")
 
                         oi_request_ymd = dt.fromisoformat(oi_request_date).strftime("%Y%m%d")
                         csv_oi, _ = await self._td_get_with_retry(
@@ -2190,9 +2195,9 @@ class ThetaSyncManager:
                                     if "timestamp_oi" in doi.columns:
                                         keep += ["timestamp_oi"]
                                     keep += ["effective_date_oi"]
-                                    print(f"[DEBUG-EDOI-3] Before drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
+                                    log_console(f"[DEBUG-EDOI-3] Before drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
                                     doi = doi[keep].drop_duplicates(subset=on_cols)
-                                    print(f"[DEBUG-EDOI-4] After drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
+                                    log_console(f"[DEBUG-EDOI-4] After drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
                                     df_pass = df_pass.merge(doi, on=on_cols, how="left")
                                     try:
                                         _snap_keys = doi[on_cols].drop_duplicates()
@@ -2202,7 +2207,7 @@ class ThetaSyncManager:
                                         df_pass["oi_snapshot_present"] = (~_absent_contract_mask).astype("boolean")
                                     except Exception:
                                         df_pass["oi_snapshot_present"] = pd.Series(pd.NA, index=df_pass.index, dtype="boolean")
-                                    print(f"[DEBUG-EDOI-5] After merge df_pass: dtype={df_pass['effective_date_oi'].dtype if 'effective_date_oi' in df_pass.columns else 'MISSING'}, sample={df_pass['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_pass.columns and len(df_pass) > 0 else 'N/A'}")
+                                    log_console(f"[DEBUG-EDOI-5] After merge df_pass: dtype={df_pass['effective_date_oi'].dtype if 'effective_date_oi' in df_pass.columns else 'MISSING'}, sample={df_pass['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_pass.columns and len(df_pass) > 0 else 'N/A'}")
 
                                     oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
 
@@ -2220,13 +2225,51 @@ class ThetaSyncManager:
 
                                             if expired_missing.any():
                                                 n_expired = expired_missing.sum()
-                                                print(f"[OI-EXPIRED] {n_expired} contracts expired on {day_iso} - setting OI=0 (normal)")
+                                                log_console(f"[OI-EXPIRED] {n_expired} contracts expired on {day_iso} - setting OI=0 (normal)")
                                                 df_pass.loc[expired_missing, "last_day_OI"] = 0.0
 
                                                 # Update oi_missing_mask to exclude expired contracts (they're now OK)
                                                 oi_missing_mask = oi_missing_mask & ~expired_today
                                         except Exception as e:
-                                            print(f"[OI-EXPIRED] Warning: could not check expiration dates: {e}")
+                                            log_console(f"[OI-EXPIRED] Warning: could not check expiration dates: {e}")
+
+                                    # ### >>> OI ABSENT-CONTRACTS FILL (NaN->0) for EOD — BEGIN
+                                    # ThetaData OI endpoint returns "No data found" for contracts that exist
+                                    # but have never had OI > 0. Treat these as OI=0, not as missing data.
+                                    try:
+                                        if oi_missing_mask is not None and oi_missing_mask.any() and "oi_snapshot_present" in df_pass.columns:
+                                            # Contracts absent from OI snapshot but present in EOD data
+                                            absent_from_snapshot = df_pass["oi_snapshot_present"] == False
+                                            fill_mask = absent_from_snapshot & df_pass["last_day_OI"].isna()
+                                            filled_rows = int(fill_mask.sum())
+
+                                            if filled_rows > 0:
+                                                # Count unique absent contracts
+                                                absent_unique = 0
+                                                if on_cols:
+                                                    absent_unique = int(df_pass.loc[absent_from_snapshot, on_cols].drop_duplicates().shape[0])
+
+                                                df_pass.loc[fill_mask, "last_day_OI"] = 0.0
+
+                                                # Fill timestamp fields for absent contracts
+                                                if "effective_date_oi" in df_pass.columns:
+                                                    effective_date_val = pd.to_datetime(day_iso).tz_localize("America/New_York")
+                                                    df_pass.loc[fill_mask, "effective_date_oi"] = effective_date_val
+
+                                                if "timestamp_oi" in df_pass.columns:
+                                                    df_pass.loc[fill_mask, "timestamp_oi"] = pd.NaT
+
+                                                log_console(
+                                                    f"[OI-EOD][FILL0] {symbol} EOD {day_iso} "
+                                                    f"absent_contracts={absent_unique} filled_rows={filled_rows} "
+                                                    f"(ThetaData has no OI history for these contracts)"
+                                                )
+
+                                                # Recompute oi_missing_mask after filling absent contracts
+                                                oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
+                                    except Exception as fill_e:
+                                        log_console(f"[OI-EOD][FILL0][WARN] {symbol} EOD {day_iso} fill_failed={type(fill_e).__name__}: {fill_e}")
+                                    # ### >>> OI ABSENT-CONTRACTS FILL (NaN->0) for EOD — END
 
                                     if oi_missing_mask is not None and oi_missing_mask.any():
                                         oi_details = {
@@ -2252,13 +2295,13 @@ class ThetaSyncManager:
                         components.append("greeks")
 
                         # --- >>> DEBUG: Show which greeks columns are missing — BEGIN
-                        print(f"[DEBUG-MISSING] GREEKS missing detected:")
-                        print(f"  Total rows with missing greeks: {greeks_missing_mask.sum()}")
+                        log_console(f"[DEBUG-MISSING] GREEKS missing detected:")
+                        log_console(f"  Total rows with missing greeks: {greeks_missing_mask.sum()}")
                         req_cols = ["delta", "gamma", "theta", "vega", "rho"]
                         for col in req_cols:
                             if col in df_pass.columns:
                                 missing_count = df_pass[col].isna().sum()
-                                print(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                                log_console(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
                         # --- >>> DEBUG — END
 
                     if iv_missing_mask is not None and iv_missing_mask.any():
@@ -2269,13 +2312,13 @@ class ThetaSyncManager:
                         components.append("iv")
 
                         # --- >>> DEBUG: Show which IV columns are missing — BEGIN
-                        print(f"[DEBUG-MISSING] IV missing detected:")
-                        print(f"  Total rows with missing IV: {iv_missing_mask.sum()}")
+                        log_console(f"[DEBUG-MISSING] IV missing detected:")
+                        log_console(f"  Total rows with missing IV: {iv_missing_mask.sum()}")
                         iv_cols = ["implied_vol", "iv_error"]
                         for col in iv_cols:
                             if col in df_pass.columns:
                                 missing_count = df_pass[col].isna().sum()
-                                print(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                                log_console(f"    {col}: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
                         # --- >>> DEBUG — END
 
                     if oi_missing_mask is not None and oi_missing_mask.any():
@@ -2286,18 +2329,18 @@ class ThetaSyncManager:
                         components.append("oi")
 
                         # --- >>> DEBUG: Show which OI values are missing — BEGIN
-                        print(f"[DEBUG-MISSING] OI missing detected:")
-                        print(f"  Total rows with missing OI: {oi_missing_mask.sum()}")
+                        log_console(f"[DEBUG-MISSING] OI missing detected:")
+                        log_console(f"  Total rows with missing OI: {oi_missing_mask.sum()}")
                         if "last_day_OI" in df_pass.columns:
                             missing_count = df_pass["last_day_OI"].isna().sum()
-                            print(f"    last_day_OI: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
+                            log_console(f"    last_day_OI: {missing_count} missing ({missing_count/len(df_pass)*100:.1f}%)")
                             # Show sample of contracts with missing OI
-                            print(f"  Sample contracts with missing OI (first 5):")
+                            log_console(f"  Sample contracts with missing OI (first 5):")
                             missing_oi_sample = df_pass[oi_missing_mask].head(5)
                             on_cols = ['root', 'expiration', 'strike', 'right']
                             for idx, row in missing_oi_sample.iterrows():
                                 key_vals = {k: row.get(k) for k in on_cols if k in row}
-                                print(f"    {key_vals}")
+                                log_console(f"    {key_vals}")
                         # --- >>> DEBUG — END
 
                     if components:
@@ -2305,10 +2348,10 @@ class ThetaSyncManager:
 
                     # --- >>> DEBUG: Final combined missing mask summary — BEGIN
                     if missing_mask is not None and missing_mask.any():
-                        print(f"[DEBUG-MISSING] COMBINED missing mask summary:")
-                        print(f"  Total rows: {len(df_pass)}")
-                        print(f"  Rows with ANY missing data: {missing_mask.sum()} ({missing_mask.sum()/len(df_pass)*100:.1f}%)")
-                        print(f"  Components missing: {components}")
+                        log_console(f"[DEBUG-MISSING] COMBINED missing mask summary:")
+                        log_console(f"  Total rows: {len(df_pass)}")
+                        log_console(f"  Rows with ANY missing data: {missing_mask.sum()} ({missing_mask.sum()/len(df_pass)*100:.1f}%)")
+                        log_console(f"  Components missing: {components}")
                     # --- >>> DEBUG — END
 
                     if missing_mask is None or not missing_mask.any():
@@ -2317,7 +2360,7 @@ class ThetaSyncManager:
 
                     df = df_pass
                     if enrich_pass < total_passes - 1 and retry_delay > 0:
-                        print(f"[EOD-RETRY] {symbol} {day_iso} pass={enrich_pass+1}/{total_passes} sleeping {retry_delay}s")
+                        log_console(f"[EOD-RETRY] {symbol} {day_iso} pass={enrich_pass+1}/{total_passes} sleeping {retry_delay}s")
                         await asyncio.sleep(retry_delay)
 
                 if missing_mask is not None and missing_mask.any():
@@ -2354,7 +2397,7 @@ class ThetaSyncManager:
                         )
                     if skip_day_on_missing:
                         error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: missing OI/Greeks/IV rows"
-                        print(error_msg)
+                        log_console(error_msg)
                         if self.logger:
                             self.logger.log_error(
                                 asset="option",
@@ -2371,7 +2414,7 @@ class ThetaSyncManager:
                     df = df.loc[~missing_mask].copy()
                     if df.empty:
                         error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: all rows dropped due to missing OI/Greeks/IV"
-                        print(error_msg)
+                        log_console(error_msg)
                         if self.logger:
                             self.logger.log_error(
                                 asset="option",
@@ -2444,7 +2487,7 @@ class ThetaSyncManager:
 
             if not validation_ok or df is None:
                 # All retry attempts failed or validation failed
-                print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} EOD {day_iso} - all retry attempts failed")
+                log_console(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} EOD {day_iso} - all retry attempts failed")
                 return
             # ===== /DOWNLOAD WITH RETRY AND VALIDATION =====
 
@@ -2467,7 +2510,7 @@ class ThetaSyncManager:
                 dedupe_skipped_all = False
                 first_et = df["timestamp"].min() if "timestamp" in df.columns else None
                 last_et  = df["timestamp"].max() if "timestamp" in df.columns else None
-                print(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df)} window_ET=({first_et},{last_et})")
+                log_console(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df)} window_ET=({first_et},{last_et})")
 
                 # InfluxDB write with verification and retry
                 measurement = self._influx_measurement_from_base(base_path)
@@ -2484,9 +2527,9 @@ class ThetaSyncManager:
                 if 'right' in df.columns:
                     key_cols.append('right')
 
-                print(f"[DEBUG-EDOI-6] Before _ensure_ts_utc_column: effective_date_oi dtype={df['effective_date_oi'].dtype if 'effective_date_oi' in df.columns else 'MISSING'}, sample={df['effective_date_oi'].iloc[0] if 'effective_date_oi' in df.columns and len(df) > 0 else 'N/A'}")
+                log_console(f"[DEBUG-EDOI-6] Before _ensure_ts_utc_column: effective_date_oi dtype={df['effective_date_oi'].dtype if 'effective_date_oi' in df.columns else 'MISSING'}, sample={df['effective_date_oi'].iloc[0] if 'effective_date_oi' in df.columns and len(df) > 0 else 'N/A'}")
                 df_influx = self._ensure_ts_utc_column(df)
-                print(f"[DEBUG-EDOI-7] After _ensure_ts_utc_column: effective_date_oi dtype={df_influx['effective_date_oi'].dtype if 'effective_date_oi' in df_influx.columns else 'MISSING'}, sample={df_influx['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_influx.columns and len(df_influx) > 0 else 'N/A'}")
+                log_console(f"[DEBUG-EDOI-7] After _ensure_ts_utc_column: effective_date_oi dtype={df_influx['effective_date_oi'].dtype if 'effective_date_oi' in df_influx.columns else 'MISSING'}, sample={df_influx['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_influx.columns and len(df_influx) > 0 else 'N/A'}")
                 if dedupe_influx_against_db:
                     df_influx = self._filter_df_against_influx_existing(df_influx, measurement, interval)
                     if df_influx is None or df_influx.empty:
@@ -2507,14 +2550,14 @@ class ThetaSyncManager:
                     if dedupe_skipped_all:
                         wrote = 0
                         write_success = True
-                        print(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
+                        log_console(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
                     else:
                         wrote = await self._append_influx_df(base_path, df_influx)
                         write_success = True
                 except Exception as e:
                     wrote = 0
                     write_success = False
-                    print(f"[ALERT] InfluxDB write failed for option {symbol} EOD {day_iso}: {e}")
+                    log_console(f"[ALERT] InfluxDB write failed for option {symbol} EOD {day_iso}: {e}")
                     self.logger.log_failure(
                         symbol=symbol,
                         asset="option",
@@ -2524,17 +2567,17 @@ class ThetaSyncManager:
                         details={"sink": "influxdb", "rows_attempted": len(df), "error": str(e), "branch": "EOD"}
                     )
                 if wrote == 0 and len(df) > 0 and not dedupe_skipped_all:
-                    print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
+                    log_console("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                           "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
                     write_success = False
             else:
                 raise ValueError(f"Unsupported sink: {sink_lower}")
 
-            print(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
+            log_console(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
 
             # Check if write actually succeeded
             if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
-                print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} EOD branch FAILED - wrote 0 rows to InfluxDB")
+                log_console(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} EOD branch FAILED - wrote 0 rows to InfluxDB")
                 self.logger.log_failure(
                     symbol=symbol,
                     asset="option",
@@ -2545,7 +2588,7 @@ class ThetaSyncManager:
                 )
                 raise RuntimeError(f"InfluxDB write failed: downloaded {len(df)} rows but wrote 0")
             else:
-                print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} EOD branch completed successfully")
+                log_console(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} EOD branch completed successfully")
                 self.logger.log_info(
                     symbol=symbol,
                     asset="option",
@@ -2592,18 +2635,18 @@ class ThetaSyncManager:
             # 1) NEW: se il giorno è VUOTO in DB, forza omissione start_time (niente GET con &start_time=...)
             try:
                 has_any = self._influx_day_has_any(meas, day_iso)
-                print(f"[RESUME-INFLUX][CHECK] day={day_iso} meas={meas} has_any={has_any}")
+                log_console(f"[RESUME-INFLUX][CHECK] day={day_iso} meas={meas} has_any={has_any}")
             except Exception as _e:
-                print(f"[RESUME-INFLUX][WARN] day-check failed: {type(_e).__name__}: {_e}")
+                log_console(f"[RESUME-INFLUX][WARN] day-check failed: {type(_e).__name__}: {_e}")
                 has_any = None  # prosegui con controllo last_ts
         
             if has_any is False:
                 bar_start_et = None
-                print(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
+                log_console(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
             else:
                 # 2) Altrimenti edge-resume: riparti da ultimo-ts - overlap
                 last_in_day = self._influx_last_ts_between(meas, day_start_utc, day_end_utc)
-                print(f"[RESUME-INFLUX][CHECK] meas={meas} last_ts_between={last_in_day} "
+                log_console(f"[RESUME-INFLUX][CHECK] meas={meas} last_ts_between={last_in_day} "
                       f"range=[{day_start_utc.isoformat()}, {day_end_utc.isoformat()})")
         
                 if last_in_day is not None:
@@ -2615,13 +2658,13 @@ class ThetaSyncManager:
                         use_next_when_no_overlap=True,
                     )
                     if ov == 0:
-                        print(f"[RESUME-INFLUX] edge-day={day_iso} start_time(next)={bar_start_et} meas={meas}")
+                        log_console(f"[RESUME-INFLUX] edge-day={day_iso} start_time(next)={bar_start_et} meas={meas}")
                     else:
-                        print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
+                        log_console(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
                 else:
                     # giorno VUOTO (non rilevato dal check rapido): nessun start_time
                     bar_start_et = None
-                    print(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
+                    log_console(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
         # ### >>> INFLUX RESUME (intraday options) — END
 
                 
@@ -2631,18 +2674,18 @@ class ThetaSyncManager:
             _forced = self._force_start_hms[_force_key]
             if _forced is None:
                 bar_start_et = None
-                print(f"[RESUME-INFLUX] forced OMIT start_time day={day_iso} (retro-fill inclusive)")
+                log_console(f"[RESUME-INFLUX] forced OMIT start_time day={day_iso} (retro-fill inclusive)")
             else:
                 bar_start_et = _forced
-                print(f"[RESUME-INFLUX] forced start_time={bar_start_et} day={day_iso} (applied after resume/head-refill)")
+                log_console(f"[RESUME-INFLUX] forced start_time={bar_start_et} day={day_iso} (applied after resume/head-refill)")
         # <<< Optional forced start_time
 
         if force_full_day:
             bar_start_et = None
-            print(f"[RECOVERY] force_full_day: omit start_time for {symbol} {interval} {day_iso}")
+            log_console(f"[RECOVERY] force_full_day: omit start_time for {symbol} {interval} {day_iso}")
         
         _st = "(omitted)" if bar_start_et is None else bar_start_et
-        print(f"[INTRADAY-START] day={day_iso} start_time={_st} sink={_sink_lower}")
+        log_console(f"[INTRADAY-START] day={day_iso} start_time={_st} sink={_sink_lower}")
 
         # If next-bar start is at/after close, skip intraday fetch for this day
         if bar_start_et is not None:
@@ -2650,17 +2693,17 @@ class ThetaSyncManager:
                 start_dt = pd.Timestamp(f"{day_iso}T{bar_start_et}", tz=tz_et)
                 close_dt = pd.Timestamp(f"{day_iso}T16:00:00", tz=tz_et)
                 if start_dt >= close_dt:
-                    print(f"[INTRADAY-SKIP] day={day_iso} start_time={bar_start_et} >= close (16:00:00 ET)")
+                    log_console(f"[INTRADAY-SKIP] day={day_iso} start_time={bar_start_et} >= close (16:00:00 ET)")
                     return
             except Exception as _e:
-                print(f"[INTRADAY-WARN] start_time check failed: {type(_e).__name__}: {_e}")
+                log_console(f"[INTRADAY-WARN] start_time check failed: {type(_e).__name__}: {_e}")
                     
         # 1) discover expirations of the day
         expirations = await self._expirations_that_traded(symbol, day_iso, req_type="trade")
         if not expirations:
             expirations = await self._expirations_that_traded(symbol, day_iso, req_type="quote")
         if not expirations:
-            print(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - No expirations traded")
+            log_console(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - No expirations traded")
             self.logger.log_info(
                 symbol=symbol,
                 asset="option",
@@ -2711,7 +2754,7 @@ class ThetaSyncManager:
                     if not csv_tq:
                         if isinstance(tq_meta, dict) and tq_meta.get("no_data"):
                             # No trades/quotes in the requested slice (ThetaData 472). Soft-skip without retry.
-                            print(f"[NO-DATA] option tick {symbol} {day_iso} exp={exp}: no data in requested slice (472)")
+                            log_console(f"[NO-DATA] option tick {symbol} {day_iso} exp={exp}: no data in requested slice (472)")
                             if self.logger:
                                 self.logger.log_info(
                                     symbol=symbol,
@@ -2887,7 +2930,7 @@ class ThetaSyncManager:
 
                     # Treat ThetaData "no data" (472) as soft-skip (NO retry / NO abort day)
                     if ("472" in msg) or ("no data found" in msg_l) or ("no_data" in msg_l):
-                        print(
+                        log_console(
                             f"[NO_DATA-472][EXC] option tick {symbol} {interval} "
                             f"day={day_iso} exp={exp} pass={pass_idx + 1}: {msg}"
                         )
@@ -2909,11 +2952,11 @@ class ThetaSyncManager:
                                     },
                                 )
                             except Exception as _le:
-                                print(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
+                                log_console(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
 
                         return True, "no_data_472_exception", None, None, None
 
-                    print(f"[WARN] option tick {symbol} {interval} {day_iso} exp={exp}: {e}")
+                    log_console(f"[WARN] option tick {symbol} {interval} {day_iso} exp={exp}: {e}")
                     return False, f"exception: {e}", None, None, None
 
 
@@ -2923,7 +2966,7 @@ class ThetaSyncManager:
                 if not pending_exps:
                     break
                 if pass_idx > 0 and retry_delay > 0:
-                    print(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
+                    log_console(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
                     await asyncio.sleep(retry_delay)
 
                 current_exps = pending_exps
@@ -2938,7 +2981,7 @@ class ThetaSyncManager:
                         else:
                             # success=True but empty df means: "NO_DATA in requested slice" (e.g., 472)
                             # We treat it as a soft-skip: no retry, no abort, no enrichment.
-                            print(
+                            log_console(
                                 f"[NO_DATA] {symbol} {interval} day={day_iso} exp={exp} "
                                 f"reason={reason} pass={pass_idx + 1}/{total_passes} -> soft-skip"
                             )
@@ -2977,7 +3020,7 @@ class ThetaSyncManager:
 
                 if skip_day_on_missing:
                     error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: expirations failed after retries"
-                    print(error_msg)
+                    log_console(error_msg)
                     if self.logger:
                         self.logger.log_error(
                             asset="option",
@@ -3012,7 +3055,7 @@ class ThetaSyncManager:
                     if not csv_ohlc:
                         if isinstance(ohlc_meta, dict) and ohlc_meta.get("no_data"):
                             # No trades in the requested slice (ThetaData 472). Soft-skip: no retry, no Greeks/IV/OI.
-                            print(f"[NO-DATA] option intraday {symbol} {interval} {day_iso} exp={exp}: no trades in requested slice (472)")
+                            log_console(f"[NO-DATA] option intraday {symbol} {interval} {day_iso} exp={exp}: no trades in requested slice (472)")
                             if self.logger:
                                 self.logger.log_info(
                                     symbol=symbol,
@@ -3086,7 +3129,7 @@ class ThetaSyncManager:
                         if not csv_gr_all:
                             greeks_success = False
                             error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks download failed"
-                            print(error_msg)
+                            log_console(error_msg)
                             if self.logger:
                                 self.logger.log_error(
                                     asset="option",
@@ -3102,7 +3145,7 @@ class ThetaSyncManager:
                             if dg is None or dg.empty:
                                 greeks_success = False
                                 error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks CSV empty"
-                                print(error_msg)
+                                log_console(error_msg)
                                 if self.logger:
                                     self.logger.log_error(
                                         asset="option",
@@ -3142,7 +3185,7 @@ class ThetaSyncManager:
                             if not csv_iv:
                                 iv_success = False
                                 error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV download failed"
-                                print(error_msg)
+                                log_console(error_msg)
                                 if self.logger:
                                     self.logger.log_error(
                                         asset="option",
@@ -3158,7 +3201,7 @@ class ThetaSyncManager:
                                 if div is None or div.empty:
                                     iv_success = False
                                     error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV CSV empty"
-                                    print(error_msg)
+                                    log_console(error_msg)
                                     if self.logger:
                                         self.logger.log_error(
                                             asset="option",
@@ -3175,7 +3218,7 @@ class ThetaSyncManager:
                         except Exception as e:
                             iv_success = False
                             error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV exception: {e}"
-                            print(error_msg)
+                            log_console(error_msg)
                             if self.logger:
                                 self.logger.log_error(
                                     asset="option",
@@ -3191,7 +3234,7 @@ class ThetaSyncManager:
                         return True, "ok", df, dg, div
 
                     skip_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: OHLC not saved due to incomplete greeks/IV"
-                    print(skip_msg)
+                    log_console(skip_msg)
                     return False, "incomplete_greeks_iv", None, None, None
 
                 except Exception as e:
@@ -3200,7 +3243,7 @@ class ThetaSyncManager:
 
                     # Treat ThetaData "no data" (472) as soft-skip (NO retry / NO abort day)
                     if ("472" in msg) or ("no data found" in msg_l) or ("no_data" in msg_l):
-                        print(
+                        log_console(
                             f"[NO_DATA-472][EXC] option intraday {symbol} {interval} "
                             f"day={day_iso} exp={exp} pass={pass_idx + 1}: {msg}"
                         )
@@ -3222,11 +3265,11 @@ class ThetaSyncManager:
                                     },
                                 )
                             except Exception as _le:
-                                print(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
+                                log_console(f"[LOGGER][WARN] NO_DATA log failed: {type(_le).__name__}: {_le}")
 
                         return True, "no_data_472_exception", None, None, None
 
-                    print(f"[WARN] option intraday {symbol} {interval} {day_iso} exp={exp}: {e}")
+                    log_console(f"[WARN] option intraday {symbol} {interval} {day_iso} exp={exp}: {e}")
                     return False, f"exception: {e}", None, None, None
 
 
@@ -3236,7 +3279,7 @@ class ThetaSyncManager:
                 if not pending_exps:
                     break
                 if pass_idx > 0 and retry_delay > 0:
-                    print(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
+                    log_console(f"[INTRADAY-RETRY] {symbol} {interval} {day_iso} pass={pass_idx+1}/{total_passes} sleeping {retry_delay}s for {len(pending_exps)} expirations")
                     await asyncio.sleep(retry_delay)
 
                 current_exps = pending_exps
@@ -3251,7 +3294,7 @@ class ThetaSyncManager:
                         else:
                             # success=True but empty df means: "NO_DATA in requested slice" (e.g., 472)
                             # We treat it as a soft-skip: no retry, no abort, no enrichment.
-                            print(
+                            log_console(
                                 f"[NO_DATA] {symbol} {interval} day={day_iso} exp={exp} "
                                 f"reason={reason} pass={pass_idx + 1}/{total_passes} -> soft-skip"
                             )                            
@@ -3290,7 +3333,7 @@ class ThetaSyncManager:
 
                 if skip_day_on_missing:
                     error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: expirations failed after retries"
-                    print(error_msg)
+                    log_console(error_msg)
                     if self.logger:
                         self.logger.log_error(
                             asset="option",
@@ -3308,7 +3351,7 @@ class ThetaSyncManager:
             # If everything returned NO_DATA (472), this is a normal "no trades in slice" outcome.
             if no_data_exps and len(no_data_exps) == len(expirations):
                 info_msg = f"[NO-DATA] option intraday {symbol} {interval} {day_iso}: no trades in requested slice (all expirations 472)"
-                print(info_msg)
+                log_console(info_msg)
                 if self.logger:
                     self.logger.log_info(
                         symbol=symbol,
@@ -3322,7 +3365,7 @@ class ThetaSyncManager:
 
             # STRICT MODE: All expirations failed or were skipped
             error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: no data saved (all expirations failed/skipped)"
-            print(error_msg)
+            log_console(error_msg)
             if self.logger:
                 self.logger.log_error(
                     asset="option",
@@ -3350,9 +3393,9 @@ class ThetaSyncManager:
                 exp_str = ", ".join(f"{k}:{v}" for k, v in exp_counts.items())
             else:
                 exp_str = "(no 'expiration' column)"
-            print(f"[INTRADAY] rows={n_rows}  expirations={exp_str}")
+            log_console(f"[INTRADAY] rows={n_rows}  expirations={exp_str}")
         except Exception as e:
-            print(f"[INTRADAY] log error: {e}")
+            log_console(f"[INTRADAY] log error: {e}")
 
         # >>> single_merge_bar_greeks >>>
         if interval != "tick" and enrich_greeks:
@@ -3499,7 +3542,7 @@ class ThetaSyncManager:
                 return
 
             summary = ", ".join(f"{k}:{v}" for k, v in miss_counts.items())
-            print(
+            log_console(
                 f"[ENRICHMENT][MISS-COLS] {symbol} {interval} {day_iso} {label} "
                 f"rows={len(df)} missing_by_col={summary}"
             )
@@ -3514,13 +3557,13 @@ class ThetaSyncManager:
                 if sample_cols:
                     sample = df.loc[miss_mask, sample_cols].head(10)
                     if not sample.empty:
-                        print(f"[ENRICHMENT][MISS-SAMPLE] {label} first 10:")
-                        print(sample.to_string(index=False))
+                        log_console(f"[ENRICHMENT][MISS-SAMPLE] {label} first 10:")
+                        log_console(sample.to_string(index=False))
                 if "expiration" in df.columns:
                     vc = df.loc[miss_mask, "expiration"].astype(str).value_counts().head(10)
                     if not vc.empty:
-                        print(f"[ENRICHMENT][MISS-EXP] {label} top expirations:")
-                        print(vc.to_string())
+                        log_console(f"[ENRICHMENT][MISS-EXP] {label} top expirations:")
+                        log_console(vc.to_string())
 
         def _normalize_join_cols(df):
             if df is None or df.empty:
@@ -3576,7 +3619,7 @@ class ThetaSyncManager:
 
             async def _fetch_oi_remote():
                 if is_current_day and expirations:
-                    print(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
+                    log_console(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
                     oi_dfs = []
                     failed_exps = []
                     for exp in expirations:
@@ -3598,7 +3641,7 @@ class ThetaSyncManager:
                                 failed_exps.append(exp)
                         except Exception as e:
                             failed_exps.append(exp)
-                            print(f"[WARN] OI exp={exp} day={day_iso}: {e}")
+                            log_console(f"[WARN] OI exp={exp} day={day_iso}: {e}")
 
                     if oi_dfs:
                         return pd.concat(oi_dfs, ignore_index=True), failed_exps
@@ -3625,36 +3668,36 @@ class ThetaSyncManager:
                 oi_failed_exps = []
 
                 if use_cache and self.cfg.enable_oi_caching:
-                    print(f"[OI-CACHE] Checking local cache for {symbol} date={cur_ymd}...")
+                    log_console(f"[OI-CACHE] Checking local cache for {symbol} date={cur_ymd}...")
                     if self._check_oi_cache(symbol, cur_ymd):
-                        print(f"[OI-CACHE] Found current date OI in local cache - retrieving from file")
+                        log_console(f"[OI-CACHE] Found current date OI in local cache - retrieving from file")
                         doi = self._load_oi_from_cache(symbol, cur_ymd)
                         if doi is not None and not doi.empty:
                             oi_from_cache = True
-                            print(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local cache (no remote API call)")
+                            log_console(f"[OI-CACHE][SUCCESS] Retrieved {len(doi)} OI records from local cache (no remote API call)")
                         else:
-                            print("[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
+                            log_console("[OI-CACHE][WARN] Cache file exists but load returned empty - falling back to remote")
 
                 if not oi_from_cache:
                     if self.cfg.enable_oi_caching and use_cache:
-                        print("[OI-CACHE] Current date OI not found in local cache - starting remote data source fetching")
+                        log_console("[OI-CACHE] Current date OI not found in local cache - starting remote data source fetching")
                     elif self.cfg.enable_oi_caching and not use_cache:
-                        print("[OI-CACHE] Cache bypassed (retry mode) - fetching from remote data source")
+                        log_console("[OI-CACHE] Cache bypassed (retry mode) - fetching from remote data source")
                     else:
-                        print("[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
+                        log_console("[OI-CACHE] OI caching disabled (enable_oi_caching=False) - fetching from remote data source")
                     doi, oi_failed_exps = await _fetch_oi_remote()
 
                 if doi is not None and not doi.empty:
                     if self.cfg.enable_oi_caching and not oi_from_cache:
-                        print("[OI-CACHE] Saving current date OI to local cache for future reuse...")
+                        log_console("[OI-CACHE] Saving current date OI to local cache for future reuse...")
                         doi_cache = doi.copy()
                         doi_cache["request_date"] = cur_ymd
                         saved = self._save_oi_to_cache(symbol, cur_ymd, doi_cache)
                         if saved:
                             cache_path = self._get_oi_cache_path(symbol, cur_ymd)
-                            print(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
+                            log_console(f"[OI-CACHE][SAVED] Successfully saved {len(doi_cache)} OI records to local cache: {cache_path}")
                         else:
-                            print("[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
+                            log_console("[OI-CACHE][WARN] Failed to save OI to local cache - check write permissions")
 
                     df_norm = _normalize_join_cols(self._normalize_df_types(df_oi_base))
                     doi_norm = _normalize_join_cols(self._normalize_df_types(doi))
@@ -3663,7 +3706,7 @@ class ThetaSyncManager:
                     try:
                         src = "cache" if oi_from_cache else "remote"
                         cols_hint = [c for c in ["option_symbol", "root", "symbol", "expiration", "strike", "strike_price", "right", "timestamp", "ts", "time", "open_interest", "oi", "OI"] if c in doi_norm.columns]
-                        print(f"[OI-MERGE][INPUT] {symbol} {interval} {day_iso} src={src} doi_rows={len(doi_norm)} doi_cols={cols_hint}")
+                        log_console(f"[OI-MERGE][INPUT] {symbol} {interval} {day_iso} src={src} doi_rows={len(doi_norm)} doi_cols={cols_hint}")
                     except Exception:
                         pass
                     # ### >>> OI MERGE DIAGNOSTICS — END
@@ -3718,11 +3761,11 @@ class ThetaSyncManager:
                                 tot = int(len(chk))
                                 avail.append((keys, miss, tot))
                             except Exception as _diag_e:
-                                print(f"[OI-MERGE][DIAG][WARN] {symbol} {interval} {day_iso} key={keys} diag_failed={type(_diag_e).__name__}: {_diag_e}")
+                                log_console(f"[OI-MERGE][DIAG][WARN] {symbol} {interval} {day_iso} key={keys} diag_failed={type(_diag_e).__name__}: {_diag_e}")
 
                         if avail:
                             parts = [f"key={k} unmatched_keys={m}/{t}" for (k, m, t) in avail]
-                            print(f"[OI-MERGE][DIAG] {symbol} {interval} {day_iso} " + " | ".join(parts))
+                            log_console(f"[OI-MERGE][DIAG] {symbol} {interval} {day_iso} " + " | ".join(parts))
                         # ### >>> OI MERGE DIAGNOSTICS (key coverage) — END
 
                         on_cols = next(
@@ -3730,7 +3773,7 @@ class ThetaSyncManager:
                             None
                         )
                         oi_merge_keys = on_cols
-                        print(f"[OI-MERGE][KEY] {symbol} {interval} {day_iso} using={oi_merge_keys}")
+                        log_console(f"[OI-MERGE][KEY] {symbol} {interval} {day_iso} using={oi_merge_keys}")
 
                                                 
                         if on_cols is not None:
@@ -3782,7 +3825,7 @@ class ThetaSyncManager:
                                         if "timestamp_oi" in df_all.columns:
                                             df_all.loc[_fill_mask, "timestamp_oi"] = pd.NaT
 
-                                        print(
+                                        log_console(
                                             f"[OI-MERGE][FILL0] {symbol} {interval} {day_iso} "
                                             f"absent_contracts={_absent_unique} filled_rows={_filled_rows}"
                                         )
@@ -3790,7 +3833,7 @@ class ThetaSyncManager:
                                         # Recompute missing mask after filling absent contracts
                                         oi_missing_mask = _missing_mask_for_cols(df_all, ["last_day_OI"])
                             except Exception as _fill_e:
-                                print(
+                                log_console(
                                     f"[OI-MERGE][FILL0][WARN] {symbol} {interval} {day_iso} "
                                     f"fill_failed={type(_fill_e).__name__}: {_fill_e}"
                                 )
@@ -3807,7 +3850,7 @@ class ThetaSyncManager:
                                     tot_unique = int(df_all[oi_merge_keys].drop_duplicates().shape[0])
                                     uniq_msg = f" missing_unique_contracts={miss_unique}/{tot_unique}"
 
-                                print(
+                                log_console(
                                     f"[OI-MERGE][RESULT] {symbol} {interval} {day_iso} "
                                     f"pass={oi_pass+1}/{total_passes} keys={oi_merge_keys} "
                                     f"missing_rows={miss_cnt}/{tot_cnt} ({pct:.2f}%){uniq_msg}"
@@ -3816,15 +3859,15 @@ class ThetaSyncManager:
                                 if miss_cnt > 0:
                                     sample_cols = [c for c in ["option_symbol", "root", "expiration", "strike", "right"] if c in df_all.columns]
                                     if sample_cols:
-                                        print("[OI-MERGE][SAMPLE-MISS] first 8 missing rows keys:")
-                                        print(df_all.loc[oi_missing_mask, sample_cols].head(8).to_string(index=False))
+                                        log_console("[OI-MERGE][SAMPLE-MISS] first 8 missing rows keys:")
+                                        log_console(df_all.loc[oi_missing_mask, sample_cols].head(8).to_string(index=False))
 
                                     if "expiration" in df_all.columns:
                                         vc = df_all.loc[oi_missing_mask, "expiration"].astype(str).value_counts().head(8)
-                                        print("[OI-MERGE][MISS-EXP] top expirations missing OI:")
-                                        print(vc.to_string())
+                                        log_console("[OI-MERGE][MISS-EXP] top expirations missing OI:")
+                                        log_console(vc.to_string())
                             except Exception as _log_e:
-                                print(f"[OI-MERGE][LOG][WARN] {symbol} {interval} {day_iso} log_failed={type(_log_e).__name__}: {_log_e}")
+                                log_console(f"[OI-MERGE][LOG][WARN] {symbol} {interval} {day_iso} log_failed={type(_log_e).__name__}: {_log_e}")
 
 
                             if oi_missing_mask is not None and oi_missing_mask.any():
@@ -3864,10 +3907,10 @@ class ThetaSyncManager:
                 if oi_pass < total_passes - 1:
                     if oi_from_cache:
                         # Cache data won't change; sleeping is pointless. Retry immediately with remote fetch.
-                        print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} src=cache -> skipping sleep, retrying immediately (remote fetch)")
+                        log_console(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} src=cache -> skipping sleep, retrying immediately (remote fetch)")
                         use_cache = False
                     elif retry_delay > 0:
-                        print(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} sleeping {retry_delay}s")
+                        log_console(f"[OI-RETRY] {symbol} {interval} {day_iso} pass={oi_pass+1}/{total_passes} sleeping {retry_delay}s")
                         await asyncio.sleep(retry_delay)
                         use_cache = False
                     else:
@@ -3875,7 +3918,7 @@ class ThetaSyncManager:
 
 
         except Exception as e:
-            print(f"[WARN] intraday OI merge {symbol} {interval} {day_iso}: {e}")
+            log_console(f"[WARN] intraday OI merge {symbol} {interval} {day_iso}: {e}")
             if df_all is not None and not df_all.empty:
                 oi_missing_mask = pd.Series([True] * len(df_all), index=df_all.index)
                 oi_missing_details = {"reason": "oi_exception", "error": str(e)}
@@ -3945,7 +3988,7 @@ class ThetaSyncManager:
 
             if skip_day_on_missing:
                 error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: missing OI/Greeks/IV rows"
-                print(error_msg)
+                log_console(error_msg)
                 if self.logger:
                     self.logger.log_error(
                         asset="option",
@@ -3962,7 +4005,7 @@ class ThetaSyncManager:
             df_all = df_all.loc[~missing_mask].copy()
             if df_all.empty:
                 error_msg = f"[SKIP-DAY] option intraday {symbol} {interval} {day_iso}: all rows dropped due to missing OI/Greeks/IV"
-                print(error_msg)
+                log_console(error_msg)
                 if self.logger:
                     self.logger.log_error(
                         asset="option",
@@ -4031,10 +4074,10 @@ class ThetaSyncManager:
                 has_any = self._influx_day_has_any(meas, day_iso)
                 if has_any is False:
                     bar_start_et = None
-                    print(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
+                    log_console(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
                 else:
                     last_in_day = self._influx_last_ts_between(meas, day_start_utc, day_end_utc)
-                    print(f"[RESUME-INFLUX][CHECK] meas={meas} last_ts_between={last_in_day} "
+                    log_console(f"[RESUME-INFLUX][CHECK] meas={meas} last_ts_between={last_in_day} "
                           f"range=[{day_start_utc.isoformat()}, {day_end_utc.isoformat()})")
                     
                     if last_in_day is not None:
@@ -4046,12 +4089,12 @@ class ThetaSyncManager:
                             use_next_when_no_overlap=False,
                         )
                         
-                        print(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
+                        log_console(f"[RESUME-INFLUX] edge-day={day_iso} start_time={bar_start_et} meas={meas}")
                     else:
                         bar_start_et = None
-                        print(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
+                        log_console(f"[RESUME-INFLUX] day={day_iso} empty in DB -> omit start_time (full-day) meas={meas}")
             except Exception as e:
-                print(f"[RESUME-INFLUX][WARN] query failed: {e}")
+                log_console(f"[RESUME-INFLUX][WARN] query failed: {e}")
                 bar_start_et = None
         
         elif sink_lower in ("csv", "parquet") and parts_today:
@@ -4089,7 +4132,7 @@ class ThetaSyncManager:
                     max_list.append(mt)
             if max_list:
                 cutoff = max(max_list)
-                print(f"[TAIL-RESUME][FILE] cutoff={cutoff} (from {len(parts_today)} files)")
+                log_console(f"[TAIL-RESUME][FILE] cutoff={cutoff} (from {len(parts_today)} files)")
         
         # >>> FILTER + BOUNDARY DEDUP 
         if cutoff is not None:
@@ -4102,10 +4145,10 @@ class ThetaSyncManager:
             df_tail = df_all.loc[ts_all > cutoff_naive].copy()
             
             if df_tail.empty:
-                print(f"[TAIL-RESUME] no new data after cutoff={cutoff}")
+                log_console(f"[TAIL-RESUME] no new data after cutoff={cutoff}")
                 return 0
             
-            print(f"[TAIL-RESUME] kept {len(df_tail)}/{len(df_all)} rows (>{cutoff})")
+            log_console(f"[TAIL-RESUME] kept {len(df_tail)}/{len(df_all)} rows (>{cutoff})")
             
             # >>> BOUNDARY DEDUP: rimuovi eventuali duplicati al confine
             if sink_lower in ("csv", "parquet") and parts_today:
@@ -4149,9 +4192,9 @@ class ThetaSyncManager:
                                 df_tail = df_tail[~new_keys.isin(existing_keys)]
                                 removed = before - len(df_tail)
                                 if removed > 0:
-                                    print(f"[TAIL-RESUME][BOUNDARY-DEDUP] removed {removed} boundary duplicates")
+                                    log_console(f"[TAIL-RESUME][BOUNDARY-DEDUP] removed {removed} boundary duplicates")
                 except Exception as e:
-                    print(f"[TAIL-RESUME][WARN] boundary dedup failed: {e}")
+                    log_console(f"[TAIL-RESUME][WARN] boundary dedup failed: {e}")
             
             # Ordine stabile
             order_cols = ["timestamp"] + [c for c in ["expiration", "right", "strike", "symbol"] if c in df_tail.columns]
@@ -4211,7 +4254,7 @@ class ThetaSyncManager:
 
         if not validation_ok:
             # Validation failed in strict mode - do not save
-            print(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} {interval} {day_iso} due to validation failure")
+            log_console(f"[VALIDATION] STRICT MODE: Skipping save for option {symbol} {interval} {day_iso} due to validation failure")
             return
         # ===== /VALIDATION =====
 
@@ -4228,11 +4271,11 @@ class ThetaSyncManager:
         wrote = 0
         if sink_lower == "csv":
             df_out = self._format_dt_columns_isoz(df_all)
-            print(f"[WRITE-CSV] About to write {len(df_out)} rows to base_path={base_path}")
+            log_console(f"[WRITE-CSV] About to write {len(df_out)} rows to base_path={base_path}")
             csv_text = df_out.to_csv(index=False)
-            print(f"[WRITE-CSV] CSV text size: {len(csv_text)} bytes, first 200 chars: {csv_text[:200]}")
+            log_console(f"[WRITE-CSV] CSV text size: {len(csv_text)} bytes, first 200 chars: {csv_text[:200]}")
             await self._append_csv_text(base_path, csv_text, asset="option", interval=interval)
-            print(f"[WRITE-CSV] _append_csv_text() completed")
+            log_console(f"[WRITE-CSV] _append_csv_text() completed")
             wrote = len(df_out)
         elif sink_lower == "parquet":
             wrote = self._append_parquet_df(base_path, df_all, asset="option", interval=interval)
@@ -4241,7 +4284,7 @@ class ThetaSyncManager:
             # >>> PATCH: log finestra prima di scrivere (INTRADAY)
             first_et = df_all["timestamp"].min() if "timestamp" in df_all.columns else None
             last_et  = df_all["timestamp"].max() if "timestamp" in df_all.columns else None
-            print(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df_all)} window_ET=({first_et},{last_et})")
+            log_console(f"[INFLUX][ABOUT-TO-WRITE] rows={len(df_all)} window_ET=({first_et},{last_et})")
 
             # InfluxDB write with verification and retry
             measurement = self._influx_measurement_from_base(base_path)
@@ -4281,14 +4324,14 @@ class ThetaSyncManager:
                 if dedupe_skipped_all:
                     wrote = 0
                     write_success = True
-                    print(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
+                    log_console(f"[INFLUX][DEDUP-DB] no new rows to write for {measurement}")
                 else:
                     wrote = await self._append_influx_df(base_path, df_influx)
                     write_success = True
             except Exception as e:
                 wrote = 0
                 write_success = False
-                print(f"[ALERT] InfluxDB write failed for option {symbol} {interval} {day_iso}: {e}")
+                log_console(f"[ALERT] InfluxDB write failed for option {symbol} {interval} {day_iso}: {e}")
                 self.logger.log_failure(
                     symbol=symbol,
                     asset="option",
@@ -4298,18 +4341,18 @@ class ThetaSyncManager:
                     details={"sink": "influxdb", "rows_attempted": len(df_all), "error": str(e), "branch": "intraday"}
                 )
             if wrote == 0 and len(df_all) > 0 and not dedupe_skipped_all:
-                print("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
+                log_console("[ALERT] Influx ha scritto 0 punti a fronte di righe in input. "
                       "Potrebbe essere tutto NaN lato fields o un cutoff troppo aggressivo.")
                 write_success = False
 
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
-        print(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
+        log_console(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
 
         # Check if write actually succeeded
         if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
-            print(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} intraday branch FAILED - wrote 0 rows to InfluxDB")
+            log_console(f"[DOWNLOAD-FAILED] {symbol} option/{interval} day={day_iso} intraday branch FAILED - wrote 0 rows to InfluxDB")
             self.logger.log_failure(
                 symbol=symbol,
                 asset="option",
@@ -4320,7 +4363,7 @@ class ThetaSyncManager:
             )
             raise RuntimeError(f"InfluxDB write failed: downloaded {len(df_all)} rows but wrote 0")
         else:
-            print(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} intraday branch completed successfully")
+            log_console(f"[DOWNLOAD-COMPLETE] {symbol} option/{interval} day={day_iso} intraday branch completed successfully")
             self.logger.log_info(
                 symbol=symbol,
                 asset="option",
@@ -4634,9 +4677,9 @@ class ThetaSyncManager:
                                 df_day = df_day[~new_ts.isin(existing_ts)]
                                 removed = before - len(df_day)
                                 if removed > 0:
-                                    print(f"[INTRADAY-CSV][BOUNDARY-DEDUP] removed {removed} stock/index duplicates")
+                                    log_console(f"[INTRADAY-CSV][BOUNDARY-DEDUP] removed {removed} stock/index duplicates")
                     except Exception as e:
-                        print(f"[INTRADAY-CSV][WARN] boundary dedup failed: {e}")
+                        log_console(f"[INTRADAY-CSV][WARN] boundary dedup failed: {e}")
                     
                     # Rebuild CSV from filtered rows
                     csv_txt = df_day.to_csv(index=False)
@@ -4679,7 +4722,7 @@ class ThetaSyncManager:
 
         if not validation_ok:
             # Validation failed in strict mode - do not save
-            print(f"[VALIDATION] STRICT MODE: Skipping save for {asset} {symbol} {interval} {day_iso} due to validation failure")
+            log_console(f"[VALIDATION] STRICT MODE: Skipping save for {asset} {symbol} {interval} {day_iso} due to validation failure")
             return
         # ===== /VALIDATION =====
 
@@ -4724,7 +4767,7 @@ class ThetaSyncManager:
             except Exception as e:
                 wrote = 0
                 write_success = False
-                print(f"[ALERT] InfluxDB write failed for {asset} {symbol} {interval} {day_iso}: {e}")
+                log_console(f"[ALERT] InfluxDB write failed for {asset} {symbol} {interval} {day_iso}: {e}")
                 self.logger.log_failure(
                     symbol=symbol,
                     asset=asset,
@@ -4736,7 +4779,7 @@ class ThetaSyncManager:
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
-            print(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
+            log_console(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
             # Log INFO write summary
             self.logger.log_info(
                 symbol=symbol,
@@ -4875,7 +4918,7 @@ class ThetaSyncManager:
     
         if not out:
             # Qui ora vedrai la chiave 'expiration' quando è columnar (come nel tuo file)
-            print(f"[DEBUG] No expirations parsed for {symbol} {day_iso} ({req_type}). "
+            log_console(f"[DEBUG] No expirations parsed for {symbol} {day_iso} ({req_type}). "
                   f"Payload keys sample: {list(payload.keys()) if isinstance(payload, dict) else type(payload)}")
     
         return out
@@ -5026,19 +5069,19 @@ class ThetaSyncManager:
                 msg = str(e)
                 status = _parse_http_status(msg, e)
                 if _is_no_data(msg, status):
-                    print(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
+                    log_console(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
                     return None, {"no_data": True, "status": status or 472, "error": msg}
 
-                print(f"[TD-HTTP][RETRY] {label} attempt={attempt+1} error={e}")
+                log_console(f"[TD-HTTP][RETRY] {label} attempt={attempt+1} error={e}")
                 if attempt >= retries:
-                    print(f"[TD-HTTP][GIVEUP] {label}")
+                    log_console(f"[TD-HTTP][GIVEUP] {label}")
                     return None, {"no_data": False, "status": status, "error": msg}
                 await asyncio.sleep(0.75)
 
             except asyncio.CancelledError:
-                print(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
+                log_console(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
                 if attempt >= retries:
-                    print(f"[TD-HTTP][GIVEUP] {label} cancelled")
+                    log_console(f"[TD-HTTP][GIVEUP] {label} cancelled")
                     return None, {"no_data": False, "status": None, "error": "cancelled"}
                 await asyncio.sleep(0.5)
 
@@ -5046,10 +5089,10 @@ class ThetaSyncManager:
                 msg = str(e)
                 status = _parse_http_status(msg, e)
                 if _is_no_data(msg, status):
-                    print(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
+                    log_console(f"[TD-HTTP][NO_DATA] label={label} status={status or 472} exc={type(e).__name__} msg={msg}")
                     return None, {"no_data": True, "status": status or 472, "error": msg}
 
-                print(f"[TD-HTTP][ERROR] {label}: {e}")
+                log_console(f"[TD-HTTP][ERROR] {label}: {e}")
                 return None, {"no_data": False, "status": status, "error": msg}
 
 
@@ -5591,12 +5634,12 @@ class ThetaSyncManager:
                     should_start_dt = last_ts - timedelta(seconds=max(0, self.cfg.overlap_seconds))
             should_start_s = should_start_dt.isoformat() if should_start_dt else "None"
     
-            print(f"[RESUME-DEBUG] asset={getattr(task,'asset',None)} symbol={symbol} interval={interval} sink={task.sink.lower()}")
-            print(f"[RESUME-DEBUG] requested_start(arg)={requested_start_s}  requested_start(task)={requested_task_s}  latest_file={latest_file_s}")
-            print(f"[RESUME-DEBUG] resume_anchor={last_saved_s}  should_start_from={should_start_s}  computed_start={start_dt.isoformat()}")
+            log_console(f"[RESUME-DEBUG] asset={getattr(task,'asset',None)} symbol={symbol} interval={interval} sink={task.sink.lower()}")
+            log_console(f"[RESUME-DEBUG] requested_start(arg)={requested_start_s}  requested_start(task)={requested_task_s}  latest_file={latest_file_s}")
+            log_console(f"[RESUME-DEBUG] resume_anchor={last_saved_s}  should_start_from={should_start_s}  computed_start={start_dt.isoformat()}")
     
             if should_start_dt is not None and start_dt < should_start_dt:
-                print(f"[RESUME-ALERT] computed_start ({start_dt.isoformat()}) < should_start ({should_start_s})")
+                log_console(f"[RESUME-ALERT] computed_start ({start_dt.isoformat()}) < should_start ({should_start_s})")
         except Exception:
             pass
     
@@ -5668,7 +5711,7 @@ class ThetaSyncManager:
         out_name = f"{day_iso}T00-00-00Z-{symbol}-{asset}-{interval}.{sink}"
         out_path = base_dir / out_name
         day_has_any = bool(self._list_day_files(asset, symbol, interval, sink, day_iso))
-        print(f"[RESUME-DEBUG] day={day_iso} has_any={day_has_any}")
+        log_console(f"[RESUME-DEBUG] day={day_iso} has_any={day_has_any}")
 
         sink_lower = sink.lower()
         if first_last_hint is not None:
@@ -5686,18 +5729,18 @@ class ThetaSyncManager:
                     parts = st.get("parts", [])
                     # Se manca part01, ci sono buchi o mix -> procedi (ricostruzione completa del primo giorno)
                     if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild") or (1 not in parts):
-                        print(f"[RESUME-DEBUG] proceed (edge-first needs rebuild): {day_iso}  edges={first_existing}..{last_existing}")
+                        log_console(f"[RESUME-DEBUG] proceed (edge-first needs rebuild): {day_iso}  edges={first_existing}..{last_existing}")
                         return False
                     # Altrimenti il primo giorno è completo con part01 -> SKIP giorno intero
-                    print(f"[RESUME-DEBUG] skip existing (edge-first complete with part01): {day_iso}  edges={first_existing}..{last_existing}")
+                    log_console(f"[RESUME-DEBUG] skip existing (edge-first complete with part01): {day_iso}  edges={first_existing}..{last_existing}")
                     return True
                 # Non-option: preserva comportamento precedente (procedi sull'edge-first)
-                print(f"[RESUME-DEBUG] proceed (edge-first non-option): {day_iso}  edges={first_existing}..{last_existing}")
+                log_console(f"[RESUME-DEBUG] proceed (edge-first non-option): {day_iso}  edges={first_existing}..{last_existing}")
                 return False
         
             if last_existing and day_iso == last_existing:
                 # Ultimo giorno edge -> procedi (si mantiene il comportamento precedente)
-                print(f"[RESUME-DEBUG] proceed (edge-last): {day_iso}  edges={first_existing}..{last_existing}")
+                log_console(f"[RESUME-DEBUG] proceed (edge-last): {day_iso}  edges={first_existing}..{last_existing}")
                 return False
         
             # --- Middle day ---
@@ -5705,15 +5748,15 @@ class ThetaSyncManager:
                 st = self._day_parts_status(asset, symbol, interval, sink, day_iso)
                 # se giorno incompleto/misto -> NON skippare (lo ricostruiamo)
                 if st.get("missing") or st.get("has_mixed") or st.get("needs_rebuild"):
-                    print(f"[RESUME-DEBUG] proceed (day...ncomplete): {day_iso}  edges={first_existing}..{last_existing}")
+                    log_console(f"[RESUME-DEBUG] proceed (day...ncomplete): {day_iso}  edges={first_existing}..{last_existing}")
                     return False
             # giorno medio completo -> skip
-            print(f"[RESUME-DEBUG] skip existing (middle day): {day_iso}  edges={first_existing}..{last_existing}")
+            log_console(f"[RESUME-DEBUG] skip existing (middle day): {day_iso}  edges={first_existing}..{last_existing}")
             return True
 
 
         
-        print(f"[RESUME-DEBUG] proceed (missing or edge day): {day_iso}  edges={first_existing}..{last_existing}")
+        log_console(f"[RESUME-DEBUG] proceed (missing or edge day): {day_iso}  edges={first_existing}..{last_existing}")
         return False
 
 
@@ -5741,7 +5784,7 @@ class ThetaSyncManager:
                     return fd, ld
                 # build single dates support table if not existing yet
                 else:
-                    print(f"[INFLUX-META-QUERY][DEBUG] Unique dates support table not found; boostrap for creation lunched.")
+                    log_console(f"[INFLUX-META-QUERY][DEBUG] Unique dates support table not found; boostrap for creation lunched.")
                     self._influx_available_dates_bootstrap_from_main(meas)
                     fd, ld = self._influx_available_dates_first_last_day(meas)
                     if fd and ld:
@@ -5757,19 +5800,19 @@ class ThetaSyncManager:
                     # --- >>> WARM-UP GUARD: Skip metadata query if table doesn't exist — BEGIN
                     # Querying system.parquet_files when table is in inconsistent state (deleted, warm-up)
                     # can trigger "Panic: table exists" in InfluxDB v3
-                    print(f"[INFLUX-META-QUERY][PRE-CHECK] Checking if measurement '{meas}' exists...")
+                    log_console(f"[INFLUX-META-QUERY][PRE-CHECK] Checking if measurement '{meas}' exists...")
                     try:
                         exists = self._influx_measurement_exists(meas)
                         if not exists:
-                            print(f"[INFLUX-META-QUERY][SKIP] Measurement '{meas}' does not exist, skipping metadata query")
+                            log_console(f"[INFLUX-META-QUERY][SKIP] Measurement '{meas}' does not exist, skipping metadata query")
                             return None, None
                     except Exception as e:
-                        print(f"[INFLUX-META-QUERY][WARN] Existence check failed (warm-up?): {type(e).__name__}: {e}")
-                        print(f"[INFLUX-META-QUERY][SKIP] Skipping metadata query due to existence check failure")
+                        log_console(f"[INFLUX-META-QUERY][WARN] Existence check failed (warm-up?): {type(e).__name__}: {e}")
+                        log_console(f"[INFLUX-META-QUERY][SKIP] Skipping metadata query due to existence check failure")
                         return None, None
                     # --- >>> WARM-UP GUARD — END
 
-                    print(f"[INFLUX-META-QUERY][START] Querying first/last timestamp from Parquet metadata for '{meas}'...")
+                    log_console(f"[INFLUX-META-QUERY][START] Querying first/last timestamp from Parquet metadata for '{meas}'...")
                     t0 = time.time()
 
                     # Query Parquet file metadata instead of scanning all data
@@ -5785,13 +5828,13 @@ class ThetaSyncManager:
 
                     # --- >>> DEBUG: Log what metadata query returned — BEGIN
                     if df is None:
-                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned None (df=None)")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] Query returned None (df=None)")
                     elif df.empty:
-                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned empty DataFrame (len=0)")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] Query returned empty DataFrame (len=0)")
                     else:
-                        print(f"[INFLUX-META-QUERY][DEBUG] Query returned {len(df)} rows")
-                        print(f"[INFLUX-META-QUERY][DEBUG] Columns: {df.columns.tolist()}")
-                        print(f"[INFLUX-META-QUERY][DEBUG] First row: {df.iloc[0].to_dict()}")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] Query returned {len(df)} rows")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] Columns: {df.columns.tolist()}")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] First row: {df.iloc[0].to_dict()}")
 
                     # Also try to see ALL tables in system.parquet_files to verify query is working
                     try:
@@ -5800,15 +5843,15 @@ class ThetaSyncManager:
                         check_df = check_result.to_pandas() if hasattr(check_result, "to_pandas") else check_result
                         if check_df is not None and not check_df.empty:
                             tables = check_df['table_name'].tolist()
-                            print(f"[INFLUX-META-QUERY][DEBUG] Found {len(tables)} tables in system.parquet_files: {tables[:5]}")
+                            log_console(f"[INFLUX-META-QUERY][DEBUG] Found {len(tables)} tables in system.parquet_files: {tables[:5]}")
                             if meas in tables:
-                                print(f"[INFLUX-META-QUERY][DEBUG] ✓ Measurement '{meas}' IS in system.parquet_files!")
+                                log_console(f"[INFLUX-META-QUERY][DEBUG] ✓ Measurement '{meas}' IS in system.parquet_files!")
                             else:
-                                print(f"[INFLUX-META-QUERY][DEBUG] ✗ Measurement '{meas}' NOT in system.parquet_files!")
+                                log_console(f"[INFLUX-META-QUERY][DEBUG] ✗ Measurement '{meas}' NOT in system.parquet_files!")
                         else:
-                            print(f"[INFLUX-META-QUERY][DEBUG] system.parquet_files appears empty")
+                            log_console(f"[INFLUX-META-QUERY][DEBUG] system.parquet_files appears empty")
                     except Exception as debug_e:
-                        print(f"[INFLUX-META-QUERY][DEBUG] Failed to check table list: {debug_e}")
+                        log_console(f"[INFLUX-META-QUERY][DEBUG] Failed to check table list: {debug_e}")
                     # --- >>> DEBUG — END
 
                     first_ts = None
@@ -5830,13 +5873,13 @@ class ThetaSyncManager:
                     last_day = last_ts.tz_convert("America/New_York").date().isoformat() if last_ts else None
 
                     total_elapsed = time.time() - t0
-                    print(f"[INFLUX-META-QUERY][COMPLETE] Total time: {total_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
+                    log_console(f"[INFLUX-META-QUERY][COMPLETE] Total time: {total_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
 
                     # --- >>> FALLBACK: If metadata returns empty, try direct SELECT on measurement — BEGIN
                     # Reason: Data may be in write cache (WAL) but not yet persisted to Parquet files
                     # This makes metadata query return empty even though data exists in measurement
                     if first_day is None and last_day is None:
-                        print(f"[INFLUX-META-QUERY][FALLBACK] Metadata empty, trying direct SELECT MIN/MAX(time) on '{meas}'...")
+                        log_console(f"[INFLUX-META-QUERY][FALLBACK] Metadata empty, trying direct SELECT MIN/MAX(time) on '{meas}'...")
                         try:
                             t0_fallback = time.time()
 
@@ -5857,16 +5900,16 @@ class ThetaSyncManager:
                                     last_day = max_t.tz_convert("America/New_York").date().isoformat()
 
                                 fallback_elapsed = time.time() - t0_fallback
-                                print(f"[INFLUX-META-QUERY][FALLBACK] Time: {fallback_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
+                                log_console(f"[INFLUX-META-QUERY][FALLBACK] Time: {fallback_elapsed:.2f}s | first_day={first_day}, last_day={last_day}")
 
                         except Exception as fallback_e:
-                            print(f"[INFLUX-META-QUERY][FALLBACK][WARN] Direct query failed: {type(fallback_e).__name__}: {fallback_e}")
+                            log_console(f"[INFLUX-META-QUERY][FALLBACK][WARN] Direct query failed: {type(fallback_e).__name__}: {fallback_e}")
                     # --- >>> FALLBACK — END
 
                     return first_day, last_day
                 
                 except Exception as e:
-                    print(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
+                    log_console(f"[SINK-GLOBAL][WARN] Influx query failed for {meas}: {e}")
                     return None, None
             
             elif sink_lower in ("csv", "parquet"):
@@ -5921,7 +5964,7 @@ class ThetaSyncManager:
                                         break
                     except Exception as e:
                         # If reading fails, keep filename-based latest
-                        print(f"[WARN] Could not read actual last date from {latest_file}: {e}")
+                        log_console(f"[WARN] Could not read actual last date from {latest_file}: {e}")
 
                 return earliest, latest
 
@@ -6149,7 +6192,7 @@ class ThetaSyncManager:
                 else:
                     return (None, None)
             except Exception as e:
-                print(f"[WINDOW][INFLUX][WARN] query failed: {e}")
+                log_console(f"[WINDOW][INFLUX][WARN] query failed: {e}")
                 return (None, None)
         else:
             # File-based path (original logic)
@@ -6349,7 +6392,7 @@ class ThetaSyncManager:
                         keep_default_na=False
                     )
                 except Exception as e:
-                    print(f"[WARN] Could not read existing CSV for sorting: {e}, using new data only")
+                    log_console(f"[WARN] Could not read existing CSV for sorting: {e}, using new data only")
                     existing_df = None
 
             # Use common sorting/deduplication logic
@@ -6358,7 +6401,7 @@ class ThetaSyncManager:
 
             # Write sorted data back to file
             sorted_df.to_csv(target, index=False)
-            print(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            log_console(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
             return
 
         # Seleziona il target corrente o l'ultimo _partNN
@@ -6429,13 +6472,13 @@ class ThetaSyncManager:
                 continue
     
             # scrivi header (se serve) + chunk
-            print(f"[_append_csv_text] Writing to target={target}, write_header={write_header}, chunk_size={len(chunk)}")
+            log_console(f"[_append_csv_text] Writing to target={target}, write_header={write_header}, chunk_size={len(chunk)}")
             with open(target, "a", encoding="utf-8", newline="") as f:
                 if write_header:
                     f.write(header + "\n")
                 if chunk:
                     f.write("\n".join(chunk) + "\n")
-            print(f"[_append_csv_text] Write completed, file size now={os.path.getsize(target)}")
+            log_console(f"[_append_csv_text] Write completed, file size now={os.path.getsize(target)}")
     
             # rimuovi dal body ciò che è stato scritto; se finito -> stop
             body = body[len(chunk):]
@@ -6547,7 +6590,7 @@ class ThetaSyncManager:
                 try:
                     existing_df = pd.read_parquet(target)
                 except Exception as e:
-                    print(f"[WARN] Could not read existing Parquet for sorting: {e}, using new data only")
+                    log_console(f"[WARN] Could not read existing Parquet for sorting: {e}, using new data only")
                     existing_df = None
 
             # Use common sorting/deduplication logic
@@ -6556,7 +6599,7 @@ class ThetaSyncManager:
 
             # Write sorted data back to file
             sorted_df.to_parquet(target, engine='pyarrow', index=False)
-            print(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            log_console(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
             return after_dedup
 
         # --- keys & columns ---
@@ -6622,10 +6665,10 @@ class ThetaSyncManager:
                                         
                                         removed = before - len(df_new)
                                         if removed > 0:
-                                            print(f"[PARQUET][BOUNDARY-DEDUP] removed {removed} {'tick (ts+seq)' if use_seq else 'stock/index (ts)'} duplicates")
+                                            log_console(f"[PARQUET][BOUNDARY-DEDUP] removed {removed} {'tick (ts+seq)' if use_seq else 'stock/index (ts)'} duplicates")
 
                             except Exception as e:
-                                print(f"[PARQUET][WARN] stock/index boundary dedup failed: {e}")
+                                log_console(f"[PARQUET][WARN] stock/index boundary dedup failed: {e}")
 
     
         if df_new is None or df_new.empty:
@@ -6845,7 +6888,7 @@ class ThetaSyncManager:
             if exp_norm is not None:
                 out["expiration"] = exp_norm
             if verbose:
-                print(
+                log_console(
                     f"[EXPIRATION][ENSURE] exp_req={expiration} exp_norm={exp_norm} "
                     f"renamed_from={renamed_from} rows={len(out)} missing_before=na unique_before=na "
                     f"mismatch_before=na missing_after=0 unique_after=1 sample_after={exp_norm}"
@@ -6864,7 +6907,7 @@ class ThetaSyncManager:
         sample_after = ", ".join(out["expiration"].dropna().astype(str).drop_duplicates().head(6).tolist())
 
         if verbose:
-            print(
+            log_console(
                 f"[EXPIRATION][ENSURE] exp_req={expiration} exp_norm={exp_norm} "
                 f"renamed_from={renamed_from} rows={len(out)} "
                 f"missing_before={missing_before} unique_before={unique_before} "
@@ -6899,7 +6942,7 @@ class ThetaSyncManager:
                 break
         if not sym_col:
             if verbose:
-                print(f"[EXPIRATION][FILL] no symbol column found; missing_before={missing_before} rows={len(out)}")
+                log_console(f"[EXPIRATION][FILL] no symbol column found; missing_before={missing_before} rows={len(out)}")
             return out
 
         sym = out[sym_col].astype(str)
@@ -6912,7 +6955,7 @@ class ThetaSyncManager:
         missing_after = int(out["expiration"].isna().sum())
         if verbose:
             sample_vals = ", ".join(exp_norm[missing].dropna().astype(str).head(6).tolist())
-            print(
+            log_console(
                 f"[EXPIRATION][FILL] col={sym_col} rows={len(out)} missing_before={missing_before} "
                 f"filled={filled} missing_after={missing_after} sample={sample_vals}"
             )
@@ -6934,15 +6977,15 @@ class ThetaSyncManager:
         missing = out["expiration"].isna()
         missing_after = int(missing.sum())
         if verbose and missing_before != missing_after:
-            print(
+            log_console(
                 f"[EXPIRATION][FILL-RESULT] context={context} missing_before={missing_before} missing_after={missing_after}"
             )
         if missing.any():
             sample_cols = [c for c in ["option_symbol", "symbol", "root", "strike", "right", "timestamp"] if c in out.columns]
             sample = out.loc[missing, sample_cols].head(5)
-            print(f"[EXPIRATION][ERROR] Missing expiration values: {int(missing.sum())} rows; context={context}")
+            log_console(f"[EXPIRATION][ERROR] Missing expiration values: {int(missing.sum())} rows; context={context}")
             if not sample.empty:
-                print(sample.to_string(index=False))
+                log_console(sample.to_string(index=False))
             raise ValueError(f"Missing expiration values after normalization; context={context}")
 
         try:
@@ -6952,7 +6995,7 @@ class ThetaSyncManager:
                 exp_min = exp_vals.min()
                 exp_max = exp_vals.max()
                 exp_sample = ", ".join(exp_vals.drop_duplicates().head(8).tolist())
-                print(
+                log_console(
                     f"[EXPIRATION][OK] context={context} rows={len(out)} "
                     f"unique={unique_count} min={exp_min} max={exp_max} sample={exp_sample}"
                 )
@@ -6961,10 +7004,10 @@ class ThetaSyncManager:
                     if sample_cols:
                         sample = out[sample_cols].head(5)
                         if not sample.empty:
-                            print(f"[EXPIRATION][SAMPLE] context={context}")
-                            print(sample.to_string(index=False))
+                            log_console(f"[EXPIRATION][SAMPLE] context={context}")
+                            log_console(sample.to_string(index=False))
         except Exception as e:
-            print(f"[EXPIRATION][WARN] context={context} summary_failed: {e}")
+            log_console(f"[EXPIRATION][WARN] context={context} summary_failed: {e}")
 
         return out
 
@@ -7101,7 +7144,7 @@ class ThetaSyncManager:
 
         debug_ready = getattr(self.cfg, "log_verbose_console", True)
         if debug_ready and tcol != "timestamp":
-            print(f"[TIME-COL] selected '{tcol}' for __ts_utc (non_null={non_null}/{len(df_ts)} ratio={ratio:.2f})")
+            log_console(f"[TIME-COL] selected '{tcol}' for __ts_utc (non_null={non_null}/{len(df_ts)} ratio={ratio:.2f})")
 
         series = pd.to_datetime(df_ts[tcol], errors="coerce")
         if getattr(series.dtype, "tz", None) is None:
@@ -7156,7 +7199,7 @@ class ThetaSyncManager:
             # Check for auth errors in client initialization
             err_msg = str(e).lower()
             if 'unauthorized' in err_msg or '401' in err_msg or '403' in err_msg or 'auth' in err_msg:
-                print(f"[INFLUX][FATAL] Authentication failed: {e}")
+                log_console(f"[INFLUX][FATAL] Authentication failed: {e}")
                 raise InfluxDBAuthError(f"InfluxDB authentication failed: {e}") from e
             raise
 
@@ -7179,11 +7222,11 @@ class ThetaSyncManager:
                 exists = bool(self._influx_measurement_exists(measurement))
             except Exception as e:
                 # Do not fail the download/write path because of a metadata hiccup during warm-up.
-                print(f"[INFLUX][WARN] measurement existence check skipped (warm-up?): {measurement}: {type(e).__name__}: {e}")
+                log_console(f"[INFLUX][WARN] measurement existence check skipped (warm-up?): {measurement}: {type(e).__name__}: {e}")
                 exists = False
 
             if not exists:
-                print(f"[INFLUX] creating new table {measurement}")
+                log_console(f"[INFLUX] creating new table {measurement}")
 
             self._influx_seen_measurements.add(measurement)
         # --- >>> INFLUX WARM-UP SAFE TABLE CHECK — END
@@ -7195,7 +7238,7 @@ class ThetaSyncManager:
             raise RuntimeError("No time column found for Influx write.")
         debug_ready = getattr(self.cfg, "log_verbose_console", True)
         if debug_ready and tcol != "timestamp":
-            print(f"[TIME-COL] selected '{tcol}' for Influx write (non_null={non_null}/{len(df_new)} ratio={ratio:.2f})")
+            log_console(f"[TIME-COL] selected '{tcol}' for Influx write (non_null={non_null}/{len(df_new)} ratio={ratio:.2f})")
 
         # Let pandas infer timestamp format automatically
         s = pd.to_datetime(df_new[tcol], errors="coerce")
@@ -7247,7 +7290,7 @@ class ThetaSyncManager:
                     exp_max = exp_vals.max()
                     exp_unique = int(exp_vals.nunique())
                     exp_sample = ", ".join(exp_vals.drop_duplicates().head(8).tolist())
-                print(
+                log_console(
                     f"[INFLUX][EXP] measurement={measurement} rows={len(df)} "
                     f"missing={exp_missing} unique={exp_unique} min={exp_min} max={exp_max} sample={exp_sample}"
                 )
@@ -7255,13 +7298,13 @@ class ThetaSyncManager:
                 if sample_cols:
                     sample = df[sample_cols].head(5)
                     if not sample.empty:
-                        print("[INFLUX][EXP] sample:")
-                        print(sample.to_string(index=False))
+                        log_console("[INFLUX][EXP] sample:")
+                        log_console(sample.to_string(index=False))
                 if exp_missing > 0 and sample_cols:
                     miss_sample = df.loc[df["expiration"].isna(), sample_cols].head(5)
                     if not miss_sample.empty:
-                        print("[INFLUX][EXP][MISSING] sample:")
-                        print(miss_sample.to_string(index=False))
+                        log_console("[INFLUX][EXP][MISSING] sample:")
+                        log_console(miss_sample.to_string(index=False))
                 self._influx_exp_debug_seen.add(measurement)
 
         # --- >>> INFLUX KEY INTEGRITY DEBUG — BEGIN
@@ -7281,29 +7324,29 @@ class ThetaSyncManager:
                 dup_count = 0
 
             if dup_count > 0 or any(v > 0 for v in missing_counts.values()):
-                print(f"[INFLUX][KEY-CHECK] measurement={measurement} rows={len(df)} dup_rows={dup_count} missing={missing_counts}")
+                log_console(f"[INFLUX][KEY-CHECK] measurement={measurement} rows={len(df)} dup_rows={dup_count} missing={missing_counts}")
                 if "right" in df.columns:
                     right_counts = df["right"].value_counts(dropna=False).head(6)
-                    print(f"[INFLUX][KEY-CHECK] right_counts={right_counts.to_dict()}")
+                    log_console(f"[INFLUX][KEY-CHECK] right_counts={right_counts.to_dict()}")
                 else:
-                    print(f"[INFLUX][KEY-CHECK] WARNING: 'right' column missing before dedup")
+                    log_console(f"[INFLUX][KEY-CHECK] WARNING: 'right' column missing before dedup")
 
                 if any(v > 0 for v in missing_counts.values()):
                     miss_cols = [c for c, v in missing_counts.items() if v > 0]
                     sample_cols = [c for c in ["__ts_utc", "timestamp", "symbol", "expiration", "strike", "right"] if c in df.columns]
                     miss_sample = df.loc[df[miss_cols].isna().any(axis=1), sample_cols].head(8)
                     if not miss_sample.empty:
-                        print("[INFLUX][KEY-CHECK] missing_key_sample:")
-                        print(miss_sample.to_string(index=False))
+                        log_console("[INFLUX][KEY-CHECK] missing_key_sample:")
+                        log_console(miss_sample.to_string(index=False))
 
                 if dup_count > 0:
                     try:
                         dup_keys = df.loc[dup_mask, key_cols_preview]
                         key_counts = dup_keys.value_counts().head(10)
-                        print("[INFLUX][KEY-CHECK] duplicate_keys_top:")
-                        print(key_counts.to_string())
+                        log_console("[INFLUX][KEY-CHECK] duplicate_keys_top:")
+                        log_console(key_counts.to_string())
                     except Exception as e:
-                        print(f"[INFLUX][KEY-CHECK] duplicate_keys_top: unavailable ({type(e).__name__}: {e})")
+                        log_console(f"[INFLUX][KEY-CHECK] duplicate_keys_top: unavailable ({type(e).__name__}: {e})")
         # --- >>> INFLUX KEY INTEGRITY DEBUG — END
 
         # 3) HARD DEDUPE: __ts_utc + tag se presenti (+ sequence se presente)
@@ -7314,33 +7357,33 @@ class ThetaSyncManager:
         before = len(df)
         df = df.dropna(subset=["__ts_utc"]).drop_duplicates(subset=key_cols, keep="last").reset_index(drop=True)
         dropped = before - len(df)
-        print(f"[INFLUX][DEDUP] measurement={measurement} keys={key_cols} kept={len(df)}/{before} dropped={dropped}")
+        log_console(f"[INFLUX][DEDUP] measurement={measurement} keys={key_cols} kept={len(df)}/{before} dropped={dropped}")
     
         # 4) (opzionale) esponi timestamp extra come campi numerici ns UTC
         _extra_ts_cols = ["underlying_timestamp", "timestamp_oi", "effective_date_oi"]
         for _c in _extra_ts_cols:
             if _c in df.columns:
                 # DEBUG: Log column type and sample value
-                print(f"[INFLUX-TS-CONV] Processing column '{_c}': dtype={df[_c].dtype}, is_datetime={pd.api.types.is_datetime64_any_dtype(df[_c])}")
+                log_console(f"[INFLUX-TS-CONV] Processing column '{_c}': dtype={df[_c].dtype}, is_datetime={pd.api.types.is_datetime64_any_dtype(df[_c])}")
                 if not df[_c].isna().all():
                     sample_val = df[_c].dropna().iloc[0] if len(df[_c].dropna()) > 0 else None
                     if sample_val is not None:
-                        print(f"[INFLUX-TS-CONV] Sample value: {sample_val} (type={type(sample_val)})")
+                        log_console(f"[INFLUX-TS-CONV] Sample value: {sample_val} (type={type(sample_val)})")
 
                 # Check if already a datetime column with timezone info
                 if pd.api.types.is_datetime64_any_dtype(df[_c]):
                     _ts = df[_c]
                     # If already timezone-aware, just convert to UTC
                     if getattr(_ts.dtype, "tz", None) is not None:
-                        print(f"[INFLUX-TS-CONV] Column '{_c}' is timezone-aware ({_ts.dtype.tz}), converting to UTC")
+                        log_console(f"[INFLUX-TS-CONV] Column '{_c}' is timezone-aware ({_ts.dtype.tz}), converting to UTC")
                         _ts = _ts.dt.tz_convert("UTC")
                     else:
                         # No timezone, assume UTC
-                        print(f"[INFLUX-TS-CONV] Column '{_c}' is datetime but no timezone, localizing to UTC")
+                        log_console(f"[INFLUX-TS-CONV] Column '{_c}' is datetime but no timezone, localizing to UTC")
                         _ts = _ts.dt.tz_localize("UTC")
                 else:
                     # Not a datetime column, try to parse
-                    print(f"[INFLUX-TS-CONV] Column '{_c}' is NOT datetime type, parsing...")
+                    log_console(f"[INFLUX-TS-CONV] Column '{_c}' is NOT datetime type, parsing...")
                     _ts = pd.to_datetime(df[_c], errors="coerce")
                     if getattr(_ts.dtype, "tz", None) is None:
                         _ts = _ts.dt.tz_localize("UTC")
@@ -7358,7 +7401,7 @@ class ThetaSyncManager:
                 if not ns.isna().all():
                     sample_ns = ns.dropna().iloc[0] if len(ns.dropna()) > 0 else None
                     if sample_ns is not None:
-                        print(f"[INFLUX-TS-CONV] Converted to nanoseconds: {int(sample_ns)}")
+                        log_console(f"[INFLUX-TS-CONV] Converted to nanoseconds: {int(sample_ns)}")
 
                 df[_c] = ns
     
@@ -7384,7 +7427,7 @@ class ThetaSyncManager:
         for idx, r in df.iterrows():
             try:
                 if "__ts_utc" not in r or pd.isna(r["__ts_utc"]):
-                    print(f"[INFLUX][ROW-SKIP] idx={idx} no __ts_utc")
+                    log_console(f"[INFLUX][ROW-SKIP] idx={idx} no __ts_utc")
                     continue
                 ts_ns = _to_ns(r["__ts_utc"])
     
@@ -7415,10 +7458,10 @@ class ThetaSyncManager:
                 lines.append(line)
     
             except Exception as e:
-                print(f"[INFLUX][ROW-SKIP] idx={idx} err={type(e).__name__}: {e}")
+                log_console(f"[INFLUX][ROW-SKIP] idx={idx} err={type(e).__name__}: {e}")
                 try:
                     dump_keys = ['__ts_utc','symbol','expiration','right','strike']
-                    print(f"[INFLUX][ROW-DUMP] {{ { {k: (None if (k in r and pd.isna(r[k])) else r.get(k, None)) for k in dump_keys} } }}")
+                    log_console(f"[INFLUX][ROW-DUMP] {{ { {k: (None if (k in r and pd.isna(r[k])) else r.get(k, None)) for k in dump_keys} } }}")
                 except Exception:
                     pass
                 continue
@@ -7456,11 +7499,11 @@ class ThetaSyncManager:
 
             if success:
                 written += len(chunk)
-                print(f"[INFLUX][WRITE] measurement={measurement} "
+                log_console(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={batch_idx}/{total_batches} points={len(chunk)} status=ok")
             else:
                 all_chunks_ok = False
-                print(f"[INFLUX][WRITE] measurement={measurement} "
+                log_console(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={batch_idx}/{total_batches} points={len(chunk)} status=FAILED (saved for recovery)")
 
         # --- >>> AVAILABLE_DATES: persist unique ET day(s) — BEGIN
@@ -7468,7 +7511,7 @@ class ThetaSyncManager:
             try:
                 self._influx_available_dates_note_days(measurement, _day_isos)
             except Exception as _e:
-                print(f"[INFLUX][AVAILABLE_DATES][WARN] {measurement}: {type(_e).__name__}: {_e}")
+                log_console(f"[INFLUX][AVAILABLE_DATES][WARN] {measurement}: {type(_e).__name__}: {_e}")
         # --- >>> AVAILABLE_DATES: persist unique ET day(s) — END
 
 
@@ -7571,7 +7614,7 @@ class ThetaSyncManager:
                                 continue
 
             except Exception as e:
-                print(f"[WARN] Could not read dates from {file_path}: {e}")
+                log_console(f"[WARN] Could not read dates from {file_path}: {e}")
                 continue
 
         return dates
@@ -7711,7 +7754,7 @@ class ThetaSyncManager:
         mode = str(raw).strip().lower()
         if mode in ("full_day", "candle_or_tick_row"):
             return mode
-        print(f"[WARN] Unknown skip_dimension_on_missing_data={raw!r}, falling back to legacy")
+        log_console(f"[WARN] Unknown skip_dimension_on_missing_data={raw!r}, falling back to legacy")
         return "full_day" if bool(getattr(self.cfg, "skip_day_on_greeks_iv_oi_failure", False)) else "candle_or_tick_row"
 
 
@@ -7801,7 +7844,7 @@ class ThetaSyncManager:
             if not self._influx_measurement_exists(measurement):
                 return set()
         except Exception as e:
-            print(f"[INFLUX][WARN] measurement_exists failed: {type(e).__name__}: {e}")
+            log_console(f"[INFLUX][WARN] measurement_exists failed: {type(e).__name__}: {e}")
             return set()
 
         select_cols = []
@@ -7823,7 +7866,7 @@ class ThetaSyncManager:
         try:
             df = self._influx_query_dataframe(query)
         except Exception as e:
-            print(f"[INFLUX][WARN] existing-keys query failed: {type(e).__name__}: {e}")
+            log_console(f"[INFLUX][WARN] existing-keys query failed: {type(e).__name__}: {e}")
             return set()
 
         if df is None or df.empty:
@@ -7928,7 +7971,7 @@ class ThetaSyncManager:
         kept = int(keep_mask.sum())
         dropped = len(df) - kept
         if dropped > 0:
-            print(f"[INFLUX][DEDUP-DB] measurement={measurement} removed={dropped} kept={kept}")
+            log_console(f"[INFLUX][DEDUP-DB] measurement={measurement} removed={dropped} kept={kept}")
         return df.loc[keep_mask].copy()
 
 
@@ -8054,7 +8097,7 @@ class ThetaSyncManager:
             try:
                 existing = pd.read_csv(path, dtype=str)
             except Exception as e:
-                print(f"[WARN] Missing-enrichment read failed ({path}): {e}")
+                log_console(f"[WARN] Missing-enrichment read failed ({path}): {e}")
                 existing = pd.DataFrame()
         else:
             existing = pd.DataFrame()
@@ -8138,7 +8181,7 @@ class ThetaSyncManager:
         try:
             df = pd.read_csv(path, dtype=str)
         except Exception as e:
-            print(f"[WARN] Missing-enrichment read failed ({path}): {e}")
+            log_console(f"[WARN] Missing-enrichment read failed ({path}): {e}")
             return 0
 
         if df is None or df.empty:
@@ -8346,7 +8389,7 @@ class ThetaSyncManager:
             parsed_map[col] = parsed
 
         if not parsed_map:
-            print(f"[WARN] No timestamp-like columns found while sorting EOD batch; tried={time_col_candidates}")
+            log_console(f"[WARN] No timestamp-like columns found while sorting EOD batch; tried={time_col_candidates}")
             after_dedup = len(combined_df)
             new_rows = after_dedup - existing_count
             return combined_df, existing_count, new_rows, combined_df.columns[0]
@@ -8365,8 +8408,8 @@ class ThetaSyncManager:
         # If nothing parsed (all NaT), log detailed debug and keep data without time-dedupe
         if total_valid == 0:
             for idx, (col, total, valid, bad) in enumerate(cand_debug, start=1):
-                print(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
-            print(f"[WARN] Could not parse any timestamps in columns {list(parsed_map.keys())}; writing batch in arrival order without time-based dedupe")
+                log_console(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
+            log_console(f"[WARN] Could not parse any timestamps in columns {list(parsed_map.keys())}; writing batch in arrival order without time-based dedupe")
             after_dedup = len(combined_df)
             new_rows = after_dedup - existing_count
             return combined_df, existing_count, new_rows, time_col
@@ -8378,11 +8421,11 @@ class ThetaSyncManager:
             sample = ", ".join(combined_df.loc[nat_mask, time_col_candidates[0] if time_col_candidates[0] in combined_df.columns else combined_df.columns[0]].astype(str).head(3).tolist())
             # Debug candidates to understand why parsing failed
             for idx, (col, total, valid, bad) in enumerate(cand_debug, start=1):
-                print(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
+                log_console(f"[EOD-DEBUG-TS] #{idx} col={col} valid={valid}/{total} bad_examples={bad}")
             if sample:
-                print(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col}; examples: {sample})")
+                log_console(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col}; examples: {sample})")
             else:
-                print(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col})")
+                log_console(f"[WARN] Dropping {failed_count} rows with unparseable timestamps during EOD sorting (column={time_col})")
             combined_df = combined_df[~nat_mask]
 
         # Sort chronologically
@@ -9294,7 +9337,7 @@ class ThetaSyncManager:
             if not self._influx_measurement_exists(measurement):
                 return None
         except Exception as e:
-            print(f"[INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            log_console(f"[INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
             return None
         # --- >>> WARM-UP GUARD — END
 
@@ -9316,7 +9359,7 @@ class ThetaSyncManager:
 
             # Connection/timeout errors → Re-raise (don't create table)
             if any(x in err_msg for x in ['timeout', 'connection', 'unavailable', 'failed to connect', 'unreachable']):
-                print(f"[INFLUX][ERROR] Connection/timeout error checking table {measurement}: {e}")
+                log_console(f"[INFLUX][ERROR] Connection/timeout error checking table {measurement}: {e}")
                 raise  # Re-raise to signal server is down
 
             # Table not found errors → Return None (OK to create table)
@@ -9324,7 +9367,7 @@ class ThetaSyncManager:
                 return None  # Table doesn't exist, OK to create
 
             # Other errors → Return None but log warning
-            print(f"[INFLUX][WARN] Unexpected error checking table {measurement}: {e}")
+            log_console(f"[INFLUX][WARN] Unexpected error checking table {measurement}: {e}")
             return None
         return None
 
@@ -9366,13 +9409,13 @@ class ThetaSyncManager:
                         strikes_list = strikes_payload if isinstance(strikes_payload, list) else []
                     total_strikes += len(strikes_list)
                 except Exception as e:
-                    print(f"[VALIDATION][WARN] list_strikes exp={exp} {day_iso}: {e}")
+                    log_console(f"[VALIDATION][WARN] list_strikes exp={exp} {day_iso}: {e}")
             if total_strikes == 0:
                 return None
             # right=both → consideriamo call e put
             return total_strikes * 2
         except Exception as e:
-            print(f"[VALIDATION][WARN] expected combos fetch failed {symbol} {day_iso}: {e}")
+            log_console(f"[VALIDATION][WARN] expected combos fetch failed {symbol} {day_iso}: {e}")
             return None
 
 
@@ -9395,7 +9438,7 @@ class ThetaSyncManager:
             if not self._influx_measurement_exists(measurement):
                 return None
         except Exception as e:
-            print(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            log_console(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
             return None
         # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — END
 
@@ -9410,11 +9453,11 @@ class ThetaSyncManager:
             if df is not None and len(df) and "first_ts" in df.columns:
                 v = df["first_ts"].iloc[0]
                 out = pd.to_datetime(v, utc=True) if pd.notna(v) else None
-                print(f"[RESUME-INFLUX][CHECK] meas={measurement} first_ts_between={out} "
+                log_console(f"[RESUME-INFLUX][CHECK] meas={measurement} first_ts_between={out} "
                       f"range=[{start_utc_iso},{end_utc_iso})")
                 return out
         except Exception as e:
-            print(f"[RESUME-INFLUX][DEBUG] first_ts_between error: {type(e).__name__}: {e}")
+            log_console(f"[RESUME-INFLUX][DEBUG] first_ts_between error: {type(e).__name__}: {e}")
             return None
         return None
 
@@ -9442,7 +9485,7 @@ class ThetaSyncManager:
             if not self._influx_measurement_exists(measurement):
                 return None
         except Exception as e:
-            print(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
+            log_console(f"[RESUME-INFLUX][DEBUG] measurement_exists check failed: {type(e).__name__}: {e}")
             return None
         # --- >>> INFLUX WARM-UP GUARD (avoid querying missing measurement) — END
 
@@ -9468,7 +9511,7 @@ class ThetaSyncManager:
             ts = pd.to_datetime(df["t"].iloc[0], utc=True, errors="coerce")
             return ts if pd.notna(ts) else None
         except Exception as ex:
-            print(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
+            log_console(f"[RESUME-INFLUX][WARN] last_ts_between query failed: {ex}")
             return None
 
 
@@ -9510,7 +9553,7 @@ class ThetaSyncManager:
         exists = os.path.exists(cache_path)
 
         if exists:
-            print(f"[OI-CACHE][CHECK] {symbol} date={date_ymd} - Cache file found: {cache_path}")
+            log_console(f"[OI-CACHE][CHECK] {symbol} date={date_ymd} - Cache file found: {cache_path}")
 
         return exists
 
@@ -9543,25 +9586,25 @@ class ThetaSyncManager:
         cache_path = self._get_oi_cache_path(symbol, date_ymd)
 
         if not os.path.exists(cache_path):
-            print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file not found")
+            log_console(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file not found")
             return None
 
         try:
             df = pd.read_parquet(cache_path)
 
             if df is None or df.empty:
-                print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file is empty")
+                log_console(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Cache file is empty")
                 return None
 
             # Remove request_date column (used only for cache querying)
             if 'request_date' in df.columns:
                 df = df.drop(columns=['request_date'])
 
-            print(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Loaded {len(df)} OI records from cache")
+            log_console(f"[OI-CACHE][LOAD] {symbol} date={date_ymd} - Loaded {len(df)} OI records from cache")
             return df
 
         except Exception as e:
-            print(f"[OI-CACHE][LOAD][WARN] Failed to load cache for {symbol}/{date_ymd}: {e}")
+            log_console(f"[OI-CACHE][LOAD][WARN] Failed to load cache for {symbol}/{date_ymd}: {e}")
             return None
 
     def _save_oi_to_cache(self, symbol: str, date_ymd: str, oi_df: pd.DataFrame) -> bool:
@@ -9601,11 +9644,11 @@ class ThetaSyncManager:
         try:
             # Save RAW data without transformations for cache transparency
             oi_df.to_parquet(cache_path, index=False, compression='snappy')
-            print(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(oi_df)} OI records to {cache_path}")
+            log_console(f"[OI-CACHE][SAVE] {symbol} date={date_ymd} - Cached {len(oi_df)} OI records to {cache_path}")
             return True
 
         except Exception as e:
-            print(f"[OI-CACHE][SAVE][WARN] Failed to save cache for {symbol}/{date_ymd}: {e}")
+            log_console(f"[OI-CACHE][SAVE][WARN] Failed to save cache for {symbol}/{date_ymd}: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -10352,16 +10395,16 @@ class ThetaSyncManager:
             sinks = ["csv", "parquet", "influxdb"]
 
         if verbose:
-            print(f"\n{'='*80}")
-            print(f"COMPREHENSIVE DUPLICATE REPORT")
-            print(f"Symbol: {symbol} ({asset})")
-            print(f"Intervals: {', '.join(intervals)}")
-            print(f"Sinks: {', '.join(sinks)}")
+            log_console(f"\n{'='*80}")
+            log_console(f"COMPREHENSIVE DUPLICATE REPORT")
+            log_console(f"Symbol: {symbol} ({asset})")
+            log_console(f"Intervals: {', '.join(intervals)}")
+            log_console(f"Sinks: {', '.join(sinks)}")
             if start_date and end_date:
-                print(f"Date range: {start_date} to {end_date}")
+                log_console(f"Date range: {start_date} to {end_date}")
             else:
-                print(f"Date range: Auto-detect")
-            print(f"{'='*80}\n")
+                log_console(f"Date range: Auto-detect")
+            log_console(f"{'='*80}\n")
 
         # Collect results for each combination
         results = []
@@ -10372,7 +10415,7 @@ class ThetaSyncManager:
         for interval in intervals:
             for sink in sinks:
                 if verbose:
-                    print(f"\n--- Checking {interval} in {sink.upper()} ---")
+                    log_console(f"\n--- Checking {interval} in {sink.upper()} ---")
 
                 try:
                     result = self.check_duplicates_multi_day(
@@ -10415,18 +10458,18 @@ class ThetaSyncManager:
 
                     if verbose:
                         status_icon = "✅" if combination_result["total_duplicates"] == 0 else "⚠️"
-                        print(f"  {status_icon} Rows: {combination_result['total_rows']:,}, "
+                        log_console(f"  {status_icon} Rows: {combination_result['total_rows']:,}, "
                               f"Duplicates: {combination_result['total_duplicates']:,} "
                               f"({combination_result['duplicate_rate']:.2f}%)")
 
                         # Print dates with duplicates if any
                         if dates_with_duplicates:
                             dates_str = ", ".join(dates_with_duplicates)
-                            print(f"      Dates with duplicates: {dates_str}")
+                            log_console(f"      Dates with duplicates: {dates_str}")
 
                 except Exception as e:
                     if verbose:
-                        print(f"  ❌ Error: {str(e)}")
+                        log_console(f"  ❌ Error: {str(e)}")
                     results.append({
                         "interval": interval,
                         "sink": sink,
@@ -10461,42 +10504,42 @@ class ThetaSyncManager:
 
         # Print summary
         if verbose:
-            print(f"\n{'='*80}")
-            print(f"SUMMARY")
-            print(f"{'='*80}")
-            print(f"Total combinations checked: {len(results)}")
-            print(f"Combinations with duplicates: {combinations_with_duplicates}")
-            print(f"Total rows across all: {total_rows_all:,}")
-            print(f"Total duplicates across all: {total_duplicates_all:,}")
-            print(f"Overall duplicate rate: {overall_duplicate_rate:.2f}%")
+            log_console(f"\n{'='*80}")
+            log_console(f"SUMMARY")
+            log_console(f"{'='*80}")
+            log_console(f"Total combinations checked: {len(results)}")
+            log_console(f"Combinations with duplicates: {combinations_with_duplicates}")
+            log_console(f"Total rows across all: {total_rows_all:,}")
+            log_console(f"Total duplicates across all: {total_duplicates_all:,}")
+            log_console(f"Overall duplicate rate: {overall_duplicate_rate:.2f}%")
 
             if worst_combination and worst_combination.get("duplicate_rate", 0) > 0:
-                print(f"\n⚠️  Worst combination: {worst_combination['interval']} in {worst_combination['sink']} "
+                log_console(f"\n⚠️  Worst combination: {worst_combination['interval']} in {worst_combination['sink']} "
                       f"({worst_combination['duplicate_rate']:.2f}% duplicates)")
                 if worst_combination.get("dates_with_duplicates"):
                     dates_str = ", ".join(worst_combination["dates_with_duplicates"])
-                    print(f"    Affected dates: {dates_str}")
+                    log_console(f"    Affected dates: {dates_str}")
 
             if cleanest_sinks:
-                print(f"\n✅ Clean sinks (no duplicates): {', '.join(cleanest_sinks)}")
+                log_console(f"\n✅ Clean sinks (no duplicates): {', '.join(cleanest_sinks)}")
 
             if problematic_intervals:
-                print(f"\n⚠️  Intervals with duplicates: {', '.join(problematic_intervals)}")
+                log_console(f"\n⚠️  Intervals with duplicates: {', '.join(problematic_intervals)}")
 
             # List all combinations with duplicates and their dates
             problematic_combinations = [r for r in results if r.get("total_duplicates", 0) > 0]
             if problematic_combinations:
-                print(f"\n{'='*80}")
-                print(f"DETAILED BREAKDOWN - COMBINATIONS WITH DUPLICATES")
-                print(f"{'='*80}")
+                log_console(f"\n{'='*80}")
+                log_console(f"DETAILED BREAKDOWN - COMBINATIONS WITH DUPLICATES")
+                log_console(f"{'='*80}")
                 for combo in problematic_combinations:
-                    print(f"\n  {combo['interval']} in {combo['sink'].upper()}: "
+                    log_console(f"\n  {combo['interval']} in {combo['sink'].upper()}: "
                           f"{combo['total_duplicates']:,} duplicates ({combo['duplicate_rate']:.2f}%)")
                     if combo.get("dates_with_duplicates"):
                         dates_str = ", ".join(combo["dates_with_duplicates"])
-                        print(f"    Dates: {dates_str}")
+                        log_console(f"    Dates: {dates_str}")
 
-            print(f"\n{'='*80}\n")
+            log_console(f"\n{'='*80}\n")
 
         return {
             "symbol": symbol,
@@ -10784,7 +10827,7 @@ class ThetaSyncManager:
                     if cnt and cnt <= 3:
                         inter = list(s1 & s2)
                         try:
-                            print(f"[DEBUG-OVERLAP] {f1} ∩ {f2} = {cnt}  sample={inter[:1]}")
+                            log_console(f"[DEBUG-OVERLAP] {f1} ∩ {f2} = {cnt}  sample={inter[:1]}")
                         except Exception:
                             pass
 
@@ -10814,29 +10857,29 @@ class ThetaSyncManager:
     
             # Optional display
             if show:
-                print(f"\n[{day}] righe totali: {total_rows:,}  uniche(key): {unique_key:,}  overlap(dup): {duplicates_key:,}")
-                print(f"strike×expiration uniche: {unique_strike_exp:,}")
+                log_console(f"\n[{day}] righe totali: {total_rows:,}  uniche(key): {unique_key:,}  overlap(dup): {duplicates_key:,}")
+                log_console(f"strike×expiration uniche: {unique_strike_exp:,}")
                 if not top_overlap_ts.empty:
-                    print("Top timestamp con overlap:")
-                    print(top_overlap_ts)
+                    log_console("Top timestamp con overlap:")
+                    log_console(top_overlap_ts)
                 if _display is not None:
                     try:
-                        print("Overlap/Dup matrix (diag = intra-file dup; off-diag = inter-file overlap):")
+                        log_console("Overlap/Dup matrix (diag = intra-file dup; off-diag = inter-file overlap):")
                         _display(overlap_mat)
                     except Exception:
-                        print(overlap_mat)
+                        log_console(overlap_mat)
     
         summary_df = pd.DataFrame(summary_rows).sort_values("date").reset_index(drop=True)
     
         if show:
-            print("\n=== RIEPILOGO ===")
+            log_console("\n=== RIEPILOGO ===")
             try:
                 if _display is not None:
                     _display(summary_df)
                 else:
-                    print(summary_df)
+                    log_console(summary_df)
             except Exception:
-                print(summary_df)
+                log_console(summary_df)
     
         return results_by_day, summary_df
 
@@ -11086,7 +11129,7 @@ class ThetaSyncManager:
             )
             
             if not first_day or not last_day:
-                print("[MULTI-DAY-CHECK][ERROR] No data found in sink. Cannot determine date range.")
+                log_console("[MULTI-DAY-CHECK][ERROR] No data found in sink. Cannot determine date range.")
                 return {
                     "error": "No data found in sink",
                     "days_analyzed": 0,
@@ -11119,10 +11162,10 @@ class ThetaSyncManager:
             }
         
         if verbose:
-            print(f"\n{'='*70}")
-            print(f"DUPLICATE CHECK - {symbol} {asset} {interval} [{sink}]")
-            print(f"Date range: {start_date} -> {end_date}")
-            print(f"{'='*70}\n")
+            log_console(f"\n{'='*70}")
+            log_console(f"DUPLICATE CHECK - {symbol} {asset} {interval} [{sink}]")
+            log_console(f"Date range: {start_date} -> {end_date}")
+            log_console(f"{'='*70}\n")
         
         # START: Iterate through all days and check duplicates
         total_days = 0
@@ -11168,7 +11211,7 @@ class ThetaSyncManager:
                 # Print daily progress if verbose
                 if verbose:
                     status = "✅" if result['duplicates'] == 0 else "❌"
-                    print(f"{status} {day_iso}: {result['total_rows']:6d} rows, "
+                    log_console(f"{status} {day_iso}: {result['total_rows']:6d} rows, "
                           f"{result['duplicates']:4d} duplicates ({result['duplicate_rate']:5.2f}%)")
             
             current_dt += timedelta(days=1)
@@ -11184,32 +11227,32 @@ class ThetaSyncManager:
         
         # START: Print summary report if verbose
         if verbose:
-            print(f"\n{'='*70}")
-            print(f"SUMMARY")
-            print(f"{'='*70}")
-            print(f"Days analyzed:          {total_days}")
-            print(f"Total rows:             {total_rows_all:,}")
-            print(f"Total duplicates:       {total_duplicates_all:,}")
-            print(f"Global duplicate rate:  {global_dup_rate:.2f}%")
-            print(f"Days with duplicates:   {days_with_dups}")
+            log_console(f"\n{'='*70}")
+            log_console(f"SUMMARY")
+            log_console(f"{'='*70}")
+            log_console(f"Days analyzed:          {total_days}")
+            log_console(f"Total rows:             {total_rows_all:,}")
+            log_console(f"Total duplicates:       {total_duplicates_all:,}")
+            log_console(f"Global duplicate rate:  {global_dup_rate:.2f}%")
+            log_console(f"Days with duplicates:   {days_with_dups}")
             
             # Show detailed breakdown for days with duplicates
             if days_with_dups > 0:
-                print(f"\n{'='*70}")
-                print(f"DAYS WITH DUPLICATES - DETAILS")
-                print(f"{'='*70}")
+                log_console(f"\n{'='*70}")
+                log_console(f"DAYS WITH DUPLICATES - DETAILS")
+                log_console(f"{'='*70}")
                 for day_info in daily_results:
                     if day_info['duplicates'] > 0:
-                        print(f"\n📅 {day_info['date']}: {day_info['duplicates']} duplicates "
+                        log_console(f"\n📅 {day_info['date']}: {day_info['duplicates']} duplicates "
                               f"out of {day_info['total_rows']} rows ({day_info['duplicate_rate']:.2f}%)")
                         if day_info['duplicate_keys']:
-                            print(f"   Example duplicate keys:")
+                            log_console(f"   Example duplicate keys:")
                             for i, key in enumerate(day_info['duplicate_keys'], 1):
-                                print(f"     {i}. {key}")
+                                log_console(f"     {i}. {key}")
             else:
-                print(f"\n✅ No duplicates found in any day!")
+                log_console(f"\n✅ No duplicates found in any day!")
             
-            print(f"\n{'='*70}\n")
+            log_console(f"\n{'='*70}\n")
         # END: Print summary report
         
         return {
@@ -11424,7 +11467,7 @@ class ThetaSyncManager:
                     df = pd.read_parquet(f)
                 dfs.append(df)
             except Exception as e:
-                print(f"[CHECK-DUP][WARN] errore lettura {f}: {e}")
+                log_console(f"[CHECK-DUP][WARN] errore lettura {f}: {e}")
                 continue
         
         if not dfs:
@@ -11647,7 +11690,7 @@ class ThetaSyncManager:
                                 if os.path.isfile(f):
                                     total_size += os.path.getsize(f)
                         except Exception as e:
-                            print(f"[WARNING] Error reading timestamps for {asset_dir}/{symbol_dir}/{interval_dir}: {e}")
+                            log_console(f"[WARNING] Error reading timestamps for {asset_dir}/{symbol_dir}/{interval_dir}: {e}")
 
                         results.append({
                             "asset": asset_dir,
@@ -11721,10 +11764,10 @@ class ThetaSyncManager:
                                 }
                                 results.append(entry)
                             except Exception as e:
-                                print(f"[WARNING] Error getting timestamps for {table_name}: {e}")
+                                log_console(f"[WARNING] Error getting timestamps for {table_name}: {e}")
 
             except Exception as e:
-                print(f"[WARNING] Error scanning InfluxDB: {e}")
+                log_console(f"[WARNING] Error scanning InfluxDB: {e}")
 
         df = pd.DataFrame(results)
         if df.empty:

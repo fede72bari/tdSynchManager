@@ -2,6 +2,7 @@
 Test WHERE performance: TAG vs FIELD
 Simple focused test as requested by user
 """
+from console_log import log_console
 
 import os
 import time
@@ -23,65 +24,65 @@ client = InfluxDBClient3(
 
 measurement = "XOM-option-5m"
 
-print("=" * 80)
-print(f"WHERE Performance Test: TAG vs FIELD")
-print(f"Measurement: {measurement} (17.5M rows)")
-print("=" * 80)
+log_console("=" * 80)
+log_console(f"WHERE Performance Test: TAG vs FIELD")
+log_console(f"Measurement: {measurement} (17.5M rows)")
+log_console("=" * 80)
 
 # Test 1: WHERE on TAG (expiration is a tag)
-print("\n" + "=" * 80)
-print("Test 1: WHERE on TAG")
-print("Query: WHERE expiration = '2025-11-28'")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("Test 1: WHERE on TAG")
+log_console("Query: WHERE expiration = '2025-11-28'")
+log_console("=" * 80)
 
 query = f'SELECT COUNT(*) FROM "{measurement}" WHERE expiration = \'2025-11-28\''
-print(f"[QUERY] {query}")
+log_console(f"[QUERY] {query}")
 
 t0 = time.time()
 result = client.query(query)
 elapsed = time.time() - t0
 
 df = result.to_pandas() if hasattr(result, "to_pandas") else result
-print(f"[RESULT] Elapsed: {elapsed:.2f}s")
-print(f"[RESULT] Columns: {list(df.columns)}")
-print(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
+log_console(f"[RESULT] Elapsed: {elapsed:.2f}s")
+log_console(f"[RESULT] Columns: {list(df.columns)}")
+log_console(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
 
 # Test 2: WHERE on FIELD (bid is a field)
-print("\n" + "=" * 80)
-print("Test 2: WHERE on FIELD")
-print("Query: WHERE bid > 10")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("Test 2: WHERE on FIELD")
+log_console("Query: WHERE bid > 10")
+log_console("=" * 80)
 
 query = f'SELECT COUNT(*) FROM "{measurement}" WHERE bid > 10'
-print(f"[QUERY] {query}")
+log_console(f"[QUERY] {query}")
 
 t0 = time.time()
 result = client.query(query)
 elapsed = time.time() - t0
 
 df = result.to_pandas() if hasattr(result, "to_pandas") else result
-print(f"[RESULT] Elapsed: {elapsed:.2f}s")
-print(f"[RESULT] Columns: {list(df.columns)}")
-print(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
+log_console(f"[RESULT] Elapsed: {elapsed:.2f}s")
+log_console(f"[RESULT] Columns: {list(df.columns)}")
+log_console(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
 
 # Test 3: WHERE on TIME (for comparison - should be fast)
-print("\n" + "=" * 80)
-print("Test 3: WHERE on TIME (baseline)")
-print("Query: WHERE time >= '2025-11-25T00:00:00Z'")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("Test 3: WHERE on TIME (baseline)")
+log_console("Query: WHERE time >= '2025-11-25T00:00:00Z'")
+log_console("=" * 80)
 
 query = f'SELECT COUNT(*) FROM "{measurement}" WHERE time >= \'2025-11-25T00:00:00Z\''
-print(f"[QUERY] {query}")
+log_console(f"[QUERY] {query}")
 
 t0 = time.time()
 result = client.query(query)
 elapsed = time.time() - t0
 
 df = result.to_pandas() if hasattr(result, "to_pandas") else result
-print(f"[RESULT] Elapsed: {elapsed:.2f}s")
-print(f"[RESULT] Columns: {list(df.columns)}")
-print(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
+log_console(f"[RESULT] Elapsed: {elapsed:.2f}s")
+log_console(f"[RESULT] Columns: {list(df.columns)}")
+log_console(f"[RESULT] Count: {df.iloc[0][0] if len(df) > 0 else 'N/A'}")
 
-print("\n" + "=" * 80)
-print("TEST COMPLETED")
-print("=" * 80)
+log_console("\n" + "=" * 80)
+log_console("TEST COMPLETED")
+log_console("=" * 80)

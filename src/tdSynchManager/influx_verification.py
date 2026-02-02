@@ -3,6 +3,7 @@
 This module provides post-write verification for InfluxDB to detect partial writes
 and automatically retry missing data.
 """
+from console_log import log_console
 
 from dataclasses import dataclass
 from datetime import datetime, date
@@ -171,7 +172,7 @@ async def verify_influx_write(
                 df_count = count_result.to_pandas()
                 row_count = df_count['cnt'].iloc[0] if 'cnt' in df_count.columns else 0
                 if row_count > 0:
-                    print(f"[INFLUX][VERIFY] COUNT(*) found {row_count} rows in measurement '{measurement}'")
+                    log_console(f"[INFLUX][VERIFY] COUNT(*) found {row_count} rows in measurement '{measurement}'")
                     break
             if retry < 4:
                 import asyncio
@@ -182,10 +183,10 @@ async def verify_influx_write(
 
         if result_table is None or result_table.num_rows == 0:
             # Nothing written - log for debugging
-            print(f"[INFLUX][VERIFY] No rows found! Query returned {result_table.num_rows if result_table else 0} rows")
-            print(f"[INFLUX][VERIFY] Time range: {min_ts} to {max_ts}")
-            print(f"[INFLUX][VERIFY] Expected {total} rows in measurement '{measurement}'")
-            print(f"[INFLUX][VERIFY] Query: {query}")
+            log_console(f"[INFLUX][VERIFY] No rows found! Query returned {result_table.num_rows if result_table else 0} rows")
+            log_console(f"[INFLUX][VERIFY] Time range: {min_ts} to {max_ts}")
+            log_console(f"[INFLUX][VERIFY] Expected {total} rows in measurement '{measurement}'")
+            log_console(f"[INFLUX][VERIFY] Query: {query}")
             return InfluxWriteResult(
                 total_attempted=total,
                 successfully_written=0,
@@ -205,8 +206,8 @@ async def verify_influx_write(
         missing_cols = [col for col in key_cols if col not in df_written.columns]
         if missing_cols:
             # Query returned data but missing expected columns - assume nothing written
-            print(f"[INFLUX][VERIFY] Query returned columns: {list(df_written.columns)}")
-            print(f"[INFLUX][VERIFY] Expected key_cols: {key_cols}, missing: {missing_cols}")
+            log_console(f"[INFLUX][VERIFY] Query returned columns: {list(df_written.columns)}")
+            log_console(f"[INFLUX][VERIFY] Expected key_cols: {key_cols}, missing: {missing_cols}")
             return InfluxWriteResult(
                 total_attempted=total,
                 successfully_written=0,
@@ -257,8 +258,8 @@ async def verify_influx_write(
 
     except Exception as e:
         # Query failed - assume worst case (nothing written)
-        print(f"[INFLUX][VERIFY] Query failed with error: {e}")
-        print(f"[INFLUX][VERIFY] Query was: {query}")
+        log_console(f"[INFLUX][VERIFY] Query failed with error: {e}")
+        log_console(f"[INFLUX][VERIFY] Query was: {query}")
         return InfluxWriteResult(
             total_attempted=total,
             successfully_written=0,

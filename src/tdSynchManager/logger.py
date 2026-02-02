@@ -1,4 +1,5 @@
 """Structured logging for data consistency and error tracking."""
+from console_log import log_console
 
 import json
 import os
@@ -560,7 +561,7 @@ class DataConsistencyLogger:
                 measurement = ""
             attempt_str = f" attempt={retry_attempt}" if retry_attempt else ""
             status_str = f" status={resolution_status}" if resolution_status else ""
-            print(
+            log_console(
                 f"[{severity}][{event_type}] {symbol} ({asset}/{interval}) "
                 f"{range_str}: {error_message}{measurement}{attempt_str}{status_str}"
             )
@@ -663,7 +664,7 @@ class DataConsistencyLogger:
             self._atomic_write_parquet(df_combined, target_path)
         except Exception as e:
             if self.verbose:
-                print(f"[LOG][WARN] Failed to persist log for {symbol} {asset}/{interval}: {e}")
+                log_console(f"[LOG][WARN] Failed to persist log for {symbol} {asset}/{interval}: {e}")
 
     def _safe_read_parquet(self, path: Path) -> Optional[pd.DataFrame]:
         try:
@@ -678,10 +679,10 @@ class DataConsistencyLogger:
             corrupt_path = path.with_name(f"{path.name}.corrupt.{ts}")
             os.replace(path, corrupt_path)
             if self.verbose:
-                print(f"[LOG][WARN] Corrupt log parquet moved to {corrupt_path}: {err}")
+                log_console(f"[LOG][WARN] Corrupt log parquet moved to {corrupt_path}: {err}")
         except Exception as move_err:
             if self.verbose:
-                print(f"[LOG][WARN] Could not move corrupt log parquet {path}: {move_err}")
+                log_console(f"[LOG][WARN] Could not move corrupt log parquet {path}: {move_err}")
 
     def _atomic_write_parquet(self, df: pd.DataFrame, target_path: Path) -> None:
         tmp = target_path.with_name(f"{target_path.name}.{uuid.uuid4().hex}.tmp")
@@ -765,12 +766,12 @@ class DataConsistencyLogger:
         """Print recent logs with no truncation (wide columns)."""
         df = self.get_logs(symbol, asset, interval, start_ts, end_ts, limit)
         if df.empty:
-            print(f"[LOGGER][INFO] No logs for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}.")
+            log_console(f"[LOGGER][INFO] No logs for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}.")
             return
         cols = ["timestamp", "severity", "event_type", "error_message", "retry_attempt", "resolution_status",
                 "date_range_start", "date_range_end"]
         cols = [c for c in cols if c in df.columns]
         with pd.option_context("display.max_colwidth", None, "display.max_rows", None, "display.width", 0):
-            print(f"[LOGGER][INFO] Showing last {len(df)} entries for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}:")
+            log_console(f"[LOGGER][INFO] Showing last {len(df)} entries for {symbol} {asset}/{interval} from {start_ts} to {end_ts or 'now'}:")
             # Ensure no truncation of cells or rows
-            print(df[cols].to_string(index=False, max_colwidth=None))
+            log_console(df[cols].to_string(index=False, max_colwidth=None))

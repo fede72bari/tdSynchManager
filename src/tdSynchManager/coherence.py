@@ -3,6 +3,7 @@
 This module provides tools to check data completeness and consistency between
 local storage and the ThetaData source, and to recover missing data.
 """
+from console_log import log_console
 
 from contextlib import contextmanager
 import os
@@ -221,16 +222,16 @@ class CoherenceChecker:
         start_dt = dt.fromisoformat(check_start).date() if check_start else None
         end_dt = dt.fromisoformat(check_end).date() if check_end else None
 
-        print(f"[COHERENCE][API-DATES] Fetching available dates for {symbol} ({asset}/{interval})...")
+        log_console(f"[COHERENCE][API-DATES] Fetching available dates for {symbol} ({asset}/{interval})...")
         api_available_dates = await self.manager._fetch_available_dates_from_api(
             asset, symbol, interval, start_dt, end_dt,
             use_api_discovery=True  # Always use API discovery for coherence checks
         )
 
         if api_available_dates:
-            print(f"[COHERENCE][API-DATES] Found {len(api_available_dates)} available dates for coherence check")
+            log_console(f"[COHERENCE][API-DATES] Found {len(api_available_dates)} available dates for coherence check")
         else:
-            print(f"[COHERENCE][API-DATES] API query failed, using fallback date generation")
+            log_console(f"[COHERENCE][API-DATES] API query failed, using fallback date generation")
 
         # Perform interval-specific checks
         if interval == "1d":
@@ -364,9 +365,9 @@ class CoherenceChecker:
                     try:
                         expected_combo_total = await self.manager._expected_option_combos_for_day(report.symbol, date_iso)
                         if expected_combo_total:
-                            print(f"[COHERENCE][INFO] {report.symbol} {report.interval} {date_iso} attese_combo={expected_combo_total}")
+                            log_console(f"[COHERENCE][INFO] {report.symbol} {report.interval} {date_iso} attese_combo={expected_combo_total}")
                     except Exception as e:
-                        print(f"[COHERENCE][WARN] expected combos fetch failed {report.symbol} {date_iso}: {e}")
+                        log_console(f"[COHERENCE][WARN] expected combos fetch failed {report.symbol} {date_iso}: {e}")
 
                 validation_result = DataValidator.validate_intraday_completeness(
                     df=df,
@@ -531,18 +532,18 @@ class CoherenceChecker:
                                     delta_bucket = intraday_total - tick_total
                                     delta_diff = abs(delta_eod) - abs(delta_bucket)
 
-                                    print(f"\n[DELTA-COMPARISON] {date_iso} - EOD vs Bucket Analysis:")
-                                    print(f"  Tick total:       {int(tick_total)}")
-                                    print(f"  EOD total:        {int(eod_total)}")
-                                    print(f"  Intraday total:   {int(intraday_total)}")
-                                    print(f"  Delta EOD:        {delta_eod:+.0f} ({abs(delta_eod/tick_total)*100:.3f}%)")
-                                    print(f"  Delta Bucket:     {delta_bucket:+.0f} ({abs(delta_bucket/tick_total)*100:.3f}%)")
-                                    print(f"  Difference:       {delta_diff:.0f} volume")
+                                    log_console(f"\n[DELTA-COMPARISON] {date_iso} - EOD vs Bucket Analysis:")
+                                    log_console(f"  Tick total:       {int(tick_total)}")
+                                    log_console(f"  EOD total:        {int(eod_total)}")
+                                    log_console(f"  Intraday total:   {int(intraday_total)}")
+                                    log_console(f"  Delta EOD:        {delta_eod:+.0f} ({abs(delta_eod/tick_total)*100:.3f}%)")
+                                    log_console(f"  Delta Bucket:     {delta_bucket:+.0f} ({abs(delta_bucket/tick_total)*100:.3f}%)")
+                                    log_console(f"  Difference:       {delta_diff:.0f} volume")
                                     if abs(delta_eod) > 0:
                                         ratio = (1 - abs(delta_bucket)/abs(delta_eod)) * 100
-                                        print(f"  Bucket {ratio:+.1f}% more accurate than EOD")
+                                        log_console(f"  Bucket {ratio:+.1f}% more accurate than EOD")
                         except Exception as e:
-                            print(f"[BUCKET-ANALYSIS] Failed for {date_iso}: {e}")
+                            log_console(f"[BUCKET-ANALYSIS] Failed for {date_iso}: {e}")
 
                     report.is_coherent = False
                     if date_iso not in report.tick_volume_mismatches:
@@ -1005,13 +1006,13 @@ class CoherenceChecker:
 
         except Exception as e:
             # Log exception but don't fail
-            print(f"[DEBUG] _segment_tick_problems exception: {e}")
+            log_console(f"[DEBUG] _segment_tick_problems exception: {e}")
 
         # Log segment summary
         if segments:
-            print(f"\n[TICK-SEGMENT] {date_iso} - Segmented into {len(segments)} buckets ({segment_minutes}min each):")
+            log_console(f"\n[TICK-SEGMENT] {date_iso} - Segmented into {len(segments)} buckets ({segment_minutes}min each):")
             for seg in segments:
-                print(f"  [{seg['hour_start']}-{seg['hour_end']}] volume={int(seg['volume'])} ticks={seg['tick_count']}")
+                log_console(f"  [{seg['hour_start']}-{seg['hour_end']}] volume={int(seg['volume'])} ticks={seg['tick_count']}")
 
         return segments
 
@@ -1235,7 +1236,7 @@ class IncoherenceRecovery:
             if not self.manager._influx_measurement_exists(measurement):
                 return True
         except Exception as e:
-            print(f"[RECOVERY][WARN] influx measurement check failed ({measurement}): {type(e).__name__}: {e}")
+            log_console(f"[RECOVERY][WARN] influx measurement check failed ({measurement}): {type(e).__name__}: {e}")
             return True
 
         start_utc, end_utc = self.manager._influx__et_day_bounds_to_utc(date_iso)
@@ -1263,7 +1264,7 @@ class IncoherenceRecovery:
             try:
                 expected_combo_total = await self.manager._expected_option_combos_for_day(symbol, date_iso)
             except Exception as e:
-                print(f"[RECOVERY][WARN] expected combos fetch failed {symbol} {date_iso}: {e}")
+                log_console(f"[RECOVERY][WARN] expected combos fetch failed {symbol} {date_iso}: {e}")
 
         validation_result = DataValidator.validate_intraday_completeness(
             df=df,
@@ -1331,7 +1332,7 @@ class IncoherenceRecovery:
                         date_iso=date_str,
                     )
                 except Exception as e:
-                    print(f"[RECOVERY][WARN] gap check failed {symbol} {interval} {date_str}: {e}")
+                    log_console(f"[RECOVERY][WARN] gap check failed {symbol} {interval} {date_str}: {e}")
                     still_missing = True
 
                 if not still_missing:
@@ -1518,7 +1519,7 @@ class IncoherenceRecovery:
             return False
 
         if not enrich_greeks and interval != "tick":
-            print(f"[RECOVERY][WARN] Forcing enrich_greeks=True for missing rows ({symbol} {interval} {day_iso})")
+            log_console(f"[RECOVERY][WARN] Forcing enrich_greeks=True for missing rows ({symbol} {interval} {day_iso})")
             enrich_greeks = True
 
         keys_cols = [c for c in ["timestamp", "symbol", "expiration", "strike", "right", "sequence"] if c in df.columns]

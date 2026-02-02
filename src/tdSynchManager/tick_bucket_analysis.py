@@ -4,6 +4,7 @@ This module provides standalone analysis to identify problematic time buckets
 by downloading intraday data (30m bars) and comparing volume aggregation against
 tick data within each bucket.
 """
+from console_log import log_console
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -168,7 +169,7 @@ async def analyze_tick_buckets(
 
     try:
         # Step 1: Download intraday bars from API
-        print(f"\n[BUCKET-ANALYSIS] {date_iso} - Downloading {intraday_interval} bars from ThetaData API...")
+        log_console(f"\n[BUCKET-ANALYSIS] {date_iso} - Downloading {intraday_interval} bars from ThetaData API...")
         intraday_df = await _fetch_intraday_bars(
             manager=manager,
             symbol=symbol,
@@ -178,13 +179,13 @@ async def analyze_tick_buckets(
         )
 
         if intraday_df is None or intraday_df.empty:
-            print(f"[BUCKET-ANALYSIS] No intraday data available for {date_iso}")
+            log_console(f"[BUCKET-ANALYSIS] No intraday data available for {date_iso}")
             return report
 
-        print(f"[BUCKET-ANALYSIS] Retrieved {len(intraday_df)} intraday bars")
+        log_console(f"[BUCKET-ANALYSIS] Retrieved {len(intraday_df)} intraday bars")
 
         # Step 2: Load tick data from local storage
-        print(f"[BUCKET-ANALYSIS] Loading tick data from {sink}...")
+        log_console(f"[BUCKET-ANALYSIS] Loading tick data from {sink}...")
         tick_df = await _load_tick_data(
             manager=manager,
             symbol=symbol,
@@ -194,10 +195,10 @@ async def analyze_tick_buckets(
         )
 
         if tick_df is None or tick_df.empty:
-            print(f"[BUCKET-ANALYSIS] No tick data found in {sink} for {date_iso}")
+            log_console(f"[BUCKET-ANALYSIS] No tick data found in {sink} for {date_iso}")
             return report
 
-        print(f"[BUCKET-ANALYSIS] Loaded {len(tick_df)} tick records")
+        log_console(f"[BUCKET-ANALYSIS] Loaded {len(tick_df)} tick records")
 
         # Step 3: Compare bucket by bucket
         report.buckets = await _compare_buckets(
@@ -219,27 +220,27 @@ async def analyze_tick_buckets(
         if report.total_tick_volume > 0:
             total_diff_pct = abs(report.total_tick_volume - report.total_intraday_volume) / report.total_tick_volume
             if total_diff_pct > 0.10:  # More than 10% difference
-                print(f"\n[BUCKET-ANALYSIS] WARNING: Large discrepancy between totals!")
-                print(f"  Total tick volume: {int(report.total_tick_volume)}")
-                print(f"  Total intraday volume: {int(report.total_intraday_volume)}")
-                print(f"  Difference: {total_diff_pct:.1%}")
-                print(f"  This suggests incomplete intraday data (missing expirations or strikes)")
+                log_console(f"\n[BUCKET-ANALYSIS] WARNING: Large discrepancy between totals!")
+                log_console(f"  Total tick volume: {int(report.total_tick_volume)}")
+                log_console(f"  Total intraday volume: {int(report.total_intraday_volume)}")
+                log_console(f"  Difference: {total_diff_pct:.1%}")
+                log_console(f"  This suggests incomplete intraday data (missing expirations or strikes)")
 
         # Log summary (console + structured log)
-        print(f"\n[BUCKET-ANALYSIS] {date_iso} - Summary:")
-        print(f"  Total buckets: {len(report.buckets)}")
-        print(f"  Coherent buckets: {sum(1 for b in report.buckets if b.is_coherent)}")
-        print(f"  Problematic buckets: {sum(1 for b in report.buckets if not b.is_coherent)}")
-        print(f"  Total tick volume: {int(report.total_tick_volume)}")
-        print(f"  Total intraday volume: {int(report.total_intraday_volume)}")
-        print(f"  Overall coherent: {report.is_coherent}")
+        log_console(f"\n[BUCKET-ANALYSIS] {date_iso} - Summary:")
+        log_console(f"  Total buckets: {len(report.buckets)}")
+        log_console(f"  Coherent buckets: {sum(1 for b in report.buckets if b.is_coherent)}")
+        log_console(f"  Problematic buckets: {sum(1 for b in report.buckets if not b.is_coherent)}")
+        log_console(f"  Total tick volume: {int(report.total_tick_volume)}")
+        log_console(f"  Total intraday volume: {int(report.total_intraday_volume)}")
+        log_console(f"  Overall coherent: {report.is_coherent}")
 
         # Log problematic buckets
         problematic = [b for b in report.buckets if not b.is_coherent]
         if problematic:
-            print(f"\n[BUCKET-ANALYSIS] Problematic buckets:")
+            log_console(f"\n[BUCKET-ANALYSIS] Problematic buckets:")
             for b in problematic:
-                print(f"  [{b.bucket_start}-{b.bucket_end}] tick={int(b.tick_volume)} "
+                log_console(f"  [{b.bucket_start}-{b.bucket_end}] tick={int(b.tick_volume)} "
                       f"intraday={int(b.intraday_volume)} diff={b.diff_pct:.2%} ticks={b.tick_count}")
 
         # Structured log for bucket analysis statistics
@@ -272,7 +273,7 @@ async def analyze_tick_buckets(
             )
 
     except Exception as e:
-        print(f"[BUCKET-ANALYSIS] Error during analysis: {e}")
+        log_console(f"[BUCKET-ANALYSIS] Error during analysis: {e}")
         import traceback
         traceback.print_exc()
 
@@ -299,7 +300,7 @@ async def _fetch_intraday_bars(
     # Step 1: OPTIMIZED - Use same method as normal run to discover expirations
     # Query ThetaData API for all expirations that traded on this date
     # This is independent of local DB (for coherence checking) and very fast (1 API call)
-    print(f"[BUCKET-ANALYSIS] Querying ThetaData for expirations that traded on {date_iso}...")
+    log_console(f"[BUCKET-ANALYSIS] Querying ThetaData for expirations that traded on {date_iso}...")
     active_expirations = await manager._expirations_that_traded(symbol, date_iso, req_type="trade")
 
     # Fallback to quotes if no trades found
@@ -307,7 +308,7 @@ async def _fetch_intraday_bars(
         active_expirations = await manager._expirations_that_traded(symbol, date_iso, req_type="quote")
 
     if not active_expirations:
-        print(f"[BUCKET-ANALYSIS] No expirations found for {symbol} on {date_iso} (neither trades nor quotes)")
+        log_console(f"[BUCKET-ANALYSIS] No expirations found for {symbol} on {date_iso} (neither trades nor quotes)")
         return None
 
     # Convert from YYYYMMDD to YYYY-MM-DD format for API calls
@@ -319,7 +320,7 @@ async def _fetch_intraday_bars(
     # Step 2: Fetch intraday data for each expiration and concatenate
     all_dfs = []
 
-    print(f"[BUCKET-ANALYSIS] Found {len(active_expirations)} expirations with trading activity on {date_iso}")
+    log_console(f"[BUCKET-ANALYSIS] Found {len(active_expirations)} expirations with trading activity on {date_iso}")
 
     # Process ALL expirations (no arbitrary limit)
     # We need complete data to match EOD volume
@@ -349,13 +350,13 @@ async def _fetch_intraday_bars(
                 no_data_count += 1
             else:
                 # Log only unexpected errors
-                print(f"[BUCKET-ANALYSIS] Error fetching {exp}: {e}")
+                log_console(f"[BUCKET-ANALYSIS] Error fetching {exp}: {e}")
             continue
 
     if no_data_count > 0:
-        print(f"[BUCKET-ANALYSIS] Successfully fetched {success_count} expirations, {no_data_count} had no data (normal for illiquid strikes)")
+        log_console(f"[BUCKET-ANALYSIS] Successfully fetched {success_count} expirations, {no_data_count} had no data (normal for illiquid strikes)")
     else:
-        print(f"[BUCKET-ANALYSIS] Successfully fetched all {success_count} expirations with data")
+        log_console(f"[BUCKET-ANALYSIS] Successfully fetched all {success_count} expirations with data")
 
     if not all_dfs:
         return None
@@ -430,7 +431,7 @@ async def _load_tick_data(
 
             return df
         except Exception as e:
-            print(f"[BUCKET-ANALYSIS] Error querying InfluxDB: {e}")
+            log_console(f"[BUCKET-ANALYSIS] Error querying InfluxDB: {e}")
             return None
 
     else:
@@ -487,7 +488,7 @@ async def _compare_buckets(
     volume_col = 'size' if asset == "option" else 'volume'
 
     if volume_col not in tick_df.columns:
-        print(f"[BUCKET-ANALYSIS] Warning: '{volume_col}' column not found in tick data")
+        log_console(f"[BUCKET-ANALYSIS] Warning: '{volume_col}' column not found in tick data")
         return results
 
     # Ensure tick data has timestamp column
@@ -499,7 +500,7 @@ async def _compare_buckets(
             break
 
     if ts_col is None:
-        print(f"[BUCKET-ANALYSIS] Warning: no timestamp column in tick data")
+        log_console(f"[BUCKET-ANALYSIS] Warning: no timestamp column in tick data")
         return results
 
     tick_df = tick_df.copy()

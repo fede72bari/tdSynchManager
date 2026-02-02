@@ -1,6 +1,7 @@
 """
 Test per verificare il fuso orario dei timestamp restituiti dall'API ThetaData.
 """
+from console_log import log_console
 import sys
 import os
 import asyncio
@@ -12,7 +13,7 @@ import pandas as pd
 import io
 
 async def test_api_timestamp_format():
-    print("=== Testing ThetaData API Timestamp Format ===\n")
+    log_console("=== Testing ThetaData API Timestamp Format ===\n")
 
     # Create client
     cfg = ManagerConfig(root_dir=r"tests/data", max_concurrency=1)
@@ -26,10 +27,10 @@ async def test_api_timestamp_format():
         interval = "5m"
         expiration = "20251209"  # Next day expiration
 
-        print(f"Fetching {symbol} options {interval} data for {date}")
-        print(f"Expiration: {expiration}")
-        print(f"Expected ET market hours: 09:30-16:00")
-        print(f"Expected UTC market hours: 14:30-21:00 (ET+5 in winter)\n")
+        log_console(f"Fetching {symbol} options {interval} data for {date}")
+        log_console(f"Expiration: {expiration}")
+        log_console(f"Expected ET market hours: 09:30-16:00")
+        log_console(f"Expected UTC market hours: 14:30-21:00 (ET+5 in winter)\n")
 
         csv_text, url = await client.option_history_ohlc(
             symbol=symbol,
@@ -42,54 +43,54 @@ async def test_api_timestamp_format():
         )
 
         if not csv_text:
-            print("ERROR: Empty response from API")
+            log_console("ERROR: Empty response from API")
             return
 
         # Parse CSV
         df = pd.read_csv(io.StringIO(csv_text), dtype=str)
 
-        print(f"=== RAW API RESPONSE ===")
-        print(f"Total rows: {len(df)}")
-        print(f"\nFirst 3 rows:")
-        print(df.head(3))
+        log_console(f"=== RAW API RESPONSE ===")
+        log_console(f"Total rows: {len(df)}")
+        log_console(f"\nFirst 3 rows:")
+        log_console(df.head(3))
 
-        print(f"\n=== TIMESTAMP ANALYSIS ===")
-        print(f"First timestamp (RAW string): {df['timestamp'].iloc[0]}")
-        print(f"Last timestamp (RAW string): {df['timestamp'].iloc[-1]}")
+        log_console(f"\n=== TIMESTAMP ANALYSIS ===")
+        log_console(f"First timestamp (RAW string): {df['timestamp'].iloc[0]}")
+        log_console(f"Last timestamp (RAW string): {df['timestamp'].iloc[-1]}")
 
         # Try parsing
         df['ts_parsed'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        print(f"\nFirst timestamp (parsed, no tz): {df['ts_parsed'].iloc[0]}")
-        print(f"Last timestamp (parsed, no tz): {df['ts_parsed'].iloc[-1]}")
+        log_console(f"\nFirst timestamp (parsed, no tz): {df['ts_parsed'].iloc[0]}")
+        log_console(f"Last timestamp (parsed, no tz): {df['ts_parsed'].iloc[-1]}")
 
         # Check if timestamps have timezone info
         has_tz = df['timestamp'].iloc[0].endswith('Z') or '+' in df['timestamp'].iloc[0] or df['timestamp'].iloc[0].endswith('00')
-        print(f"\nTimezone indicator in string: {has_tz}")
+        log_console(f"\nTimezone indicator in string: {has_tz}")
 
         # Check underlying_timestamp if present
         if 'underlying_timestamp' in df.columns:
-            print(f"\nFirst underlying_timestamp (RAW): {df['underlying_timestamp'].iloc[0]}")
+            log_console(f"\nFirst underlying_timestamp (RAW): {df['underlying_timestamp'].iloc[0]}")
 
-        print(f"\n=== INTERPRETATION ===")
+        log_console(f"\n=== INTERPRETATION ===")
         first_ts = df['ts_parsed'].iloc[0]
         last_ts = df['ts_parsed'].iloc[-1]
 
-        print(f"If these are ET times:")
-        print(f"  First bar: {first_ts} ET → {first_ts.tz_localize('America/New_York').tz_convert('UTC')} UTC")
-        print(f"  Last bar: {last_ts} ET → {last_ts.tz_localize('America/New_York').tz_convert('UTC')} UTC")
+        log_console(f"If these are ET times:")
+        log_console(f"  First bar: {first_ts} ET → {first_ts.tz_localize('America/New_York').tz_convert('UTC')} UTC")
+        log_console(f"  Last bar: {last_ts} ET → {last_ts.tz_localize('America/New_York').tz_convert('UTC')} UTC")
 
-        print(f"\nIf these are already UTC times:")
-        print(f"  First bar: {first_ts} UTC → {pd.Timestamp(first_ts, tz='UTC').tz_convert('America/New_York')} ET")
-        print(f"  Last bar: {last_ts} UTC → {pd.Timestamp(last_ts, tz='UTC').tz_convert('America/New_York')} ET")
+        log_console(f"\nIf these are already UTC times:")
+        log_console(f"  First bar: {first_ts} UTC → {pd.Timestamp(first_ts, tz='UTC').tz_convert('America/New_York')} ET")
+        log_console(f"  Last bar: {last_ts} UTC → {pd.Timestamp(last_ts, tz='UTC').tz_convert('America/New_York')} ET")
 
-        print(f"\n=== EXPECTED vs ACTUAL ===")
-        print(f"Market should be:")
-        print(f"  ET: 09:30:00 to 16:00:00")
-        print(f"  UTC: 14:30:00 to 21:00:00")
+        log_console(f"\n=== EXPECTED vs ACTUAL ===")
+        log_console(f"Market should be:")
+        log_console(f"  ET: 09:30:00 to 16:00:00")
+        log_console(f"  UTC: 14:30:00 to 21:00:00")
 
-        print(f"\nActual timestamps in CSV:")
-        print(f"  Start: {first_ts.strftime('%H:%M:%S')}")
-        print(f"  End: {last_ts.strftime('%H:%M:%S')}")
+        log_console(f"\nActual timestamps in CSV:")
+        log_console(f"  Start: {first_ts.strftime('%H:%M:%S')}")
+        log_console(f"  End: {last_ts.strftime('%H:%M:%S')}")
 
     finally:
         await client.close()

@@ -1,6 +1,7 @@
 """
 Test parallel option API calls (AAL + XOM) to reproduce blocking issue
 """
+from console_log import log_console
 
 import asyncio
 import os
@@ -18,9 +19,9 @@ from tdSynchManager.config import DiscoverPolicy
 load_dotenv()
 
 async def main():
-    print("=" * 80)
-    print("TEST: Parallel Option Processing (AAL + XOM)")
-    print("=" * 80)
+    log_console("=" * 80)
+    log_console("TEST: Parallel Option Processing (AAL + XOM)")
+    log_console("=" * 80)
 
     influx_token = os.getenv('INFLUX_TOKEN')
     if not influx_token:
@@ -49,11 +50,11 @@ async def main():
         ),
     ]
 
-    print("\nThis should reproduce the blocking issue:")
-    print("- AAL and XOM will be processed in parallel")
-    print("- Both will call option_list_expirations at the same time")
-    print("- System may block if concurrent calls aren't handled properly")
-    print("-" * 80)
+    log_console("\nThis should reproduce the blocking issue:")
+    log_console("- AAL and XOM will be processed in parallel")
+    log_console("- Both will call option_list_expirations at the same time")
+    log_console("- System may block if concurrent calls aren't handled properly")
+    log_console("-" * 80)
 
     async with ThetaDataV3Client(
         timeout_total=1800.0,
@@ -62,9 +63,9 @@ async def main():
         manager = ThetaSyncManager(cfg, client=client)
         await manager.run(tasks)
 
-    print("\n" + "=" * 80)
-    print("TEST COMPLETED")
-    print("=" * 80)
+    log_console("\n" + "=" * 80)
+    log_console("TEST COMPLETED")
+    log_console("=" * 80)
 
 if __name__ == "__main__":
     asyncio.run(main())
