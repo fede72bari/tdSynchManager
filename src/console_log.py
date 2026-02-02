@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import re
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
@@ -20,6 +21,31 @@ _ALLOWED_LOG_TYPES = {"OPERATION", "WARNING", "ERROR", "DEBUG"}
 _DEFAULT_LOG_VERBOSITY = 3
 _LOG_VERBOSITY = _DEFAULT_LOG_VERBOSITY
 _LOG_CONTEXT: ContextVar[Optional[dict]] = ContextVar("tdsynch_log_context", default=None)
+_DEBUG_TAGS = {
+    "DEBUG",
+    "TRACE",
+    "DIAG",
+    "SAMPLE",
+    "DUMP",
+    "INFLUX-TS-CONV",
+    "TS-CONV",
+    "TS_CONV",
+    "DEBUG-EDOI",
+    "DEBUG-MISSING",
+    "DEBUG-OVERLAP",
+    "DEBUG-TS",
+}
+_DEBUG_KEYWORDS = {
+    "DEBUG",
+    "TRACE",
+    "DIAG",
+    "SAMPLE",
+    "DUMP",
+    "TS-CONV",
+    "TS_CONV",
+    "TIMESTAMP CONV",
+    "CONVERTED TO NANOSECONDS",
+}
 
 
 def set_log_verbosity(level: int) -> None:
@@ -138,6 +164,14 @@ def _detect_log_type(message: str) -> str:
         return "ERROR"
     if "WARN" in upper:
         return "WARNING"
+    tags = re.findall(r"\[([A-Za-z0-9_-]+)\]", message)
+    for tag in tags:
+        up_tag = tag.upper()
+        if "DEBUG" in up_tag or up_tag in _DEBUG_TAGS or up_tag.endswith("TRACE"):
+            return "DEBUG"
+    for keyword in _DEBUG_KEYWORDS:
+        if keyword in upper:
+            return "DEBUG"
     if "DEBUG" in upper:
         return "DEBUG"
     return "OPERATION"
