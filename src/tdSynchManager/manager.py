@@ -1214,13 +1214,25 @@ class ThetaSyncManager:
             # Filter by date range if specified
             if start_date or end_date:
                 valid_dates = set()
+                first_date_after_end = None
                 for date_str in api_dates:
                     try:
                         date_obj = dt.fromisoformat(date_str).date()
+                        date_iso = date_obj.isoformat()
                         if (not start_date or date_obj >= start_date) and (not end_date or date_obj <= end_date):
-                            valid_dates.add(date_obj.isoformat())
+                            valid_dates.add(date_iso)
+                        elif end_date and date_obj > end_date:
+                            # Track the first date after end_date
+                            if first_date_after_end is None or date_iso < first_date_after_end:
+                                first_date_after_end = date_iso
                     except Exception:
                         continue
+
+                # Include one extra date beyond end_date so next_trading_date_map
+                # can map the last in-range date to its successor (needed for EOD OI shift)
+                if first_date_after_end:
+                    valid_dates.add(first_date_after_end)
+                    log_console(f"[API-DATES] Added next date beyond end_date: {first_date_after_end} (for EOD OI mapping)")
 
                 log_console(f"[API-DATES][EXIT] Returning {len(valid_dates)} filtered dates for {symbol} (range: {start_date} to {end_date})")
                 return valid_dates if valid_dates else None
@@ -1565,7 +1577,35 @@ class ThetaSyncManager:
         # Determine iteration strategy: API dates or fallback to day-by-day
         if api_available_dates:
             log_console(f"[API-DATES] Found {len(api_available_dates)} available dates, iterating only those")
-            # ITERATE ONLY OVER AVAILABLE DATES (no weekends/holidays)
+
+            # Filter out weekends from API dates (SPX/SPXW incorrectly include Sundays in /list/dates)
+            dates_before_filter = len(api_available_dates)
+            weekday_dates = [
+                d for d in api_available_dates
+                if dt.fromisoformat(d).weekday() < 5  # 0-4 = Mon-Fri
+            ]
+            weekends_removed = dates_before_filter - len(weekday_dates)
+            if weekends_removed > 0:
+                log_console(f"[API-DATES] Filtered out {weekends_removed} weekend dates from API response")
+
+            # Filter out holidays using /calendar_on_date (SPX/SPXW include holidays like 01/01)
+            # Only check if we have a reasonable number of dates to avoid API spam
+            if len(weekday_dates) <= 500:
+                valid_dates = []
+                holidays_removed = 0
+                for d in weekday_dates:
+                    date_obj = dt.fromisoformat(d).date()
+                    if await self._is_trading_day(date_obj):
+                        valid_dates.append(d)
+                    else:
+                        holidays_removed += 1
+                if holidays_removed > 0:
+                    log_console(f"[API-DATES] Filtered out {holidays_removed} holiday dates via /calendar_on_date")
+                api_available_dates = valid_dates
+            else:
+                api_available_dates = weekday_dates
+                log_console(f"[API-DATES] Skipping holiday filter (too many dates: {len(weekday_dates)})")
+
             dates_to_process = sorted(api_available_dates)
 
             # GAP-FILLING: Complete dates between last_in_list and end_date using /calendar_on_date
@@ -1650,10 +1690,17 @@ class ThetaSyncManager:
             sorted_api_dates = sorted(api_available_dates)
             for i, date in enumerate(sorted_api_dates[:-1]):  # Exclude last (no next)
                 next_trading_date_map[date] = sorted_api_dates[i + 1]
-            log_console(f"[EOD-OI-SHIFT] Built next_trading_date_map with {len(next_trading_date_map)} entries")
+            # For the last date: compute next business day as fallback
+            # (API backward-coverage may not discover dates beyond end_date)
             if sorted_api_dates:
                 last_date = sorted_api_dates[-1]
-                log_console(f"[EOD-OI-SHIFT] Last available date {last_date} has no next_trading_date - will skip or use fallback")
+                last_date_obj = dt.fromisoformat(last_date).date()
+                next_bday = last_date_obj + timedelta(days=1)
+                while next_bday.weekday() >= 5:  # Skip Sat/Sun
+                    next_bday += timedelta(days=1)
+                next_trading_date_map[last_date] = next_bday.isoformat()
+                log_console(f"[EOD-OI-SHIFT] Last date {last_date} -> computed next business day: {next_bday.isoformat()}")
+            log_console(f"[EOD-OI-SHIFT] Built next_trading_date_map with {len(next_trading_date_map)} entries")
 
         # Main iteration loop over dates
         for day_iso in dates_to_process:
@@ -2029,8 +2076,28 @@ class ThetaSyncManager:
                             label=f"greeks_eod {symbol} {day_iso}"
                         )
                         if not csv_g:
-                            greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
-                            greeks_details = {"reason": "greeks_empty_response"}
+                            # Check if OHLC has all zeros (no trading activity)
+                            # If so, fill Greeks columns with zeros instead of failing
+                            vol_col = next((c for c in ["volume", "vol"] if c in df_pass.columns), None)
+                            all_zero_volume = False
+                            if vol_col:
+                                try:
+                                    vol_vals = pd.to_numeric(df_pass[vol_col], errors="coerce").fillna(0)
+                                    all_zero_volume = (vol_vals == 0).all()
+                                except Exception:
+                                    pass
+
+                            if all_zero_volume:
+                                # Fill Greeks columns with zeros directly in df_pass
+                                greeks_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "iv_error"]
+                                for col in greeks_cols:
+                                    df_pass[col] = 0.0
+                                log_console(f"[GREEKS-FILL0] EOD {symbol} {day_iso}: No Greeks data but OHLC has zero volume - filling Greeks with 0")
+                                greeks_missing_mask = None
+                                greeks_details = {"reason": "greeks_filled_zero_volume"}
+                            else:
+                                greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                greeks_details = {"reason": "greeks_empty_response"}
                         else:
                             try:
                                 dg = pd.read_csv(io.StringIO(csv_g), dtype=str)
@@ -2040,10 +2107,28 @@ class ThetaSyncManager:
                                 greeks_details = {"reason": "greeks_csv_parse_error", "error": str(e)}
 
                             if dg is None or dg.empty:
-                                if greeks_missing_mask is None:
-                                    greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
-                                if not greeks_details:
-                                    greeks_details = {"reason": "greeks_csv_empty"}
+                                # Check if OHLC has all zeros - if so, fill Greeks with zeros
+                                vol_col = next((c for c in ["volume", "vol"] if c in df_pass.columns), None)
+                                all_zero_volume = False
+                                if vol_col:
+                                    try:
+                                        vol_vals = pd.to_numeric(df_pass[vol_col], errors="coerce").fillna(0)
+                                        all_zero_volume = (vol_vals == 0).all()
+                                    except Exception:
+                                        pass
+
+                                if all_zero_volume:
+                                    greeks_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "iv_error"]
+                                    for col in greeks_cols:
+                                        df_pass[col] = 0.0
+                                    log_console(f"[GREEKS-FILL0] EOD {symbol} {day_iso}: Greeks CSV empty but OHLC has zero volume - filling with 0")
+                                    greeks_missing_mask = None
+                                    greeks_details = {"reason": "greeks_filled_zero_volume"}
+                                else:
+                                    if greeks_missing_mask is None:
+                                        greeks_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                                    if not greeks_details:
+                                        greeks_details = {"reason": "greeks_csv_empty"}
                             else:
                                 if "strike_price" in dg.columns and "strike" not in dg.columns:
                                     dg = dg.rename(columns={"strike_price": "strike"})
@@ -2203,14 +2288,24 @@ class ThetaSyncManager:
                                     doi = doi[keep].drop_duplicates(subset=on_cols)
                                     log_console(f"[DEBUG-EDOI-4] After drop_duplicates doi: dtype={doi['effective_date_oi'].dtype if 'effective_date_oi' in doi.columns else 'MISSING'}")
                                     df_pass = df_pass.merge(doi, on=on_cols, how="left")
+                                    absent_from_snapshot = None
                                     try:
                                         _snap_keys = doi[on_cols].drop_duplicates()
                                         _mi_snap = pd.MultiIndex.from_frame(_snap_keys)
                                         _mi_all = pd.MultiIndex.from_frame(df_pass[on_cols])
                                         _absent_contract_mask = ~_mi_all.isin(_mi_snap)
+                                        absent_from_snapshot = pd.Series(_absent_contract_mask, index=df_pass.index)
                                         df_pass["oi_snapshot_present"] = (~_absent_contract_mask).astype("boolean")
                                     except Exception:
-                                        df_pass["oi_snapshot_present"] = pd.Series(pd.NA, index=df_pass.index, dtype="boolean")
+                                        # Fallback: determine missing contracts via merge indicator
+                                        try:
+                                            snap_keys = doi[on_cols].drop_duplicates()
+                                            probe = df_pass[on_cols].merge(snap_keys, on=on_cols, how="left", indicator=True)
+                                            absent_from_snapshot = probe["_merge"].eq("left_only")
+                                            df_pass["oi_snapshot_present"] = (~absent_from_snapshot).astype("boolean")
+                                        except Exception:
+                                            df_pass["oi_snapshot_present"] = pd.Series(pd.NA, index=df_pass.index, dtype="boolean")
+                                            absent_from_snapshot = None
                                     log_console(f"[DEBUG-EDOI-5] After merge df_pass: dtype={df_pass['effective_date_oi'].dtype if 'effective_date_oi' in df_pass.columns else 'MISSING'}, sample={df_pass['effective_date_oi'].iloc[0] if 'effective_date_oi' in df_pass.columns and len(df_pass) > 0 else 'N/A'}")
 
                                     oi_missing_mask = _missing_mask_for_cols(df_pass, ["last_day_OI"])
@@ -2241,10 +2336,14 @@ class ThetaSyncManager:
                                     # ThetaData OI endpoint returns "No data found" for contracts that exist
                                     # but have never had OI > 0. Treat these as OI=0, not as missing data.
                                     try:
-                                        if oi_missing_mask is not None and oi_missing_mask.any() and "oi_snapshot_present" in df_pass.columns:
+                                        if oi_missing_mask is not None and oi_missing_mask.any():
                                             # Contracts absent from OI snapshot but present in EOD data
-                                            absent_from_snapshot = df_pass["oi_snapshot_present"] == False
-                                            fill_mask = absent_from_snapshot & df_pass["last_day_OI"].isna()
+                                            if absent_from_snapshot is None and "oi_snapshot_present" in df_pass.columns:
+                                                absent_from_snapshot = df_pass["oi_snapshot_present"] == False
+                                            if absent_from_snapshot is not None:
+                                                fill_mask = absent_from_snapshot & oi_missing_mask
+                                            else:
+                                                fill_mask = pd.Series([False] * len(df_pass), index=df_pass.index)
                                             filled_rows = int(fill_mask.sum())
 
                                             if filled_rows > 0:
@@ -2367,11 +2466,19 @@ class ThetaSyncManager:
                         log_console(f"[EOD-RETRY] {symbol} {day_iso} pass={enrich_pass+1}/{total_passes} sleeping {retry_delay}s")
                         await asyncio.sleep(retry_delay)
 
-                if missing_mask is not None and missing_mask.any():
-                    if "expiration" in df.columns:
-                        missing_exps = df.loc[missing_mask, "expiration"].astype(str).dropna().unique().tolist()
-                        if missing_exps:
-                            missing_details["missing_expirations"] = missing_exps[:25]
+                    if missing_mask is not None and missing_mask.any():
+                        action = "drop_rows"
+                        if skip_day_on_missing:
+                            action = "skip_day"
+                        log_console(
+                            f"[MISSING-DECISION] {symbol} {interval} {day_iso} "
+                            f"components={components} missing_rows={int(missing_mask.sum())} "
+                            f"policy={missing_policy} action={action}"
+                        )
+                        if "expiration" in df.columns:
+                            missing_exps = df.loc[missing_mask, "expiration"].astype(str).dropna().unique().tolist()
+                            if missing_exps:
+                                missing_details["missing_expirations"] = missing_exps[:25]
                     if self.logger:
                         self.logger.log_error(
                             asset="option",
@@ -3131,24 +3238,27 @@ class ThetaSyncManager:
                         )
 
                         if not csv_gr_all:
-                            greeks_success = False
-                            error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks download failed"
-                            log_console(error_msg)
-                            if self.logger:
-                                self.logger.log_error(
-                                    asset="option",
-                                    symbol=symbol,
-                                    interval=interval,
-                                    date=day_iso,
-                                    error_type="GREEKS_DOWNLOAD_FAILED_INTRADAY",
-                                    error_message=f"Greeks download failed for expiration {exp} - skipping expiration",
-                                    severity="WARNING"
-                                )
-                        else:
-                            dg = pd.read_csv(io.StringIO(csv_gr_all), dtype=str)
-                            if dg is None or dg.empty:
+                            # Check if OHLC has all zeros (no trading activity)
+                            # If so, create synthetic Greeks with zeros instead of failing
+                            vol_col = next((c for c in ["volume", "vol"] if c in df.columns), None)
+                            all_zero_volume = False
+                            if vol_col:
+                                try:
+                                    vol_vals = pd.to_numeric(df[vol_col], errors="coerce").fillna(0)
+                                    all_zero_volume = (vol_vals == 0).all()
+                                except Exception:
+                                    pass
+
+                            if all_zero_volume:
+                                # Create synthetic Greeks DataFrame with zeros
+                                greeks_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "iv_error"]
+                                dg = df.copy()
+                                for col in greeks_cols:
+                                    dg[col] = 0.0
+                                log_console(f"[GREEKS-FILL0] {symbol} {interval} {day_iso} exp={exp}: No Greeks data but OHLC has zero volume - filling Greeks with 0")
+                            else:
                                 greeks_success = False
-                                error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks CSV empty"
+                                error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks download failed"
                                 log_console(error_msg)
                                 if self.logger:
                                     self.logger.log_error(
@@ -3156,10 +3266,43 @@ class ThetaSyncManager:
                                         symbol=symbol,
                                         interval=interval,
                                         date=day_iso,
-                                        error_type="GREEKS_CSV_EMPTY_INTRADAY",
-                                        error_message=f"Greeks CSV empty for expiration {exp} - skipping expiration",
+                                        error_type="GREEKS_DOWNLOAD_FAILED_INTRADAY",
+                                        error_message=f"Greeks download failed for expiration {exp} - skipping expiration",
                                         severity="WARNING"
                                     )
+                        else:
+                            dg = pd.read_csv(io.StringIO(csv_gr_all), dtype=str)
+                            if dg is None or dg.empty:
+                                # Check if OHLC has all zeros - if so, fill Greeks with zeros
+                                vol_col = next((c for c in ["volume", "vol"] if c in df.columns), None)
+                                all_zero_volume = False
+                                if vol_col:
+                                    try:
+                                        vol_vals = pd.to_numeric(df[vol_col], errors="coerce").fillna(0)
+                                        all_zero_volume = (vol_vals == 0).all()
+                                    except Exception:
+                                        pass
+
+                                if all_zero_volume:
+                                    greeks_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_vol", "iv_error"]
+                                    dg = df.copy()
+                                    for col in greeks_cols:
+                                        dg[col] = 0.0
+                                    log_console(f"[GREEKS-FILL0] {symbol} {interval} {day_iso} exp={exp}: Greeks CSV empty but OHLC has zero volume - filling with 0")
+                                else:
+                                    greeks_success = False
+                                    error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: greeks CSV empty"
+                                    log_console(error_msg)
+                                    if self.logger:
+                                        self.logger.log_error(
+                                            asset="option",
+                                            symbol=symbol,
+                                            interval=interval,
+                                            date=day_iso,
+                                            error_type="GREEKS_CSV_EMPTY_INTRADAY",
+                                            error_message=f"Greeks CSV empty for expiration {exp} - skipping expiration",
+                                            severity="WARNING"
+                                        )
                             else:
                                 dg = self._ensure_expiration_column(dg, exp)
                                 dg = self._normalize_ts_to_utc(dg)
@@ -3187,24 +3330,26 @@ class ThetaSyncManager:
                                 label=f"greeks/iv {symbol} {exp} {ymd} {interval}"
                             )
                             if not csv_iv:
-                                iv_success = False
-                                error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV download failed"
-                                log_console(error_msg)
-                                if self.logger:
-                                    self.logger.log_error(
-                                        asset="option",
-                                        symbol=symbol,
-                                        interval=interval,
-                                        date=day_iso,
-                                        error_type="IV_DOWNLOAD_FAILED_INTRADAY",
-                                        error_message=f"IV download failed for expiration {exp} - skipping expiration",
-                                        severity="WARNING"
-                                    )
-                            else:
-                                div = pd.read_csv(io.StringIO(csv_iv), dtype=str)
-                                if div is None or div.empty:
+                                # Check if OHLC has all zeros - if so, fill IV with zeros
+                                vol_col = next((c for c in ["volume", "vol"] if c in df.columns), None)
+                                all_zero_volume = False
+                                if vol_col:
+                                    try:
+                                        vol_vals = pd.to_numeric(df[vol_col], errors="coerce").fillna(0)
+                                        all_zero_volume = (vol_vals == 0).all()
+                                    except Exception:
+                                        pass
+
+                                if all_zero_volume:
+                                    # Create synthetic IV DataFrame with zeros
+                                    iv_cols = ["implied_vol", "bid_iv", "mid_iv", "ask_iv"]
+                                    div = df.copy()
+                                    for col in iv_cols:
+                                        div[col] = 0.0
+                                    log_console(f"[IV-FILL0] {symbol} {interval} {day_iso} exp={exp}: No IV data but OHLC has zero volume - filling IV with 0")
+                                else:
                                     iv_success = False
-                                    error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV CSV empty"
+                                    error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV download failed"
                                     log_console(error_msg)
                                     if self.logger:
                                         self.logger.log_error(
@@ -3212,10 +3357,43 @@ class ThetaSyncManager:
                                             symbol=symbol,
                                             interval=interval,
                                             date=day_iso,
-                                            error_type="IV_CSV_EMPTY_INTRADAY",
-                                            error_message=f"IV CSV empty for expiration {exp} - skipping expiration",
+                                            error_type="IV_DOWNLOAD_FAILED_INTRADAY",
+                                            error_message=f"IV download failed for expiration {exp} - skipping expiration",
                                             severity="WARNING"
                                         )
+                            else:
+                                div = pd.read_csv(io.StringIO(csv_iv), dtype=str)
+                                if div is None or div.empty:
+                                    # Check if OHLC has all zeros - if so, fill IV with zeros
+                                    vol_col = next((c for c in ["volume", "vol"] if c in df.columns), None)
+                                    all_zero_volume = False
+                                    if vol_col:
+                                        try:
+                                            vol_vals = pd.to_numeric(df[vol_col], errors="coerce").fillna(0)
+                                            all_zero_volume = (vol_vals == 0).all()
+                                        except Exception:
+                                            pass
+
+                                    if all_zero_volume:
+                                        iv_cols = ["implied_vol", "bid_iv", "mid_iv", "ask_iv"]
+                                        div = df.copy()
+                                        for col in iv_cols:
+                                            div[col] = 0.0
+                                        log_console(f"[IV-FILL0] {symbol} {interval} {day_iso} exp={exp}: IV CSV empty but OHLC has zero volume - filling with 0")
+                                    else:
+                                        iv_success = False
+                                        error_msg = f"[SKIP-EXPIRATION] option intraday {symbol} {interval} {day_iso} exp={exp}: IV CSV empty"
+                                        log_console(error_msg)
+                                        if self.logger:
+                                            self.logger.log_error(
+                                                asset="option",
+                                                symbol=symbol,
+                                                interval=interval,
+                                                date=day_iso,
+                                                error_type="IV_CSV_EMPTY_INTRADAY",
+                                                error_message=f"IV CSV empty for expiration {exp} - skipping expiration",
+                                                severity="WARNING"
+                                            )
                                 else:
                                     div = self._ensure_expiration_column(div, exp)
                                     div = self._normalize_ts_to_utc(div)

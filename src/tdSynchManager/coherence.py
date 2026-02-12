@@ -1186,6 +1186,29 @@ class IncoherenceRecovery:
                     return True
 
         try:
+            next_trading_date = None
+            if interval == "1d":
+                try:
+                    probe_end = (datetime.fromisoformat(date_iso) + timedelta(days=7)).date().isoformat()
+                    api_dates = await self.manager._fetch_available_dates_from_api(
+                        asset=asset,
+                        symbol=symbol,
+                        interval=interval,
+                        start_date=date_iso,
+                        end_date=probe_end,
+                    )
+                    if api_dates:
+                        for d in sorted(api_dates):
+                            if d > date_iso:
+                                next_trading_date = d
+                                break
+                except Exception as e:
+                    log_console(f"[RECOVERY][WARN] next_trading_date lookup failed for {symbol} {date_iso}: {e}")
+            if interval == "1d":
+                if next_trading_date:
+                    log_console(f"[RECOVERY][DECISION] {symbol} {date_iso}: next_trading_date={next_trading_date} for OI shift")
+                else:
+                    log_console(f"[RECOVERY][DECISION] {symbol} {date_iso}: next_trading_date not found -> fallback to day_iso for OI")
             self.manager._purge_day_files(asset, symbol, interval, sink, date_iso)
             # Download with validation enabled to ensure data quality
             await self.manager._download_and_store_options(
@@ -1195,6 +1218,7 @@ class IncoherenceRecovery:
                 sink=sink,
                 enrich_greeks=enrich_greeks,
                 enrich_tick_greeks=False,
+                next_trading_date=next_trading_date,
                 dedupe_influx_against_db=(sink.lower() == "influxdb"),
             )
         except Exception as e:
@@ -1496,6 +1520,31 @@ class IncoherenceRecovery:
                 details={"file": path}
             )
             return False
+        # Determine next trading date for EOD OI shift (avoid fallback to prior-session OI).
+        next_trading_date = None
+        if interval == "1d":
+            try:
+                # Look a week ahead to find the next available trading date.
+                probe_end = (datetime.fromisoformat(day_iso) + timedelta(days=7)).date().isoformat()
+                api_dates = await self.manager._fetch_available_dates_from_api(
+                    asset=asset,
+                    symbol=symbol,
+                    interval=interval,
+                    start_date=day_iso,
+                    end_date=probe_end,
+                )
+                if api_dates:
+                    for d in sorted(api_dates):
+                        if d > day_iso:
+                            next_trading_date = d
+                            break
+            except Exception as e:
+                log_console(f"[RECOVERY][WARN] next_trading_date lookup failed for {symbol} {day_iso}: {e}")
+        if interval == "1d":
+            if next_trading_date:
+                log_console(f"[RECOVERY][DECISION] {symbol} {day_iso}: next_trading_date={next_trading_date} for OI shift")
+            else:
+                log_console(f"[RECOVERY][DECISION] {symbol} {day_iso}: next_trading_date not found -> fallback to day_iso for OI")
 
         pending_count = int(pending_mask.sum())
         self.logger.log_info(
@@ -1590,6 +1639,7 @@ class IncoherenceRecovery:
                     sink=sink,
                     enrich_greeks=enrich_greeks,
                     enrich_tick_greeks=(interval == "tick"),
+                    next_trading_date=next_trading_date,
                     recover_only_keys=keys_to_recover,
                     return_df=True,
                     record_missing_rows=False,

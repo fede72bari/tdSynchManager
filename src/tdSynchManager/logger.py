@@ -3,6 +3,7 @@ from console_log import log_console
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -685,10 +686,21 @@ class DataConsistencyLogger:
                 log_console(f"[LOG][WARN] Could not move corrupt log parquet {path}: {move_err}")
 
     def _atomic_write_parquet(self, df: pd.DataFrame, target_path: Path) -> None:
+        """Write parquet atomically with retry for Windows/Dropbox file locking."""
         tmp = target_path.with_name(f"{target_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             df.to_parquet(tmp, index=False)
-            os.replace(tmp, target_path)
+            # Retry os.replace with exponential backoff for Dropbox/Windows file locks
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    os.replace(tmp, target_path)
+                    return  # Success
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.1 * (2 ** attempt))  # 0.1s, 0.2s, 0.4s, 0.8s
+                    else:
+                        raise  # Re-raise on final attempt
         finally:
             try:
                 if tmp.exists():

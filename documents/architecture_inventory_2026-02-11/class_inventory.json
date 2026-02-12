@@ -1,0 +1,6637 @@
+{
+  "generated_at_utc": "2026-02-11T10:33:37.054436+00:00",
+  "source_root": "d:\\Dropbox\\TRADING\\DATA FEEDERS AND APIS\\ThetaData\\tdSynchManager\\src",
+  "files": [
+    {
+      "file": "src/clients/__init__.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "ThetaDataV3Client",
+          "name": "Interval",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "ThetaDataV3Client",
+          "name": "ThetaDataV3Client",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "ThetaDataV3Client",
+          "name": "ResilientThetaClient",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "ThetaDataV3Client",
+          "name": "ThetaDataV3HTTPError",
+          "asname": null,
+          "level": 1
+        }
+      ],
+      "classes": [],
+      "top_level_functions": []
+    },
+    {
+      "file": "src/clients/ThetaDataV3Client.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Literal",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        }
+      ],
+      "classes": [
+        {
+          "name": "ThetaDataV3HTTPError",
+          "lineno": 19,
+          "bases": [
+            "Exception"
+          ],
+          "method_count": 1,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 22,
+              "is_async": false,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "ThetaDataV3Client",
+          "lineno": 61,
+          "bases": [],
+          "method_count": 58,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 68,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "__aenter__",
+              "lineno": 135,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "__aexit__",
+              "lineno": 172,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_make_request",
+              "lineno": 214,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_list_symbols",
+              "lineno": 300,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_list_dates",
+              "lineno": 345,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_ohlc",
+              "lineno": 414,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_trade",
+              "lineno": 464,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_quote",
+              "lineno": 512,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_eod",
+              "lineno": 569,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_ohlc",
+              "lineno": 636,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_trade",
+              "lineno": 744,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_quote",
+              "lineno": 846,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_trade_quote",
+              "lineno": 967,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_at_time_trade",
+              "lineno": 1129,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_at_time_quote",
+              "lineno": 1231,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_symbols",
+              "lineno": 1357,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_dates",
+              "lineno": 1408,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_expirations",
+              "lineno": 1524,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_strikes",
+              "lineno": 1588,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_contracts",
+              "lineno": 1650,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_ohlc",
+              "lineno": 1754,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_trade",
+              "lineno": 1834,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_quote",
+              "lineno": 1922,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_open_interest",
+              "lineno": 2017,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_implied_volatility",
+              "lineno": 2098,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_all_greeks",
+              "lineno": 2179,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_first_order_greeks",
+              "lineno": 2262,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_second_order_greeks",
+              "lineno": 2328,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_third_order_greeks",
+              "lineno": 2392,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_eod",
+              "lineno": 2464,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_ohlc",
+              "lineno": 2605,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade",
+              "lineno": 2716,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_quote",
+              "lineno": 2821,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_quote",
+              "lineno": 2933,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_open_interest",
+              "lineno": 3047,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_greeks_eod",
+              "lineno": 3135,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_all_greeks",
+              "lineno": 3266,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_all_trade_greeks",
+              "lineno": 3337,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_greeks",
+              "lineno": 3408,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_greeks",
+              "lineno": 3511,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_greeks_second_order",
+              "lineno": 3643,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_greeks_second_order",
+              "lineno": 3731,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_greeks_third_order",
+              "lineno": 3840,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_greeks_third_order",
+              "lineno": 3907,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_implied_volatility",
+              "lineno": 4005,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_implied_volatility",
+              "lineno": 4150,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_at_time_trade",
+              "lineno": 4254,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_at_time_quote",
+              "lineno": 4341,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_list_symbols",
+              "lineno": 4451,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_list_dates",
+              "lineno": 4509,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_snapshot_ohlc",
+              "lineno": 4575,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_snapshot_price",
+              "lineno": 4617,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_eod",
+              "lineno": 4665,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_ohlc",
+              "lineno": 4720,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_price",
+              "lineno": 4809,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_at_time_price",
+              "lineno": 4898,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "calendar_on_date",
+              "lineno": 4979,
+              "is_async": true,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "Any",
+            "Dict",
+            "Literal",
+            "Optional",
+            "Tuple",
+            "aiohttp",
+            "asyncio",
+            "json",
+            "os",
+            "urlencode"
+          ]
+        },
+        {
+          "name": "ResilientThetaClient",
+          "lineno": 6711,
+          "bases": [],
+          "method_count": 41,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 6765,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_execute_with_reconnect",
+              "lineno": 6786,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_reconnect",
+              "lineno": 6862,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_list_symbols",
+              "lineno": 6891,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_list_dates",
+              "lineno": 6894,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_eod",
+              "lineno": 6897,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_ohlc",
+              "lineno": 6900,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_history_trade_quote",
+              "lineno": 6903,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_trade_quote",
+              "lineno": 6906,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_ohlc",
+              "lineno": 6909,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "stock_snapshot_quote",
+              "lineno": 6912,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_symbols",
+              "lineno": 6916,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_dates",
+              "lineno": 6919,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_expirations",
+              "lineno": 6922,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_strikes",
+              "lineno": 6925,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_list_contracts",
+              "lineno": 6928,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_eod",
+              "lineno": 6931,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_ohlc",
+              "lineno": 6934,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_greeks_eod",
+              "lineno": 6937,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_all_greeks",
+              "lineno": 6941,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_implied_volatility",
+              "lineno": 6944,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_open_interest",
+              "lineno": 6947,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_quote",
+              "lineno": 6950,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_all_trade_greeks",
+              "lineno": 6953,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_history_trade_implied_volatility",
+              "lineno": 6956,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_all_greeks",
+              "lineno": 6960,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_trade_quote",
+              "lineno": 6963,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_ohlc",
+              "lineno": 6966,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "option_snapshot_quote",
+              "lineno": 6969,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_list_dates",
+              "lineno": 6973,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_eod",
+              "lineno": 6976,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_ohlc",
+              "lineno": 6979,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_history_price",
+              "lineno": 6982,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_snapshot_ohlc",
+              "lineno": 6985,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "index_snapshot_price",
+              "lineno": 6988,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "calendar_on_date",
+              "lineno": 6992,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "base_url",
+              "lineno": 6997,
+              "is_async": false,
+              "decorators": [
+                "property"
+              ]
+            },
+            {
+              "name": "api_key",
+              "lineno": 7001,
+              "is_async": false,
+              "decorators": [
+                "property"
+              ]
+            },
+            {
+              "name": "__aenter__",
+              "lineno": 7005,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "__aexit__",
+              "lineno": 7008,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "close",
+              "lineno": 7011,
+              "is_async": true,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "aiohttp",
+            "asyncio"
+          ]
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "extract_error_text",
+          "lineno": 5060,
+          "is_async": false
+        },
+        {
+          "name": "test_all_endpoints",
+          "lineno": 5118,
+          "is_async": true
+        },
+        {
+          "name": "run_comprehensive_tests",
+          "lineno": 5836,
+          "is_async": true
+        },
+        {
+          "name": "extract_error_text",
+          "lineno": 5876,
+          "is_async": false
+        },
+        {
+          "name": "test_all_endpoints",
+          "lineno": 5934,
+          "is_async": true
+        },
+        {
+          "name": "run_comprehensive_tests",
+          "lineno": 6668,
+          "is_async": true
+        }
+      ]
+    },
+    {
+      "file": "src/console_log.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "builtins",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "inspect",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "contextvars",
+          "name": "ContextVar",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timezone",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [],
+      "top_level_functions": [
+        {
+          "name": "set_log_verbosity",
+          "lineno": 51,
+          "is_async": false
+        },
+        {
+          "name": "get_log_verbosity",
+          "lineno": 60,
+          "is_async": false
+        },
+        {
+          "name": "set_log_context",
+          "lineno": 65,
+          "is_async": false
+        },
+        {
+          "name": "reset_log_context",
+          "lineno": 83,
+          "is_async": false
+        },
+        {
+          "name": "_get_raw_print",
+          "lineno": 88,
+          "is_async": false
+        },
+        {
+          "name": "_format_symbol_type_tf",
+          "lineno": 94,
+          "is_async": false
+        },
+        {
+          "name": "_infer_context",
+          "lineno": 110,
+          "is_async": false
+        },
+        {
+          "name": "_detect_log_type",
+          "lineno": 191,
+          "is_async": false
+        },
+        {
+          "name": "_normalize_log_type",
+          "lineno": 218,
+          "is_async": false
+        },
+        {
+          "name": "_min_verbosity_for",
+          "lineno": 227,
+          "is_async": false
+        },
+        {
+          "name": "log_console",
+          "lineno": 235,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/__init__.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ThetaDataV3Client",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "manager",
+          "name": "ThetaSyncManager",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "ManagerConfig",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "Task",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "DiscoverPolicy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "tick_bucket_analysis",
+          "name": "analyze_tick_buckets",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "tick_bucket_analysis",
+          "name": "DayBucketAnalysisReport",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "tick_bucket_analysis",
+          "name": "BucketAnalysisResult",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "credentials",
+          "name": "load_credentials",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "credentials",
+          "name": "get_influx_credentials",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "credentials",
+          "name": "get_thetadata_credentials",
+          "asname": null,
+          "level": 1
+        }
+      ],
+      "classes": [],
+      "top_level_functions": [
+        {
+          "name": "_detect_version",
+          "lineno": 15,
+          "is_async": false
+        },
+        {
+          "name": "new_manager",
+          "lineno": 55,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/coherence.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ],
+      "classes": [
+        {
+          "name": "CoherenceIssue",
+          "lineno": 31,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "CoherenceReport",
+          "lineno": 55,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "RecoveryResult",
+          "lineno": 100,
+          "bases": [],
+          "method_count": 1,
+          "methods": [
+            {
+              "name": "add_result",
+              "lineno": 119,
+              "is_async": false,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "CoherenceChecker",
+          "lineno": 137,
+          "bases": [],
+          "method_count": 12,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 144,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "check",
+              "lineno": 157,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_check_eod_completeness",
+              "lineno": 252,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_check_intraday_completeness",
+              "lineno": 303,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_check_tick_completeness",
+              "lineno": 413,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_generate_date_range",
+              "lineno": 594,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_read_intraday_day",
+              "lineno": 620,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_read_tick_day",
+              "lineno": 714,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_get_eod_volumes",
+              "lineno": 742,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_segment_intraday_problems",
+              "lineno": 778,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_check_missing_enrichment_files",
+              "lineno": 886,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_segment_tick_problems",
+              "lineno": 921,
+              "is_async": true,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "DataValidator",
+            "Dict",
+            "List",
+            "Optional",
+            "Tuple",
+            "ValidationResult",
+            "datetime",
+            "log_console",
+            "os",
+            "timedelta"
+          ]
+        },
+        {
+          "name": "IncoherenceRecovery",
+          "lineno": 1020,
+          "bases": [],
+          "method_count": 8,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 1023,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_suspend_validation",
+              "lineno": 1037,
+              "is_async": false,
+              "decorators": [
+                "contextmanager"
+              ]
+            },
+            {
+              "name": "recover",
+              "lineno": 1049,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_recover_eod_day",
+              "lineno": 1120,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_influx_intraday_gap_still_missing",
+              "lineno": 1246,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_recover_intraday_gap",
+              "lineno": 1303,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_recover_tick_day",
+              "lineno": 1409,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_recover_missing_enrichment_file",
+              "lineno": 1471,
+              "is_async": true,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "DataValidator",
+            "contextmanager",
+            "datetime",
+            "log_console",
+            "os",
+            "re",
+            "timedelta"
+          ]
+        }
+      ],
+      "top_level_functions": []
+    },
+    {
+      "file": "src/tdSynchManager/config.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "fields",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Mapping",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Union",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_origin",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [
+        {
+          "name": "RetryPolicy",
+          "lineno": 11,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "ManagerConfig",
+          "lineno": 35,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "DiscoverPolicy",
+          "lineno": 103,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "Task",
+          "lineno": 138,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "_strip_optional",
+          "lineno": 188,
+          "is_async": false
+        },
+        {
+          "name": "_cast_value",
+          "lineno": 222,
+          "is_async": false
+        },
+        {
+          "name": "config_from_env",
+          "lineno": 263,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/credentials.py",
+      "imports": [
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [],
+      "top_level_functions": [
+        {
+          "name": "get_project_root",
+          "lineno": 13,
+          "is_async": false
+        },
+        {
+          "name": "load_credentials",
+          "lineno": 28,
+          "is_async": false
+        },
+        {
+          "name": "get_influx_credentials",
+          "lineno": 86,
+          "is_async": false
+        },
+        {
+          "name": "get_thetadata_credentials",
+          "lineno": 105,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/download_retry.py",
+      "imports": [
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Callable",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ],
+      "classes": [],
+      "top_level_functions": [
+        {
+          "name": "download_with_retry_and_validation",
+          "lineno": 13,
+          "is_async": true
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/exceptions.py",
+      "imports": [],
+      "classes": [
+        {
+          "name": "TdSynchError",
+          "lineno": 12,
+          "bases": [
+            "Exception"
+          ],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "SessionClosedError",
+          "lineno": 17,
+          "bases": [
+            "TdSynchError"
+          ],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "TruncatedResponseError",
+          "lineno": 22,
+          "bases": [
+            "TdSynchError"
+          ],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "InfluxDBAuthError",
+          "lineno": 27,
+          "bases": [
+            "TdSynchError"
+          ],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "ValidationError",
+          "lineno": 32,
+          "bases": [
+            "TdSynchError"
+          ],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        }
+      ],
+      "top_level_functions": []
+    },
+    {
+      "file": "src/tdSynchManager/influx_retry.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [
+        {
+          "name": "InfluxWriteRetry",
+          "lineno": 15,
+          "bases": [],
+          "method_count": 5,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 18,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "write_with_retry",
+              "lineno": 54,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_save_failed_batch",
+              "lineno": 127,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "get_stats",
+              "lineno": 157,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "print_summary",
+              "lineno": 161,
+              "is_async": false,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "Any",
+            "Dict",
+            "List",
+            "Optional",
+            "Path",
+            "datetime",
+            "json",
+            "log_console",
+            "os",
+            "time"
+          ]
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "recover_failed_batches",
+          "lineno": 187,
+          "is_async": false
+        },
+        {
+          "name": "delete_failed_batch",
+          "lineno": 275,
+          "is_async": false
+        },
+        {
+          "name": "list_failed_batches",
+          "lineno": 356,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/influx_verification.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "date",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Set",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "numpy",
+          "name": null,
+          "asname": "np"
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ],
+      "classes": [
+        {
+          "name": "InfluxWriteResult",
+          "lineno": 17,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "verify_influx_write",
+          "lineno": 40,
+          "is_async": true
+        },
+        {
+          "name": "write_influx_with_verification",
+          "lineno": 272,
+          "is_async": true
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/logger.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "uuid",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timezone",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ],
+      "classes": [
+        {
+          "name": "DataConsistencyLogger",
+          "lineno": 17,
+          "bases": [],
+          "method_count": 18,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 47,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_missing_data",
+              "lineno": 72,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_retry_attempt",
+              "lineno": 126,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_info",
+              "lineno": 179,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_error",
+              "lineno": 202,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_warning",
+              "lineno": 247,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_resolution",
+              "lineno": 289,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_failure",
+              "lineno": 337,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_influx_failure",
+              "lineno": 386,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "log_session_closed",
+              "lineno": 443,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_log_event",
+              "lineno": 497,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_persist_log",
+              "lineno": 573,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_safe_read_parquet",
+              "lineno": 670,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_quarantine_corrupt_parquet",
+              "lineno": 677,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_atomic_write_parquet",
+              "lineno": 688,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "get_logs",
+              "lineno": 712,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "display_logs",
+              "lineno": 757,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "print_logs",
+              "lineno": 769,
+              "is_async": false,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "Any",
+            "Dict",
+            "Optional",
+            "Path",
+            "Tuple",
+            "datetime",
+            "json",
+            "log_console",
+            "os",
+            "pd",
+            "time",
+            "timezone",
+            "uuid"
+          ]
+        }
+      ],
+      "top_level_functions": []
+    },
+    {
+      "file": "src/tdSynchManager/manager.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "datetime",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "glob",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "importlib",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "inspect",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "io",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "math",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "requests",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "tempfile",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "uuid",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": "dt",
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timezone",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Iterable",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "zoneinfo",
+          "name": "ZoneInfo",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "numpy",
+          "name": null,
+          "asname": "np"
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        },
+        {
+          "type": "import",
+          "module": "pyarrow",
+          "name": null,
+          "asname": "pa"
+        },
+        {
+          "type": "import",
+          "module": "pyarrow.parquet",
+          "name": null,
+          "asname": "pq"
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "Interval",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ThetaDataV3Client",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ResilientThetaClient",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "set_log_verbosity",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "set_log_context",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "reset_log_context",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "DiscoverPolicy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "ManagerConfig",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "Task",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "config_from_env",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "retry",
+          "name": "retry_with_policy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "download_retry",
+          "name": "download_with_retry_and_validation",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "influx_retry",
+          "name": "InfluxWriteRetry",
+          "asname": null,
+          "level": 1
+        }
+      ],
+      "classes": [
+        {
+          "name": "ThetaSyncManager",
+          "lineno": 158,
+          "bases": [],
+          "method_count": 149,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 293,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "show_logs",
+              "lineno": 377,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_validate_downloaded_data",
+              "lineno": 489,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_get_eod_volume_for_validation",
+              "lineno": 720,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "run",
+              "lineno": 873,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_spawn_sync",
+              "lineno": 917,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_is_trading_day",
+              "lineno": 951,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_fetch_available_dates_from_api",
+              "lineno": 1006,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_sync_symbol",
+              "lineno": 1249,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_download_and_store_options",
+              "lineno": 1813,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_download_and_store_equity_or_index",
+              "lineno": 4566,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_expirations_that_traded",
+              "lineno": 4995,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_fetch_option_all_greeks_by_date",
+              "lineno": 5110,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_td_get_with_retry",
+              "lineno": 5205,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_resolve_first_date",
+              "lineno": 5287,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_discover_equity_first_date",
+              "lineno": 5327,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_discover_option_first_date",
+              "lineno": 5411,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_binary_search_first_date_option",
+              "lineno": 5530,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_extract_first_date_from_any",
+              "lineno": 5605,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_extract_expirations_as_dates",
+              "lineno": 5621,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_today_market_date",
+              "lineno": 5643,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_compute_resume_start_datetime",
+              "lineno": 5663,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_skip_existing_middle_day",
+              "lineno": 5831,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_get_first_last_day_from_sink",
+              "lineno": 5947,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_probe_existing_last_ts_with_source",
+              "lineno": 6154,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_missing_1d_days_csv",
+              "lineno": 6203,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_compute_intraday_window_et",
+              "lineno": 6350,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_write_df_to_sink",
+              "lineno": 6442,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_append_csv_text",
+              "lineno": 6482,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_append_parquet_df",
+              "lineno": 6677,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_write_parquet_from_csv",
+              "lineno": 6943,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_normalize_ts_to_utc",
+              "lineno": 6975,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_normalize_expiration_value",
+              "lineno": 7026,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_ensure_expiration_column",
+              "lineno": 7043,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_fill_expiration_from_option_symbol",
+              "lineno": 7103,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_require_expiration",
+              "lineno": 7147,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_add_dte_column",
+              "lineno": 7197,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_format_dt_columns_isoz",
+              "lineno": 7208,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_normalize_df_types",
+              "lineno": 7228,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_ensure_ts_utc_column",
+              "lineno": 7316,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_pick_time_column",
+              "lineno": 7339,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_append_influx_df",
+              "lineno": 7370,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_make_file_basepath",
+              "lineno": 7703,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_get_dates_in_eod_batch_files",
+              "lineno": 7744,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_list_series_files",
+              "lineno": 7804,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_list_day_files",
+              "lineno": 7860,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_missing_data_policy",
+              "lineno": 7929,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_missing_enrichment_path",
+              "lineno": 7943,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_list_missing_enrichment_files",
+              "lineno": 7951,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_normalize_recovery_keys",
+              "lineno": 7989,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_existing_keys_between",
+              "lineno": 8013,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_split_recovery_keys",
+              "lineno": 8068,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_filter_df_against_influx_existing",
+              "lineno": 8113,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_recovery_key_columns",
+              "lineno": 8160,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_filter_df_by_keys",
+              "lineno": 8173,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_record_missing_enrichment_rows",
+              "lineno": 8192,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_update_missing_enrichment_recovery",
+              "lineno": 8356,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_pending_missing_enrichment_rows",
+              "lineno": 8402,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_list_day_part_files",
+              "lineno": 8416,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_day_parts_status",
+              "lineno": 8431,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_find_existing_series_base",
+              "lineno": 8483,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_find_existing_daily_base_for_day",
+              "lineno": 8503,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_sort_and_deduplicate_eod_batch",
+              "lineno": 8521,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_pick_latest_part",
+              "lineno": 8626,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_next_part_path",
+              "lineno": 8640,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_ensure_under_cap",
+              "lineno": 8650,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_purge_day_files",
+              "lineno": 8666,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_sink_dir_name",
+              "lineno": 8678,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_csv_has_day",
+              "lineno": 8715,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_last_csv_day",
+              "lineno": 8783,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_last_csv_timestamp",
+              "lineno": 8824,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_first_timestamp_in_csv",
+              "lineno": 8857,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_first_timestamp_in_parquet",
+              "lineno": 8879,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_max_file_timestamp",
+              "lineno": 8898,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_read_minimal_frame",
+              "lineno": 8918,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_ensure_influx_client",
+              "lineno": 8946,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_query_dataframe",
+              "lineno": 8979,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_extract_scalar_from_df",
+              "lineno": 8999,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_coerce_timestamp",
+              "lineno": 9017,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_pick_timestamp_from_dataframe",
+              "lineno": 9034,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_infer_first_last_from_sink",
+              "lineno": 9068,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_iter_influx_parquet_files",
+              "lineno": 9106,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_list_influx_tables",
+              "lineno": 9164,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_measurement_from_base",
+              "lineno": 9228,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_measurement_exists",
+              "lineno": 9241,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_measurement",
+              "lineno": 9303,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates__ensure_state",
+              "lineno": 9306,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates__load_existing",
+              "lineno": 9316,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_note_days",
+              "lineno": 9339,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_get_all",
+              "lineno": 9374,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_first_last_day",
+              "lineno": 9400,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_has_day",
+              "lineno": 9414,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_available_dates_bootstrap_from_main",
+              "lineno": 9424,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_last_timestamp",
+              "lineno": 9516,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_expected_option_combos_for_day",
+              "lineno": 9556,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "_influx__et_day_bounds_to_utc",
+              "lineno": 9605,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx__first_ts_between",
+              "lineno": 9614,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_day_has_any",
+              "lineno": 9647,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_first_ts_for_et_day",
+              "lineno": 9651,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_influx_last_ts_between",
+              "lineno": 9658,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_get_oi_cache_path",
+              "lineno": 9702,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_check_oi_cache",
+              "lineno": 9709,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_load_oi_from_cache",
+              "lineno": 9742,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_save_oi_to_cache",
+              "lineno": 9792,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_get_cached_first_date",
+              "lineno": 9838,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_set_cached_first_date",
+              "lineno": 9851,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_load_cache_file",
+              "lineno": 9863,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_save_cache_file",
+              "lineno": 9899,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_touch_cache",
+              "lineno": 9941,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_cache_key",
+              "lineno": 10011,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "screen_option_oi_concentration",
+              "lineno": 10052,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "screen_option_volume_concentration",
+              "lineno": 10236,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "generate_duplicate_report",
+              "lineno": 10411,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "duplication_and_strike_checks",
+              "lineno": 10748,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "check_duplicates_in_sink",
+              "lineno": 11070,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "check_duplicates_multi_day",
+              "lineno": 11160,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_check_duplicates_influx",
+              "lineno": 11461,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_check_duplicates_file",
+              "lineno": 11598,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "list_available_data",
+              "lineno": 11738,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "query_local_data",
+              "lineno": 11989,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_apply_get_filters_and_ordering",
+              "lineno": 12326,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "available_expiration_chains",
+              "lineno": 12471,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "available_strikes_by_expiration",
+              "lineno": 12606,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "get_storage_stats",
+              "lineno": 12724,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "get_storage_summary",
+              "lineno": 12933,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "clear_first_date_cache",
+              "lineno": 13036,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_validate_interval",
+              "lineno": 13070,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_validate_sink",
+              "lineno": 13100,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_as_utc",
+              "lineno": 13130,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_floor_to_interval_et",
+              "lineno": 13160,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_floor_to_interval_seconds_et",
+              "lineno": 13188,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_parse_interval_spec",
+              "lineno": 13196,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_align_start_time_from_last_ts",
+              "lineno": 13213,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_iso_date_only",
+              "lineno": 13275,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_td_ymd",
+              "lineno": 13305,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_greeks_version_for_expiration",
+              "lineno": 13333,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_iso_stamp",
+              "lineno": 13345,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_min_ts_from_df",
+              "lineno": 13391,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_ensure_list",
+              "lineno": 13413,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_normalize_date_str",
+              "lineno": 13426,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_parse_date",
+              "lineno": 13434,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_iter_days",
+              "lineno": 13448,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_tail_csv_last_n_lines",
+              "lineno": 13460,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_tail_one_line",
+              "lineno": 13524,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_parse_csv_first_col_as_dt",
+              "lineno": 13543,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_extract_days_from_df",
+              "lineno": 13580,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_detect_time_col",
+              "lineno": 13597,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_maybe_await",
+              "lineno": 13603,
+              "is_async": true,
+              "decorators": []
+            },
+            {
+              "name": "check_and_recover_coherence",
+              "lineno": 13651,
+              "is_async": true,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "Any",
+            "DataConsistencyLogger",
+            "DataValidator",
+            "Dict",
+            "DiscoverPolicy",
+            "InfluxWriteRetry",
+            "Iterable",
+            "List",
+            "ManagerConfig",
+            "Optional",
+            "Path",
+            "ResilientThetaClient",
+            "Task",
+            "Tuple",
+            "ZoneInfo",
+            "aiohttp",
+            "asyncio",
+            "datetime",
+            "download_with_retry_and_validation",
+            "dt",
+            "glob",
+            "inspect",
+            "io",
+            "json",
+            "log_console",
+            "math",
+            "np",
+            "os",
+            "pa",
+            "pd",
+            "pq",
+            "re",
+            "requests",
+            "reset_log_context",
+            "set_log_context",
+            "set_log_verbosity",
+            "tempfile",
+            "timedelta",
+            "timezone",
+            "uuid"
+          ]
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "_print_shell_version_banner",
+          "lineno": 56,
+          "is_async": false
+        },
+        {
+          "name": "install_td_server_error_logger",
+          "lineno": 96,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/output_manager.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "sys",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [
+        {
+          "name": "AutoClearOutputManager",
+          "lineno": 19,
+          "bases": [],
+          "method_count": 9,
+          "methods": [
+            {
+              "name": "__init__",
+              "lineno": 51,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "__enter__",
+              "lineno": 75,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "__exit__",
+              "lineno": 79,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_should_clear",
+              "lineno": 85,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "_do_clear",
+              "lineno": 91,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "print",
+              "lineno": 120,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "clear",
+              "lineno": 141,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "reset",
+              "lineno": 146,
+              "is_async": false,
+              "decorators": []
+            },
+            {
+              "name": "get_stats",
+              "lineno": 155,
+              "is_async": false,
+              "decorators": []
+            }
+          ],
+          "depends_on_import_aliases": [
+            "log_console",
+            "time"
+          ]
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "get_global_output_manager",
+          "lineno": 176,
+          "is_async": false
+        },
+        {
+          "name": "set_global_output_manager",
+          "lineno": 184,
+          "is_async": false
+        },
+        {
+          "name": "smart_print",
+          "lineno": 190,
+          "is_async": false
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/retry.py",
+      "imports": [
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Awaitable",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Callable",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Type",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TypeVar",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "RetryPolicy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        }
+      ],
+      "classes": [],
+      "top_level_functions": [
+        {
+          "name": "retry_with_policy",
+          "lineno": 14,
+          "is_async": true
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/ThetaDataV3Client.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "Interval",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ThetaDataV3Client",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ResilientThetaClient",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ThetaDataV3HTTPError",
+          "asname": null,
+          "level": 0
+        }
+      ],
+      "classes": [],
+      "top_level_functions": []
+    },
+    {
+      "file": "src/tdSynchManager/tick_bucket_analysis.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ],
+      "classes": [
+        {
+          "name": "BucketAnalysisResult",
+          "lineno": 20,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "DayBucketAnalysisReport",
+          "lineno": 50,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        }
+      ],
+      "top_level_functions": [
+        {
+          "name": "analyze_tick_buckets",
+          "lineno": 88,
+          "is_async": true
+        },
+        {
+          "name": "_fetch_intraday_bars",
+          "lineno": 283,
+          "is_async": true
+        },
+        {
+          "name": "_load_tick_data",
+          "lineno": 399,
+          "is_async": true
+        },
+        {
+          "name": "_compare_buckets",
+          "lineno": 470,
+          "is_async": true
+        }
+      ]
+    },
+    {
+      "file": "src/tdSynchManager/validator.py",
+      "imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ],
+      "classes": [
+        {
+          "name": "ValidationResult",
+          "lineno": 14,
+          "bases": [],
+          "method_count": 0,
+          "methods": [],
+          "depends_on_import_aliases": []
+        },
+        {
+          "name": "DataValidator",
+          "lineno": 34,
+          "bases": [],
+          "method_count": 7,
+          "methods": [
+            {
+              "name": "validate_eod_completeness",
+              "lineno": 38,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "validate_intraday_completeness",
+              "lineno": 123,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "validate_tick_vs_eod_volume",
+              "lineno": 288,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "validate_required_columns",
+              "lineno": 500,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_expected_candles_for_interval",
+              "lineno": 588,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_find_time_gaps",
+              "lineno": 621,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            },
+            {
+              "name": "_compute_date_ranges",
+              "lineno": 668,
+              "is_async": false,
+              "decorators": [
+                "staticmethod"
+              ]
+            }
+          ],
+          "depends_on_import_aliases": [
+            "List",
+            "Optional",
+            "Tuple",
+            "datetime",
+            "log_console",
+            "pd",
+            "timedelta"
+          ]
+        }
+      ],
+      "top_level_functions": []
+    }
+  ],
+  "classes": [
+    {
+      "qualified_name": "src/clients/ThetaDataV3Client.py:ThetaDataV3HTTPError",
+      "file": "src/clients/ThetaDataV3Client.py",
+      "class": "ThetaDataV3HTTPError",
+      "lineno": 19,
+      "bases": [
+        "Exception"
+      ],
+      "method_count": 1,
+      "methods": [
+        "__init__"
+      ],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Literal",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/clients/ThetaDataV3Client.py:ThetaDataV3Client",
+      "file": "src/clients/ThetaDataV3Client.py",
+      "class": "ThetaDataV3Client",
+      "lineno": 61,
+      "bases": [],
+      "method_count": 58,
+      "methods": [
+        "__init__",
+        "__aenter__",
+        "__aexit__",
+        "_make_request",
+        "stock_list_symbols",
+        "stock_list_dates",
+        "stock_snapshot_ohlc",
+        "stock_snapshot_trade",
+        "stock_snapshot_quote",
+        "stock_history_eod",
+        "stock_history_ohlc",
+        "stock_history_trade",
+        "stock_history_quote",
+        "stock_history_trade_quote",
+        "stock_at_time_trade",
+        "stock_at_time_quote",
+        "option_list_symbols",
+        "option_list_dates",
+        "option_list_expirations",
+        "option_list_strikes",
+        "option_list_contracts",
+        "option_snapshot_ohlc",
+        "option_snapshot_trade",
+        "option_snapshot_quote",
+        "option_snapshot_open_interest",
+        "option_snapshot_implied_volatility",
+        "option_snapshot_all_greeks",
+        "option_snapshot_first_order_greeks",
+        "option_snapshot_second_order_greeks",
+        "option_snapshot_third_order_greeks",
+        "option_history_eod",
+        "option_history_ohlc",
+        "option_history_trade",
+        "option_history_quote",
+        "option_history_trade_quote",
+        "option_history_open_interest",
+        "option_history_greeks_eod",
+        "option_history_all_greeks",
+        "option_history_all_trade_greeks",
+        "option_history_greeks",
+        "option_history_trade_greeks",
+        "option_history_greeks_second_order",
+        "option_history_trade_greeks_second_order",
+        "option_history_greeks_third_order",
+        "option_history_trade_greeks_third_order",
+        "option_history_implied_volatility",
+        "option_history_trade_implied_volatility",
+        "option_at_time_trade",
+        "option_at_time_quote",
+        "index_list_symbols",
+        "index_list_dates",
+        "index_snapshot_ohlc",
+        "index_snapshot_price",
+        "index_history_eod",
+        "index_history_ohlc",
+        "index_history_price",
+        "index_at_time_price",
+        "calendar_on_date"
+      ],
+      "depends_on_import_aliases": [
+        "Any",
+        "Dict",
+        "Literal",
+        "Optional",
+        "Tuple",
+        "aiohttp",
+        "asyncio",
+        "json",
+        "os",
+        "urlencode"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Literal",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/clients/ThetaDataV3Client.py:ResilientThetaClient",
+      "file": "src/clients/ThetaDataV3Client.py",
+      "class": "ResilientThetaClient",
+      "lineno": 6711,
+      "bases": [],
+      "method_count": 41,
+      "methods": [
+        "__init__",
+        "_execute_with_reconnect",
+        "_reconnect",
+        "stock_list_symbols",
+        "stock_list_dates",
+        "stock_history_eod",
+        "stock_history_ohlc",
+        "stock_history_trade_quote",
+        "stock_snapshot_trade_quote",
+        "stock_snapshot_ohlc",
+        "stock_snapshot_quote",
+        "option_list_symbols",
+        "option_list_dates",
+        "option_list_expirations",
+        "option_list_strikes",
+        "option_list_contracts",
+        "option_history_eod",
+        "option_history_ohlc",
+        "option_history_greeks_eod",
+        "option_history_all_greeks",
+        "option_history_implied_volatility",
+        "option_history_open_interest",
+        "option_history_trade_quote",
+        "option_history_all_trade_greeks",
+        "option_history_trade_implied_volatility",
+        "option_snapshot_all_greeks",
+        "option_snapshot_trade_quote",
+        "option_snapshot_ohlc",
+        "option_snapshot_quote",
+        "index_list_dates",
+        "index_history_eod",
+        "index_history_ohlc",
+        "index_history_price",
+        "index_snapshot_ohlc",
+        "index_snapshot_price",
+        "calendar_on_date",
+        "base_url",
+        "api_key",
+        "__aenter__",
+        "__aexit__",
+        "close"
+      ],
+      "depends_on_import_aliases": [
+        "aiohttp",
+        "asyncio"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Literal",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/coherence.py:CoherenceIssue",
+      "file": "src/tdSynchManager/coherence.py",
+      "class": "CoherenceIssue",
+      "lineno": 31,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/coherence.py:CoherenceReport",
+      "file": "src/tdSynchManager/coherence.py",
+      "class": "CoherenceReport",
+      "lineno": 55,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/coherence.py:RecoveryResult",
+      "file": "src/tdSynchManager/coherence.py",
+      "class": "RecoveryResult",
+      "lineno": 100,
+      "bases": [],
+      "method_count": 1,
+      "methods": [
+        "add_result"
+      ],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/coherence.py:CoherenceChecker",
+      "file": "src/tdSynchManager/coherence.py",
+      "class": "CoherenceChecker",
+      "lineno": 137,
+      "bases": [],
+      "method_count": 12,
+      "methods": [
+        "__init__",
+        "check",
+        "_check_eod_completeness",
+        "_check_intraday_completeness",
+        "_check_tick_completeness",
+        "_generate_date_range",
+        "_read_intraday_day",
+        "_read_tick_day",
+        "_get_eod_volumes",
+        "_segment_intraday_problems",
+        "_check_missing_enrichment_files",
+        "_segment_tick_problems"
+      ],
+      "depends_on_import_aliases": [
+        "DataValidator",
+        "Dict",
+        "List",
+        "Optional",
+        "Tuple",
+        "ValidationResult",
+        "datetime",
+        "log_console",
+        "os",
+        "timedelta"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/coherence.py:IncoherenceRecovery",
+      "file": "src/tdSynchManager/coherence.py",
+      "class": "IncoherenceRecovery",
+      "lineno": 1020,
+      "bases": [],
+      "method_count": 8,
+      "methods": [
+        "__init__",
+        "_suspend_validation",
+        "recover",
+        "_recover_eod_day",
+        "_influx_intraday_gap_still_missing",
+        "_recover_intraday_gap",
+        "_recover_tick_day",
+        "_recover_missing_enrichment_file"
+      ],
+      "depends_on_import_aliases": [
+        "DataValidator",
+        "contextmanager",
+        "datetime",
+        "log_console",
+        "os",
+        "re",
+        "timedelta"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "contextlib",
+          "name": "contextmanager",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/config.py:RetryPolicy",
+      "file": "src/tdSynchManager/config.py",
+      "class": "RetryPolicy",
+      "lineno": 11,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "fields",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Mapping",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Union",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_origin",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/config.py:ManagerConfig",
+      "file": "src/tdSynchManager/config.py",
+      "class": "ManagerConfig",
+      "lineno": 35,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "fields",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Mapping",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Union",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_origin",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/config.py:DiscoverPolicy",
+      "file": "src/tdSynchManager/config.py",
+      "class": "DiscoverPolicy",
+      "lineno": 103,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "fields",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Mapping",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Union",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_origin",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/config.py:Task",
+      "file": "src/tdSynchManager/config.py",
+      "class": "Task",
+      "lineno": 138,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "fields",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Mapping",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Union",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_origin",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/exceptions.py:TdSynchError",
+      "file": "src/tdSynchManager/exceptions.py",
+      "class": "TdSynchError",
+      "lineno": 12,
+      "bases": [
+        "Exception"
+      ],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": []
+    },
+    {
+      "qualified_name": "src/tdSynchManager/exceptions.py:SessionClosedError",
+      "file": "src/tdSynchManager/exceptions.py",
+      "class": "SessionClosedError",
+      "lineno": 17,
+      "bases": [
+        "TdSynchError"
+      ],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": []
+    },
+    {
+      "qualified_name": "src/tdSynchManager/exceptions.py:TruncatedResponseError",
+      "file": "src/tdSynchManager/exceptions.py",
+      "class": "TruncatedResponseError",
+      "lineno": 22,
+      "bases": [
+        "TdSynchError"
+      ],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": []
+    },
+    {
+      "qualified_name": "src/tdSynchManager/exceptions.py:InfluxDBAuthError",
+      "file": "src/tdSynchManager/exceptions.py",
+      "class": "InfluxDBAuthError",
+      "lineno": 27,
+      "bases": [
+        "TdSynchError"
+      ],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": []
+    },
+    {
+      "qualified_name": "src/tdSynchManager/exceptions.py:ValidationError",
+      "file": "src/tdSynchManager/exceptions.py",
+      "class": "ValidationError",
+      "lineno": 32,
+      "bases": [
+        "TdSynchError"
+      ],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": []
+    },
+    {
+      "qualified_name": "src/tdSynchManager/influx_retry.py:InfluxWriteRetry",
+      "file": "src/tdSynchManager/influx_retry.py",
+      "class": "InfluxWriteRetry",
+      "lineno": 15,
+      "bases": [],
+      "method_count": 5,
+      "methods": [
+        "__init__",
+        "write_with_retry",
+        "_save_failed_batch",
+        "get_stats",
+        "print_summary"
+      ],
+      "depends_on_import_aliases": [
+        "Any",
+        "Dict",
+        "List",
+        "Optional",
+        "Path",
+        "datetime",
+        "json",
+        "log_console",
+        "os",
+        "time"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/influx_verification.py:InfluxWriteResult",
+      "file": "src/tdSynchManager/influx_verification.py",
+      "class": "InfluxWriteResult",
+      "lineno": 17,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "date",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Set",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "numpy",
+          "name": null,
+          "asname": "np"
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/logger.py:DataConsistencyLogger",
+      "file": "src/tdSynchManager/logger.py",
+      "class": "DataConsistencyLogger",
+      "lineno": 17,
+      "bases": [],
+      "method_count": 18,
+      "methods": [
+        "__init__",
+        "log_missing_data",
+        "log_retry_attempt",
+        "log_info",
+        "log_error",
+        "log_warning",
+        "log_resolution",
+        "log_failure",
+        "log_influx_failure",
+        "log_session_closed",
+        "_log_event",
+        "_persist_log",
+        "_safe_read_parquet",
+        "_quarantine_corrupt_parquet",
+        "_atomic_write_parquet",
+        "get_logs",
+        "display_logs",
+        "print_logs"
+      ],
+      "depends_on_import_aliases": [
+        "Any",
+        "Dict",
+        "Optional",
+        "Path",
+        "Tuple",
+        "datetime",
+        "json",
+        "log_console",
+        "os",
+        "pd",
+        "time",
+        "timezone",
+        "uuid"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "uuid",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timezone",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/manager.py:ThetaSyncManager",
+      "file": "src/tdSynchManager/manager.py",
+      "class": "ThetaSyncManager",
+      "lineno": 158,
+      "bases": [],
+      "method_count": 149,
+      "methods": [
+        "__init__",
+        "show_logs",
+        "_validate_downloaded_data",
+        "_get_eod_volume_for_validation",
+        "run",
+        "_spawn_sync",
+        "_is_trading_day",
+        "_fetch_available_dates_from_api",
+        "_sync_symbol",
+        "_download_and_store_options",
+        "_download_and_store_equity_or_index",
+        "_expirations_that_traded",
+        "_fetch_option_all_greeks_by_date",
+        "_td_get_with_retry",
+        "_resolve_first_date",
+        "_discover_equity_first_date",
+        "_discover_option_first_date",
+        "_binary_search_first_date_option",
+        "_extract_first_date_from_any",
+        "_extract_expirations_as_dates",
+        "_today_market_date",
+        "_compute_resume_start_datetime",
+        "_skip_existing_middle_day",
+        "_get_first_last_day_from_sink",
+        "_probe_existing_last_ts_with_source",
+        "_missing_1d_days_csv",
+        "_compute_intraday_window_et",
+        "_write_df_to_sink",
+        "_append_csv_text",
+        "_append_parquet_df",
+        "_write_parquet_from_csv",
+        "_normalize_ts_to_utc",
+        "_normalize_expiration_value",
+        "_ensure_expiration_column",
+        "_fill_expiration_from_option_symbol",
+        "_require_expiration",
+        "_add_dte_column",
+        "_format_dt_columns_isoz",
+        "_normalize_df_types",
+        "_ensure_ts_utc_column",
+        "_pick_time_column",
+        "_append_influx_df",
+        "_make_file_basepath",
+        "_get_dates_in_eod_batch_files",
+        "_list_series_files",
+        "_list_day_files",
+        "_missing_data_policy",
+        "_missing_enrichment_path",
+        "_list_missing_enrichment_files",
+        "_normalize_recovery_keys",
+        "_influx_existing_keys_between",
+        "_influx_split_recovery_keys",
+        "_filter_df_against_influx_existing",
+        "_recovery_key_columns",
+        "_filter_df_by_keys",
+        "_record_missing_enrichment_rows",
+        "_update_missing_enrichment_recovery",
+        "_pending_missing_enrichment_rows",
+        "_list_day_part_files",
+        "_day_parts_status",
+        "_find_existing_series_base",
+        "_find_existing_daily_base_for_day",
+        "_sort_and_deduplicate_eod_batch",
+        "_pick_latest_part",
+        "_next_part_path",
+        "_ensure_under_cap",
+        "_purge_day_files",
+        "_sink_dir_name",
+        "_csv_has_day",
+        "_last_csv_day",
+        "_last_csv_timestamp",
+        "_first_timestamp_in_csv",
+        "_first_timestamp_in_parquet",
+        "_max_file_timestamp",
+        "_read_minimal_frame",
+        "_ensure_influx_client",
+        "_influx_query_dataframe",
+        "_extract_scalar_from_df",
+        "_coerce_timestamp",
+        "_pick_timestamp_from_dataframe",
+        "_infer_first_last_from_sink",
+        "_iter_influx_parquet_files",
+        "_list_influx_tables",
+        "_influx_measurement_from_base",
+        "_influx_measurement_exists",
+        "_influx_available_dates_measurement",
+        "_influx_available_dates__ensure_state",
+        "_influx_available_dates__load_existing",
+        "_influx_available_dates_note_days",
+        "_influx_available_dates_get_all",
+        "_influx_available_dates_first_last_day",
+        "_influx_available_dates_has_day",
+        "_influx_available_dates_bootstrap_from_main",
+        "_influx_last_timestamp",
+        "_expected_option_combos_for_day",
+        "_influx__et_day_bounds_to_utc",
+        "_influx__first_ts_between",
+        "_influx_day_has_any",
+        "_influx_first_ts_for_et_day",
+        "_influx_last_ts_between",
+        "_get_oi_cache_path",
+        "_check_oi_cache",
+        "_load_oi_from_cache",
+        "_save_oi_to_cache",
+        "_get_cached_first_date",
+        "_set_cached_first_date",
+        "_load_cache_file",
+        "_save_cache_file",
+        "_touch_cache",
+        "_cache_key",
+        "screen_option_oi_concentration",
+        "screen_option_volume_concentration",
+        "generate_duplicate_report",
+        "duplication_and_strike_checks",
+        "check_duplicates_in_sink",
+        "check_duplicates_multi_day",
+        "_check_duplicates_influx",
+        "_check_duplicates_file",
+        "list_available_data",
+        "query_local_data",
+        "_apply_get_filters_and_ordering",
+        "available_expiration_chains",
+        "available_strikes_by_expiration",
+        "get_storage_stats",
+        "get_storage_summary",
+        "clear_first_date_cache",
+        "_validate_interval",
+        "_validate_sink",
+        "_as_utc",
+        "_floor_to_interval_et",
+        "_floor_to_interval_seconds_et",
+        "_parse_interval_spec",
+        "_align_start_time_from_last_ts",
+        "_iso_date_only",
+        "_td_ymd",
+        "_greeks_version_for_expiration",
+        "_iso_stamp",
+        "_min_ts_from_df",
+        "_ensure_list",
+        "_normalize_date_str",
+        "_parse_date",
+        "_iter_days",
+        "_tail_csv_last_n_lines",
+        "_tail_one_line",
+        "_parse_csv_first_col_as_dt",
+        "_extract_days_from_df",
+        "_detect_time_col",
+        "_maybe_await",
+        "check_and_recover_coherence"
+      ],
+      "depends_on_import_aliases": [
+        "Any",
+        "DataConsistencyLogger",
+        "DataValidator",
+        "Dict",
+        "DiscoverPolicy",
+        "InfluxWriteRetry",
+        "Iterable",
+        "List",
+        "ManagerConfig",
+        "Optional",
+        "Path",
+        "ResilientThetaClient",
+        "Task",
+        "Tuple",
+        "ZoneInfo",
+        "aiohttp",
+        "asyncio",
+        "datetime",
+        "download_with_retry_and_validation",
+        "dt",
+        "glob",
+        "inspect",
+        "io",
+        "json",
+        "log_console",
+        "math",
+        "np",
+        "os",
+        "pa",
+        "pd",
+        "pq",
+        "re",
+        "requests",
+        "reset_log_context",
+        "set_log_context",
+        "set_log_verbosity",
+        "tempfile",
+        "timedelta",
+        "timezone",
+        "uuid"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "__future__",
+          "name": "annotations",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "asyncio",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "datetime",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "glob",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "importlib",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "inspect",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "io",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "json",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "math",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "os",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "re",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "requests",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "tempfile",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "uuid",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": "dt",
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timezone",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "pathlib",
+          "name": "Path",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Iterable",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "get_args",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "urllib.parse",
+          "name": "urlencode",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "zoneinfo",
+          "name": "ZoneInfo",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "aiohttp",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "numpy",
+          "name": null,
+          "asname": "np"
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        },
+        {
+          "type": "import",
+          "module": "pyarrow",
+          "name": null,
+          "asname": "pa"
+        },
+        {
+          "type": "import",
+          "module": "pyarrow.parquet",
+          "name": null,
+          "asname": "pq"
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "Interval",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ThetaDataV3Client",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "clients.ThetaDataV3Client",
+          "name": "ResilientThetaClient",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "set_log_verbosity",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "set_log_context",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "reset_log_context",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "DiscoverPolicy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "ManagerConfig",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "Task",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "config",
+          "name": "config_from_env",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "logger",
+          "name": "DataConsistencyLogger",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "DataValidator",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "validator",
+          "name": "ValidationResult",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "retry",
+          "name": "retry_with_policy",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "download_retry",
+          "name": "download_with_retry_and_validation",
+          "asname": null,
+          "level": 1
+        },
+        {
+          "type": "from",
+          "module": "influx_retry",
+          "name": "InfluxWriteRetry",
+          "asname": null,
+          "level": 1
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/output_manager.py:AutoClearOutputManager",
+      "file": "src/tdSynchManager/output_manager.py",
+      "class": "AutoClearOutputManager",
+      "lineno": 19,
+      "bases": [],
+      "method_count": 9,
+      "methods": [
+        "__init__",
+        "__enter__",
+        "__exit__",
+        "_should_clear",
+        "_do_clear",
+        "print",
+        "clear",
+        "reset",
+        "get_stats"
+      ],
+      "depends_on_import_aliases": [
+        "log_console",
+        "time"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "sys",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "import",
+          "module": "time",
+          "name": null,
+          "asname": null
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/tick_bucket_analysis.py:BucketAnalysisResult",
+      "file": "src/tdSynchManager/tick_bucket_analysis.py",
+      "class": "BucketAnalysisResult",
+      "lineno": 20,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/tick_bucket_analysis.py:DayBucketAnalysisReport",
+      "file": "src/tdSynchManager/tick_bucket_analysis.py",
+      "class": "DayBucketAnalysisReport",
+      "lineno": 50,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "field",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "TYPE_CHECKING",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/validator.py:ValidationResult",
+      "file": "src/tdSynchManager/validator.py",
+      "class": "ValidationResult",
+      "lineno": 14,
+      "bases": [],
+      "method_count": 0,
+      "methods": [],
+      "depends_on_import_aliases": [],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    },
+    {
+      "qualified_name": "src/tdSynchManager/validator.py:DataValidator",
+      "file": "src/tdSynchManager/validator.py",
+      "class": "DataValidator",
+      "lineno": 34,
+      "bases": [],
+      "method_count": 7,
+      "methods": [
+        "validate_eod_completeness",
+        "validate_intraday_completeness",
+        "validate_tick_vs_eod_volume",
+        "validate_required_columns",
+        "_expected_candles_for_interval",
+        "_find_time_gaps",
+        "_compute_date_ranges"
+      ],
+      "depends_on_import_aliases": [
+        "List",
+        "Optional",
+        "Tuple",
+        "datetime",
+        "log_console",
+        "pd",
+        "timedelta"
+      ],
+      "file_imports": [
+        {
+          "type": "from",
+          "module": "console_log",
+          "name": "log_console",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "dataclasses",
+          "name": "dataclass",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "datetime",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "datetime",
+          "name": "timedelta",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Any",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Dict",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "List",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Optional",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "from",
+          "module": "typing",
+          "name": "Tuple",
+          "asname": null,
+          "level": 0
+        },
+        {
+          "type": "import",
+          "module": "pandas",
+          "name": null,
+          "asname": "pd"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "files_scanned": 18,
+    "class_count": 26,
+    "class_method_count": 309,
+    "top_level_function_count": 42
+  }
+}

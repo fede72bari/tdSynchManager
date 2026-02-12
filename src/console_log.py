@@ -115,18 +115,39 @@ def _infer_context(frame) -> Tuple[Optional[Any], Optional[Any], Optional[Any], 
     asset = None
     interval = None
     class_func = None
+    try:
+        f_locals = frame.f_locals or {}
+    except Exception:
+        f_locals = {}
 
-    f_locals = frame.f_locals or {}
-    if "symbol" in f_locals:
-        symbol = f_locals.get("symbol")
-    if "asset" in f_locals:
-        asset = f_locals.get("asset")
-    if "interval" in f_locals:
-        interval = f_locals.get("interval")
-    elif "tf" in f_locals:
-        interval = f_locals.get("tf")
-    elif "timeframe" in f_locals:
-        interval = f_locals.get("timeframe")
+    def _extract_from_locals(f_locals: dict) -> Tuple[Optional[Any], Optional[Any], Optional[Any]]:
+        sym = f_locals.get("symbol") if "symbol" in f_locals else None
+        ast = f_locals.get("asset") if "asset" in f_locals else None
+        itv = None
+        if "interval" in f_locals:
+            itv = f_locals.get("interval")
+        elif "tf" in f_locals:
+            itv = f_locals.get("tf")
+        elif "timeframe" in f_locals:
+            itv = f_locals.get("timeframe")
+
+        report = f_locals.get("report")
+        if report is not None:
+            if sym is None:
+                sym = getattr(report, "symbol", None)
+            if ast is None:
+                ast = getattr(report, "asset", None)
+            if itv is None:
+                itv = getattr(report, "interval", None)
+
+        task = f_locals.get("task")
+        if task is not None:
+            if ast is None:
+                ast = getattr(task, "asset", None)
+            if itv is None:
+                itv = getattr(task, "interval", None) or getattr(task, "timeframe", None)
+
+        return sym, ast, itv
 
     func_name = frame.f_code.co_name if frame else None
     if func_name == "<module>":
@@ -146,6 +167,23 @@ def _infer_context(frame) -> Tuple[Optional[Any], Optional[Any], Optional[Any], 
         class_func = f"{class_name}.{func_name}"
     elif func_name:
         class_func = func_name
+
+    max_depth = 10
+    depth = 0
+    cur = frame
+    while cur and depth < max_depth and (symbol is None or asset is None or interval is None):
+        try:
+            sym, ast, itv = _extract_from_locals(cur.f_locals or {})
+        except Exception:
+            sym, ast, itv = None, None, None
+        if symbol is None and sym is not None:
+            symbol = sym
+        if asset is None and ast is not None:
+            asset = ast
+        if interval is None and itv is not None:
+            interval = itv
+        cur = cur.f_back
+        depth += 1
 
     return symbol, asset, interval, class_func
 

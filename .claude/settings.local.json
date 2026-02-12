@@ -41,7 +41,16 @@
       "Bash(conda run:*)",
       "Bash('.venv\\\\Scripts\\\\python.exe' 'D:\\\\Dropbox\\\\TRADING\\\\DATA\\\\inspect_aal_5m_issues.py')",
       "Bash(./venv/Scripts/python.exe:*)",
-      "Read(//d/Dropbox/TRADING/tradSignals/**)"
+      "Read(//d/Dropbox/TRADING/tradSignals/**)",
+      "WebFetch(domain:http-docs.thetadata.us)",
+      "WebFetch(domain:docs.thetadata.us)",
+      "Bash(for d in 20250119 20250126 20250202 20251221 20260125)",
+      "Bash(do echo -n \"$d: \")",
+      "Bash(for d in 20250101 20250120 20250217 20250704 20251127 20251225 20260101 20260119)",
+      "Bash(for d in 20250121 20250203 20251222 20260102 20260130)",
+      "Bash(Get-ChildItem \"D:\\\\Dropbox\\\\TRADING\\\\tradSignals\\\\logs\" -Filter \"*.log\")",
+      "Bash(Sort-Object LastWriteTime -Descending)",
+      "Bash(Select-Object Name, LastWriteTime, Length -First 15)"
     ],
     "deny": [],
     "ask": []
