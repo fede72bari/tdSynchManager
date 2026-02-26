@@ -71,7 +71,7 @@ _activity_run_ctx: contextvars.ContextVar[Optional[ActivityRunReporter]] = conte
 EOD_TIMESTAMP_FIX_VERSION = "v1.0.9"  # Dropped legacy infer_datetime_format workaround (pandas 2.x)
 
 # Shell log/version banner (increment when delivering a new patch build)
-SHELL_LOG_VERSION = 4
+SHELL_LOG_VERSION = 5
 _SHELL_VERSION_PRINTED = False
 
 

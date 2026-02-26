@@ -2,6 +2,21 @@
 
 All notable changes to `tdSynchManager` are documented in this file.
 
+## [5] - 2026-02-26
+
+### Added
+
+- Added `docs/MMDPO_ACTIVITY_INTEGRATION_REPORT.md` with integration guidance for MMDPO session:
+  - how to enable and use `ActivityRunReporter` / `RedisActivityEventProducer`
+  - complete map of message emission points in pipeline and corresponding event types
+  - proposed function signature changes required on MMDPO side (`__init__`, `write_records`, optional `_append_influx_df`)
+  - explicit reference to producer class file path and class names for handoff
+
+### Changed
+
+- Incremented runtime shell build version in `src/tdSynchManager/manager.py`:
+  - `SHELL_LOG_VERSION: 4 -> 5`
+
 ## [4] - 2026-02-26
 
 ### Added
