@@ -98,6 +98,15 @@ class ManagerConfig:
     skip_dimension_on_missing_data: Optional[str] = None  # "full_day" or "candle_or_tick_row" (None => legacy skip_day_on_greeks_iv_oi_failure)
     greeks_version: Optional[str] = "latest"  # "latest" (real TTE) or "1" (fixed .15 DTE for 0DTE)
 
+    # --- Activity Contract v1 producer ---
+    activity_contract_enabled: bool = False
+    activity_pipeline_name: str = "tdsynchmanager"
+    activity_redis_url: str = "redis://localhost:6379/0"
+    activity_stream_key: str = "gsf:activity:events:v1"
+    activity_redis_timeout_ms: int = 200
+    activity_heartbeat_seconds: int = 30
+    activity_queue_maxsize: int = 4096
+
 
 @dataclass
 class DiscoverPolicy:

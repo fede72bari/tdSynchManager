@@ -59,6 +59,16 @@ async def download_with_retry_and_validation(
     asset = context.get('asset')
     interval = context.get('interval')
     date_range = context.get('date_range', ('', ''))
+    on_blocked = context.get('on_blocked')
+    on_unblocked = context.get('on_unblocked')
+
+    def _safe_hook(callback, **kwargs):
+        if callback is None:
+            return
+        try:
+            callback(**kwargs)
+        except Exception:
+            return
 
     for attempt in range(retry_policy.max_attempts):
         try:
@@ -92,9 +102,42 @@ async def download_with_retry_and_validation(
                     error_msg="Validation failed, retrying download",
                     details={}
                 )
+                _safe_hook(
+                    on_blocked,
+                    reason="WAIT_IO validation_retry_wait",
+                    reason_code="WAIT_IO",
+                    detail="Validation failed, retrying download",
+                    step="fetch_retry_wait",
+                    target={"chunk_key": f"{symbol}:{asset}:{interval}"},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retry_policy.max_attempts},
+                    timing_ms={"retry_sleep_ms": int(retry_policy.delay_seconds * 1000)},
+                    io_context={"provider": "thetadata", "endpoint": "download_with_retry"},
+                )
                 await asyncio.sleep(retry_policy.delay_seconds)
+                _safe_hook(
+                    on_unblocked,
+                    step="fetch_retry_resume",
+                    target={"chunk_key": f"{symbol}:{asset}:{interval}"},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retry_policy.max_attempts},
+                    io_context={"provider": "thetadata", "endpoint": "download_with_retry"},
+                )
 
         except Exception as e:
+            # Non-retryable deferral: OI data for current day is not available
+            # with wildcard expiration. Exit immediately without retrying.
+            from .manager import _OIDeferredError
+            if isinstance(e, _OIDeferredError):
+                logger.log_retry_attempt(
+                    symbol=symbol,
+                    asset=asset,
+                    interval=interval,
+                    date_range=date_range,
+                    attempt=attempt + 1,
+                    error_msg=f"OI deferred (current day): {str(e)} — no retry",
+                    details={'error': str(e), 'error_type': 'OIDeferredError'}
+                )
+                return None, False
+
             if attempt < retry_policy.max_attempts - 1:
                 logger.log_retry_attempt(
                     symbol=symbol,
@@ -105,7 +148,25 @@ async def download_with_retry_and_validation(
                     error_msg=f"Download failed: {str(e)}, retrying",
                     details={'error': str(e), 'error_type': type(e).__name__}
                 )
+                _safe_hook(
+                    on_blocked,
+                    reason="NETWORK download_retry_wait",
+                    reason_code="NETWORK",
+                    detail=str(e),
+                    step="fetch_retry_wait",
+                    target={"chunk_key": f"{symbol}:{asset}:{interval}"},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retry_policy.max_attempts},
+                    timing_ms={"retry_sleep_ms": int(retry_policy.delay_seconds * 1000)},
+                    io_context={"provider": "thetadata", "endpoint": "download_with_retry"},
+                )
                 await asyncio.sleep(retry_policy.delay_seconds)
+                _safe_hook(
+                    on_unblocked,
+                    step="fetch_retry_resume",
+                    target={"chunk_key": f"{symbol}:{asset}:{interval}"},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retry_policy.max_attempts},
+                    io_context={"provider": "thetadata", "endpoint": "download_with_retry"},
+                )
             else:
                 logger.log_failure(
                     symbol=symbol,

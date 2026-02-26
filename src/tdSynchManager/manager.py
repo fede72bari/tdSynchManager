@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime
 import glob
 import importlib
@@ -33,6 +34,15 @@ from .validator import DataValidator, ValidationResult
 from .retry import retry_with_policy
 from .download_retry import download_with_retry_and_validation
 from .influx_retry import InfluxWriteRetry
+from .activity_reporter import (
+    ActivityRunReporter,
+    PHASE_DISCOVER,
+    PHASE_DOWNLOAD,
+    PHASE_PERSIST,
+    PHASE_POSTPROCESS,
+    RedisActivityEventProducer,
+    classify_block_reason,
+)
 # Removed influx_verification imports - InfluxDB write() is synchronous and raises exceptions on failure
 
 try:  # optional at runtime
@@ -45,11 +55,23 @@ try:  # optional dependency, only needed for InfluxDB sinks
 except Exception:  # pragma: no cover
     InfluxDBClient3 = None
 
+class _OIDeferredError(Exception):
+    """Raised when OI data is not available because the request date is the current day.
+    This is a non-retryable condition — the day should be deferred to the next session."""
+    pass
+
+
+_activity_run_ctx: contextvars.ContextVar[Optional[ActivityRunReporter]] = contextvars.ContextVar(
+    "tdsynch_activity_run",
+    default=None,
+)
+
+
 # EOD TIMESTAMP FIX VERSION - increment on each modification group
 EOD_TIMESTAMP_FIX_VERSION = "v1.0.9"  # Dropped legacy infer_datetime_format workaround (pandas 2.x)
 
 # Shell log/version banner (increment when delivering a new patch build)
-SHELL_LOG_VERSION = 3
+SHELL_LOG_VERSION = 4
 _SHELL_VERSION_PRINTED = False
 
 
@@ -371,6 +393,184 @@ class ThetaSyncManager:
             base_delay=getattr(cfg, "influx_retry_delay", 5.0),
             max_delay=60.0,
             failed_batch_dir=failed_batch_dir
+        )
+
+        self._activity_enabled = bool(getattr(cfg, "activity_contract_enabled", False))
+        self._activity_pipeline_name = str(getattr(cfg, "activity_pipeline_name", "tdsynchmanager") or "tdsynchmanager")
+        self._activity_segment_timeouts = {
+            PHASE_DISCOVER: 900,
+            PHASE_DOWNLOAD: 3600,
+            PHASE_PERSIST: 1800,
+            PHASE_POSTPROCESS: 1800,
+        }
+        self._activity_reporter = RedisActivityEventProducer(
+            enabled=self._activity_enabled,
+            redis_url=str(getattr(cfg, "activity_redis_url", "redis://localhost:6379/0") or "redis://localhost:6379/0"),
+            stream_key=str(getattr(cfg, "activity_stream_key", "gsf:activity:events:v1") or "gsf:activity:events:v1"),
+            connect_timeout_ms=int(getattr(cfg, "activity_redis_timeout_ms", 200) or 200),
+            queue_maxsize=int(getattr(cfg, "activity_queue_maxsize", 4096) or 4096),
+        )
+
+    def _build_activity_run_id(self, task: Task, symbol: str, interval: str) -> str:
+        ts = dt.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        base = f"{self._activity_pipeline_name}:{task.asset}:{symbol}:{interval}:{ts}"
+        return f"{base}:{uuid.uuid4().hex[:8]}"
+
+    def _create_activity_run(self, task: Task, symbol: str, interval: str) -> ActivityRunReporter:
+        if not self._activity_enabled:
+            return ActivityRunReporter.noop()
+        task_id = str(getattr(task, "task_id", "") or "")
+        daemon_id = str(getattr(task, "daemon_id", "") or f"{task.asset}:{symbol}:{interval}")
+        base_metadata = {
+            "io_context": {"provider": "thetadata"},
+            "target": {"symbol": symbol, "timeframe": interval},
+        }
+        return ActivityRunReporter(
+            self._activity_reporter,
+            run_id=self._build_activity_run_id(task, symbol, interval),
+            pipeline=self._activity_pipeline_name,
+            phase=PHASE_DISCOVER,
+            task_id=task_id,
+            daemon_id=daemon_id,
+            heartbeat_interval_s=int(getattr(self.cfg, "activity_heartbeat_seconds", 30) or 30),
+            segment_timeouts=self._activity_segment_timeouts,
+            base_metadata=base_metadata,
+        )
+
+    def _activity_run(self) -> Optional[ActivityRunReporter]:
+        return _activity_run_ctx.get()
+
+    def _activity_phase_started(
+        self,
+        phase: str,
+        *,
+        cursor: Any = None,
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        counters: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        segment_timeout_s: Optional[int] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        run.phase_started(
+            phase,
+            cursor=cursor,
+            step=step,
+            target=target,
+            counters=counters,
+            metadata=metadata,
+            segment_timeout_s=segment_timeout_s,
+        )
+
+    def _activity_phase_completed(
+        self,
+        *,
+        cursor: Any = None,
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        counters: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        run.phase_completed(cursor=cursor, step=step, target=target, counters=counters, metadata=metadata)
+
+    def _activity_progress(
+        self,
+        *,
+        cursor: Any = None,
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        counters: Optional[Dict[str, Any]] = None,
+        timing_ms: Optional[Dict[str, Any]] = None,
+        io_context: Optional[Dict[str, Any]] = None,
+        attempt: Optional[Dict[str, Any]] = None,
+        watermarks: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        run.progress(
+            cursor=cursor,
+            step=step,
+            target=target,
+            counters=counters,
+            timing_ms=timing_ms,
+            io_context=io_context,
+            attempt=attempt,
+            watermarks=watermarks,
+            metadata=metadata,
+        )
+
+    def _activity_heartbeat(
+        self,
+        *,
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        counters: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        run.heartbeat_if_due(step=step, target=target, counters=counters, metadata=metadata)
+
+    def _activity_blocked(
+        self,
+        *,
+        reason: str,
+        reason_code: str,
+        detail: str = "",
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        attempt: Optional[Dict[str, Any]] = None,
+        timing_ms: Optional[Dict[str, Any]] = None,
+        io_context: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        block_context = {
+            "blocked_reason_code": str(reason_code or "UNKNOWN"),
+            "blocked_detail": str(detail or ""),
+            "since_ts": dt.now(timezone.utc).isoformat(),
+        }
+        run.blocked(
+            reason=reason,
+            step=step,
+            target=target,
+            attempt=attempt,
+            timing_ms=timing_ms,
+            io_context=io_context,
+            block_context=block_context,
+            metadata=metadata,
+        )
+
+    def _activity_unblocked(
+        self,
+        *,
+        step: str = "",
+        target: Optional[Dict[str, Any]] = None,
+        attempt: Optional[Dict[str, Any]] = None,
+        timing_ms: Optional[Dict[str, Any]] = None,
+        io_context: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        run = self._activity_run()
+        if run is None:
+            return
+        run.unblocked(
+            step=step,
+            target=target,
+            attempt=attempt,
+            timing_ms=timing_ms,
+            io_context=io_context,
+            metadata=metadata,
         )
 
     # -------- Log display helper --------
@@ -942,10 +1142,44 @@ class ThetaSyncManager:
         # - run() to spawn each symbol+interval sync job with concurrency control
         """
         token = set_log_context(symbol=symbol, asset=task.asset, interval=interval)
+        activity = self._create_activity_run(task, symbol, interval)
+        activity_token = _activity_run_ctx.set(activity)
+        run_target = {"symbol": symbol, "asset_type": task.asset, "timeframe": interval}
         try:
+            activity.run_started(
+                phase=PHASE_DISCOVER,
+                segment=PHASE_DISCOVER,
+                segment_timeout_s=self._activity_segment_timeouts[PHASE_DISCOVER],
+                step="run_start",
+                target=run_target,
+                cursor={"stage": "spawn_sync"},
+            )
             async with self._sem:
                 await self._sync_symbol(task, symbol, interval, first_date)
+            activity.completed(
+                step="run_complete",
+                target=run_target,
+                cursor={"stage": "completed"},
+            )
+        except asyncio.CancelledError:
+            activity.failed(
+                "run cancelled",
+                step="run_cancelled",
+                target=run_target,
+                cursor={"stage": "cancelled"},
+            )
+            raise
+        except Exception as exc:
+            activity.failed(
+                str(exc)[:300],
+                step="run_failed",
+                target=run_target,
+                cursor={"stage": "failed"},
+                metadata={"error_type": type(exc).__name__},
+            )
+            raise
         finally:
+            _activity_run_ctx.reset(activity_token)
             reset_log_context(token)
 
     async def _is_trading_day(self, date_obj: date) -> bool:
@@ -1283,6 +1517,13 @@ class ThetaSyncManager:
             getattr(task, "discover_policy", None) is not None
             and getattr(task.discover_policy, "mode", None) == "skip"
         )
+        self._activity_phase_started(
+            PHASE_DISCOVER,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_DISCOVER],
+            step="discover_resume_window",
+            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+            cursor={"stage": "discover_enter"},
+        )
 
         # Compute resume window suggested by existing logic
         start_dt = await self._compute_resume_start_datetime(task, symbol, interval, first_date)
@@ -1411,6 +1652,28 @@ class ThetaSyncManager:
         
         cur_date = loop_start_date
         end_date = end_dt.date()
+        self._activity_progress(
+            step="discover_bounds",
+            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+            cursor={
+                "start_date": cur_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "first_date": first_date_iso,
+                "sink": sink_lower,
+            },
+        )
+        self._activity_phase_completed(
+            step="discover_completed",
+            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+            cursor={"stage": "discover_done"},
+        )
+        self._activity_phase_started(
+            PHASE_DOWNLOAD,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_DOWNLOAD],
+            step="download_loop_start",
+            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+            cursor={"stage": "download_enter"},
+        )
 
         # EOD batched for stock/index
         if interval == "1d" and task.asset in ("stock", "index"):
@@ -1428,6 +1691,16 @@ class ThetaSyncManager:
                     start_iso = cur_date.isoformat()
                     chunk_end = min(retro_end, cur_date + timedelta(days=batch_days - 1))
                     end_iso = chunk_end.isoformat()
+                    self._activity_heartbeat(
+                        step="download_retro_loop",
+                        target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso},
+                        counters={"chunks_done": 0, "chunks_total": 0},
+                    )
+                    self._activity_progress(
+                        step="fetch_ohlc",
+                        target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                        cursor={"cursor_from": start_iso, "cursor_to": end_iso},
+                    )
 
                     try:
                         log_console(f"[EOD-BATCH][RETRO] {task.asset} {symbol} {start_iso}..{end_iso}")
@@ -1438,6 +1711,11 @@ class ThetaSyncManager:
                             day_iso=start_iso,
                             sink=task.sink,
                             range_end_iso=end_iso,
+                        )
+                        self._activity_progress(
+                            step="fetch_ohlc_done",
+                            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                            cursor={"cursor_from": start_iso, "cursor_to": end_iso},
                         )
                     except Exception as e:
                         log_console(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
@@ -1510,6 +1788,15 @@ class ThetaSyncManager:
                         if is_last or next_not_adjacent:
                             start_iso = batch_start.isoformat()
                             end_iso = missing_date.isoformat()
+                            self._activity_heartbeat(
+                                step="download_mild_skip_loop",
+                                target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso},
+                            )
+                            self._activity_progress(
+                                step="fetch_ohlc",
+                                target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                                cursor={"cursor_from": start_iso, "cursor_to": end_iso},
+                            )
 
                             try:
                                 log_console(f"[EOD-BATCH][MILD-SKIP] {task.asset} {symbol} {start_iso}..{end_iso}")
@@ -1520,6 +1807,11 @@ class ThetaSyncManager:
                                     day_iso=start_iso,
                                     sink=task.sink,
                                     range_end_iso=end_iso,
+                                )
+                                self._activity_progress(
+                                    step="fetch_ohlc_done",
+                                    target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                                    cursor={"cursor_from": start_iso, "cursor_to": end_iso},
                                 )
                             except Exception as e:
                                 log_console(f"[WARN] {task.asset} {symbol} {interval} {start_iso}..{end_iso}: {e}")
@@ -1537,6 +1829,15 @@ class ThetaSyncManager:
                 start_iso = cur_date.isoformat()
                 chunk_end = min(end_date, cur_date + timedelta(days=batch_days - 1))
                 end_iso = chunk_end.isoformat()
+                self._activity_heartbeat(
+                    step="download_eod_batch_loop",
+                    target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso},
+                )
+                self._activity_progress(
+                    step="fetch_ohlc",
+                    target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                    cursor={"cursor_from": start_iso, "cursor_to": end_iso},
+                )
 
                 try:
                     log_console(f"[EOD-BATCH] {task.asset} {symbol} {start_iso}..{end_iso}")
@@ -1548,6 +1849,11 @@ class ThetaSyncManager:
                         sink=task.sink,
                         range_end_iso=end_iso,
                     )
+                    self._activity_progress(
+                        step="fetch_ohlc_done",
+                        target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": start_iso, "chunk_key": f"{start_iso}:{end_iso}"},
+                        cursor={"cursor_from": start_iso, "cursor_to": end_iso},
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -1555,6 +1861,11 @@ class ThetaSyncManager:
 
                 cur_date = chunk_end + timedelta(days=1)
 
+            self._activity_phase_completed(
+                step="download_completed",
+                target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+                cursor={"stage": "download_done"},
+            )
             return  # done for EOD stock/index
 
         # Day-by-day loop: options and intraday
@@ -1704,6 +2015,11 @@ class ThetaSyncManager:
 
         # Main iteration loop over dates
         for day_iso in dates_to_process:
+            self._activity_heartbeat(
+                step="download_day_loop",
+                target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": day_iso},
+                counters={"chunks_done": 0, "chunks_total": len(dates_to_process)},
+            )
             # Skip weekends ONLY if using fallback (API dates already exclude them)
             if api_available_dates is None and dt.fromisoformat(day_iso).weekday() >= 5:
                 continue
@@ -1772,7 +2088,21 @@ class ThetaSyncManager:
                     log_console(f"[EOD-OI-SHIFT] Skip EOD for {day_iso}: no next_trading_date in map (likely last available date)")
                     continue
 
+            # Guard: OI for next_trading_date is not yet settled if it's today or future
+            today_iso = datetime.date.today().isoformat()
+            if next_trading_date_for_oi is not None and next_trading_date_for_oi >= today_iso:
+                log_console(
+                    f"[EOD-OI-SHIFT] Skip EOD {day_iso}: OI target {next_trading_date_for_oi} "
+                    f"not yet settled (today={today_iso}) — will retry next cycle"
+                )
+                continue
+
             try:
+                self._activity_progress(
+                    step="fetch_ohlc",
+                    target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": day_iso},
+                    cursor={"trading_date": day_iso},
+                )
                 if task.asset == "option":
                     await self._download_and_store_options(
                         symbol=symbol,
@@ -1793,6 +2123,11 @@ class ThetaSyncManager:
                     )
                 else:
                     raise ValueError(f"Unsupported asset: {task.asset}")
+                self._activity_progress(
+                    step="fetch_ohlc_done",
+                    target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval, "trading_date": day_iso},
+                    cursor={"trading_date": day_iso},
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1806,6 +2141,12 @@ class ThetaSyncManager:
                     message=f"Download and store failed: {str(e)}",
                     details={'error': str(e), 'error_type': type(e).__name__}
                 )
+
+        self._activity_phase_completed(
+            step="download_completed",
+            target={"symbol": symbol, "asset_type": task.asset, "timeframe": interval},
+            cursor={"stage": "download_done"},
+        )
 
     # --------------------- DATA DOWNLOAD & STORE ---------------------
 
@@ -1927,6 +2268,18 @@ class ThetaSyncManager:
 
         # Log start of download (console + parquet with ALL parameters)
         log_console(f"[DOWNLOAD-START] {symbol} option/{interval} day={day_iso} sink={sink} enrich_greeks={enrich_greeks}")
+        self._activity_phase_started(
+            PHASE_DOWNLOAD,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_DOWNLOAD],
+            step="download_day_start",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
+        self._activity_progress(
+            step="download_day_start",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso, "sink": sink},
+        )
         self.logger.log_info(
             symbol=symbol,
             asset="option",
@@ -2221,17 +2574,34 @@ class ThetaSyncManager:
                             log_console(f"[OI-EOD][WARN] No next_trading_date provided for EOD {day_iso} - using fallback (old logic, returns prior-session OI)")
 
                         oi_request_ymd = dt.fromisoformat(oi_request_date).strftime("%Y%m%d")
-                        csv_oi, _ = await self._td_get_with_retry(
-                            lambda: self.client.option_history_open_interest(
-                                symbol=symbol,
-                                expiration="*",
-                                date=oi_request_ymd,
-                                strike="*",
-                                right="both",
-                                format_type="csv",
-                            ),
-                            label=f"oi_eod {symbol} {oi_request_ymd}"
-                        )
+
+                        # Current-day OI guard: ThetaData does not support expiration=*
+                        # (wildcard) for the current trading day — it returns HTTP 400
+                        # "Cannot fetch current-day data without specifying an expiration".
+                        # Detect this upfront and treat OI as not-yet-available so the day
+                        # is deferred to the next session instead of failing after 3 retries.
+                        _today_ymd = dt.now(timezone.utc).strftime("%Y%m%d")
+                        if oi_request_ymd == _today_ymd:
+                            log_console(
+                                f"[OI-EOD][DEFER] {symbol} {day_iso}: OI request date {oi_request_date} "
+                                f"is today — wildcard expiration not supported by ThetaData for "
+                                f"current day. Deferring OI to next session."
+                            )
+                            csv_oi = None
+                            oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
+                            oi_details = {"reason": "oi_current_day_deferred", "oi_request_date": oi_request_date}
+                        else:
+                            csv_oi, _ = await self._td_get_with_retry(
+                                lambda: self.client.option_history_open_interest(
+                                    symbol=symbol,
+                                    expiration="*",
+                                    date=oi_request_ymd,
+                                    strike="*",
+                                    right="both",
+                                    format_type="csv",
+                                ),
+                                label=f"oi_eod {symbol} {oi_request_ymd}"
+                            )
                         if not csv_oi:
                             oi_missing_mask = pd.Series([True] * len(df_pass), index=df_pass.index)
                             oi_details = {"reason": "oi_empty_response"}
@@ -2507,6 +2877,36 @@ class ThetaSyncManager:
                             required_cols=required_cols,
                         )
                     if skip_day_on_missing:
+                        # Current-day OI deferral: if the ONLY missing component is OI
+                        # and it's deferred because oi_request_date is today, don't retry —
+                        # the data simply isn't available yet. Signal a non-retryable skip.
+                        _oi_deferred = bool(oi_details and oi_details.get("reason") == "oi_current_day_deferred")
+                        _only_oi_missing = (
+                            _oi_deferred
+                            and (greeks_missing_mask is None or not greeks_missing_mask.any())
+                            and (iv_missing_mask is None or not iv_missing_mask.any())
+                        )
+                        if _only_oi_missing:
+                            log_console(
+                                f"[SKIP-DAY][DEFER] option EOD {symbol} {day_iso}: "
+                                f"OI not available yet (request date {oi_details.get('oi_request_date')} is today). "
+                                f"Day will be retried in next session."
+                            )
+                            if self.logger:
+                                self.logger.log_error(
+                                    asset="option",
+                                    symbol=symbol,
+                                    interval=interval,
+                                    date=day_iso,
+                                    error_type="EOD_DAY_DEFERRED_OI_CURRENT_DAY",
+                                    error_message=f"OI deferred: request date is today, wildcard expiration not supported",
+                                    severity="WARNING",
+                                    details=missing_details
+                                )
+                            # Raise a dedicated exception so the outer retry loop can distinguish
+                            # a deferral (don't retry) from a real failure (retry up to N times).
+                            raise _OIDeferredError(f"OI not available: request date {oi_details.get('oi_request_date')} is today")
+
                         error_msg = f"[SKIP-DAY] option EOD {symbol} {day_iso}: missing OI/Greeks/IV rows"
                         log_console(error_msg)
                         if self.logger:
@@ -2592,7 +2992,9 @@ class ThetaSyncManager:
                     'asset': 'option',
                     'interval': interval,
                     'date_range': (day_iso, day_iso),
-                    'sink': sink
+                    'sink': sink,
+                    'on_blocked': self._activity_blocked,
+                    'on_unblocked': self._activity_unblocked,
                 }
             )
 
@@ -2607,6 +3009,13 @@ class ThetaSyncManager:
 
 
             # 3) persist + written rows counting
+            self._activity_phase_started(
+                PHASE_PERSIST,
+                segment_timeout_s=self._activity_segment_timeouts[PHASE_PERSIST],
+                step="persist_eod_start",
+                target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+                cursor={"trading_date": day_iso},
+            )
             st = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
             base_path = st.get("base_path") or self._make_file_basepath("option", symbol, interval, f"{day_iso}T00-00-00Z", sink_lower)
 
@@ -2685,6 +3094,18 @@ class ThetaSyncManager:
                 raise ValueError(f"Unsupported sink: {sink_lower}")
 
             log_console(f"[SUMMARY] option {symbol} 1d day={day_iso} rows={len(df)} wrote={wrote} sink={sink_lower}")
+            self._activity_progress(
+                step=f"write_{sink_lower}",
+                target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+                counters={"rows_read": int(len(df)), "rows_written": int(wrote)},
+                cursor={"rows_written": int(wrote), "trading_date": day_iso},
+            )
+            self._activity_phase_completed(
+                step="persist_eod_completed",
+                target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+                counters={"rows_written": int(wrote)},
+                cursor={"rows_written": int(wrote)},
+            )
 
             # Check if write actually succeeded
             if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
@@ -2810,9 +3231,20 @@ class ThetaSyncManager:
                 log_console(f"[INTRADAY-WARN] start_time check failed: {type(_e).__name__}: {_e}")
                     
         # 1) discover expirations of the day
+        self._activity_progress(
+            step="fetch_expirations",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
         expirations = await self._expirations_that_traded(symbol, day_iso, req_type="trade")
         if not expirations:
             expirations = await self._expirations_that_traded(symbol, day_iso, req_type="quote")
+        self._activity_progress(
+            step="fetch_expirations_done",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            counters={"contracts_total": int(len(expirations))},
+            cursor={"expiration_count": int(len(expirations)), "trading_date": day_iso},
+        )
         if not expirations:
             log_console(f"[DOWNLOAD-SKIP] {symbol} option/{interval} day={day_iso} - No expirations traded")
             self.logger.log_info(
@@ -3804,7 +4236,18 @@ class ThetaSyncManager:
                     log_console(f"[OI-FETCH] current-day mode: per-expiration ({len(expirations)} exps)")
                     oi_dfs = []
                     failed_exps = []
-                    for exp in expirations:
+                    for exp_idx, exp in enumerate(expirations, start=1):
+                        self._activity_heartbeat(
+                            step="fetch_oi",
+                            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso, "expiration": self._normalize_date_str(exp)},
+                            counters={"contracts_done": exp_idx - 1, "contracts_total": len(expirations)},
+                        )
+                        self._activity_progress(
+                            step="fetch_oi",
+                            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso, "expiration": self._normalize_date_str(exp)},
+                            counters={"contracts_done": exp_idx - 1, "contracts_total": len(expirations)},
+                            cursor={"expiration": self._normalize_date_str(exp), "chunk_id": exp_idx},
+                        )
                         try:
                             csv_oi_exp, _ = await self._td_get_with_retry(
                                 lambda: self.client.option_history_open_interest(
@@ -3819,6 +4262,12 @@ class ThetaSyncManager:
                             )
                             if csv_oi_exp:
                                 oi_dfs.append(pd.read_csv(io.StringIO(csv_oi_exp), dtype=str))
+                                self._activity_progress(
+                                    step="fetch_oi_done",
+                                    target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso, "expiration": self._normalize_date_str(exp)},
+                                    counters={"contracts_done": exp_idx, "contracts_total": len(expirations)},
+                                    cursor={"expiration": self._normalize_date_str(exp), "chunk_id": exp_idx},
+                                )
                             else:
                                 failed_exps.append(exp)
                         except Exception as e:
@@ -4440,6 +4889,13 @@ class ThetaSyncManager:
             return
         # ===== /VALIDATION =====
 
+        self._activity_phase_started(
+            PHASE_PERSIST,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_PERSIST],
+            step="persist_intraday_start",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
 
         st = self._day_parts_status("option", symbol, interval, sink_lower, day_iso)
 
@@ -4531,6 +4987,18 @@ class ThetaSyncManager:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
         log_console(f"[SUMMARY] option {symbol} {interval} day={day_iso} rows={len(df_all)} wrote={wrote} sink={sink_lower}")
+        self._activity_progress(
+            step=f"write_{sink_lower}",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            counters={"rows_read": int(len(df_all)), "rows_written": int(wrote)},
+            cursor={"rows_written": int(wrote), "trading_date": day_iso},
+        )
+        self._activity_phase_completed(
+            step="persist_intraday_completed",
+            target={"symbol": symbol, "asset_type": "option", "timeframe": interval, "trading_date": day_iso},
+            counters={"rows_written": int(wrote)},
+            cursor={"rows_written": int(wrote)},
+        )
 
         # Check if write actually succeeded
         if sink_lower == "influxdb" and wrote == 0 and not dedupe_skipped_all:
@@ -4638,6 +5106,18 @@ class ThetaSyncManager:
         """
     
         sink_lower = sink.lower()
+        self._activity_phase_started(
+            PHASE_DOWNLOAD,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_DOWNLOAD],
+            step="download_day_start",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
+        self._activity_progress(
+            step="download_day_start",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso, "sink": sink_lower},
+        )
 
         # >>> EARLY-SKIP (intraday only) <<<
         # Skip logic è ora gestita nel loop principale per uniformità
@@ -4911,6 +5391,13 @@ class ThetaSyncManager:
         # -------------------------------
         # 6) PERSIST
         # -------------------------------
+        self._activity_phase_started(
+            PHASE_PERSIST,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_PERSIST],
+            step="persist_start",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
         wrote = 0
         if sink_lower == "csv":
             df_out = self._format_dt_columns_isoz(df_day)
@@ -4961,16 +5448,28 @@ class ThetaSyncManager:
         else:
             raise ValueError(f"Unsupported sink: {sink_lower}")
 
-            log_console(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
-            # Log INFO write summary
-            self.logger.log_info(
-                symbol=symbol,
-                asset=asset,
-                interval=interval,
-                date_range=(day_iso, day_iso),
-                message="WRITE_OK",
-                details={"rows": len(df_day), "wrote": wrote, "sink": sink_lower}
-            )
+        self._activity_progress(
+            step=f"write_{sink_lower}",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            counters={"rows_read": int(len(df_day)), "rows_written": int(wrote)},
+            cursor={"rows_written": int(wrote), "trading_date": day_iso},
+        )
+        self._activity_phase_completed(
+            step="persist_completed",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            counters={"rows_written": int(wrote)},
+            cursor={"rows_written": int(wrote)},
+        )
+        log_console(f"[SUMMARY] {asset} {symbol} {interval} day={day_iso} rows={len(df_day)} wrote={wrote} sink={sink_lower}")
+        # Log INFO write summary
+        self.logger.log_info(
+            symbol=symbol,
+            asset=asset,
+            interval=interval,
+            date_range=(day_iso, day_iso),
+            message="WRITE_OK",
+            details={"rows": len(df_day), "wrote": wrote, "sink": sink_lower}
+        )
 
         
         # -------------------------------
@@ -5243,9 +5742,32 @@ class ThetaSyncManager:
             return ("no data found" in s) or ("no_data" in s) or ("no data" in s and "472" in s)
         # ### >>> THETADATA NO_DATA (472) DETECTION — END
 
+        endpoint_id = str(label or "").split(" ", 1)[0] if label else ""
         for attempt in range(retries + 1):
+            req_started = time.perf_counter()
+            self._activity_heartbeat(
+                step="provider_request",
+                target={"chunk_key": label},
+                counters={"chunks_done": attempt, "chunks_total": retries + 1},
+            )
+            self._activity_progress(
+                step="provider_request",
+                target={"chunk_key": label},
+                attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                io_context={"provider": "thetadata", "endpoint": endpoint_id},
+                cursor={"attempt": attempt + 1, "label": label},
+            )
             try:
-                return await coro_factory()
+                out = await coro_factory()
+                self._activity_progress(
+                    step="provider_request_done",
+                    target={"chunk_key": label},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                    timing_ms={"api_latency_ms": int((time.perf_counter() - req_started) * 1000)},
+                    io_context={"provider": "thetadata", "endpoint": endpoint_id},
+                    cursor={"attempt": attempt + 1, "label": label},
+                )
+                return out
 
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 msg = str(e)
@@ -5258,14 +5780,47 @@ class ThetaSyncManager:
                 if attempt >= retries:
                     log_console(f"[TD-HTTP][GIVEUP] {label}")
                     return None, {"no_data": False, "status": status, "error": msg}
+                block_code = classify_block_reason(msg, status)
+                self._activity_blocked(
+                    reason=f"{block_code} retry_wait",
+                    reason_code=block_code,
+                    detail=msg,
+                    step="provider_retry_wait",
+                    target={"chunk_key": label},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                    timing_ms={"retry_sleep_ms": 750},
+                    io_context={"provider": "thetadata", "endpoint": endpoint_id, "http_status": status},
+                )
                 await asyncio.sleep(0.75)
+                self._activity_unblocked(
+                    step="provider_retry_resume",
+                    target={"chunk_key": label},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                    io_context={"provider": "thetadata", "endpoint": endpoint_id, "http_status": status},
+                )
 
             except asyncio.CancelledError:
                 log_console(f"[TD-HTTP][CANCELLED] {label} attempt={attempt+1}")
                 if attempt >= retries:
                     log_console(f"[TD-HTTP][GIVEUP] {label} cancelled")
                     return None, {"no_data": False, "status": None, "error": "cancelled"}
+                self._activity_blocked(
+                    reason="WAIT_IO cancelled_retry_wait",
+                    reason_code="WAIT_IO",
+                    detail="cancelled",
+                    step="provider_retry_wait",
+                    target={"chunk_key": label},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                    timing_ms={"retry_sleep_ms": 500},
+                    io_context={"provider": "thetadata", "endpoint": endpoint_id},
+                )
                 await asyncio.sleep(0.5)
+                self._activity_unblocked(
+                    step="provider_retry_resume",
+                    target={"chunk_key": label},
+                    attempt={"attempt_no": attempt + 1, "max_attempts": retries + 1},
+                    io_context={"provider": "thetadata", "endpoint": endpoint_id},
+                )
 
             except Exception as e:
                 msg = str(e)
@@ -6584,6 +7139,12 @@ class ThetaSyncManager:
             # Write sorted data back to file
             sorted_df.to_csv(target, index=False)
             log_console(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            self._activity_progress(
+                step="write_csv",
+                target={"chunk_key": os.path.basename(target)},
+                counters={"rows_read": int(len(new_df)), "rows_written": int(after_dedup)},
+                cursor={"rows_written": int(after_dedup)},
+            )
             return
 
         # Seleziona il target corrente o l'ultimo _partNN
@@ -6661,6 +7222,12 @@ class ThetaSyncManager:
                 if chunk:
                     f.write("\n".join(chunk) + "\n")
             log_console(f"[_append_csv_text] Write completed, file size now={os.path.getsize(target)}")
+            self._activity_progress(
+                step="write_csv",
+                target={"chunk_key": os.path.basename(target)},
+                counters={"rows_written": int(len(chunk))},
+                cursor={"rows_written": int(len(chunk)), "chunk_key": os.path.basename(target)},
+            )
     
             # rimuovi dal body ciò che è stato scritto; se finito -> stop
             body = body[len(chunk):]
@@ -6782,6 +7349,12 @@ class ThetaSyncManager:
             # Write sorted data back to file
             sorted_df.to_parquet(target, engine='pyarrow', index=False)
             log_console(f"[EOD-BATCH][SORT] Wrote {after_dedup} total rows to {os.path.basename(target)} ({existing_count} existing + {new_rows} new, sorted chronologically)")
+            self._activity_progress(
+                step="write_parquet",
+                target={"chunk_key": os.path.basename(target)},
+                counters={"rows_read": int(len(df_new)), "rows_written": int(after_dedup)},
+                cursor={"rows_written": int(after_dedup)},
+            )
             return after_dedup
 
         # --- keys & columns ---
@@ -6926,6 +7499,12 @@ class ThetaSyncManager:
                     except Exception:
                         pass
             write_count += len(chunk)
+            self._activity_progress(
+                step="write_parquet",
+                target={"chunk_key": os.path.basename(target)},
+                counters={"rows_written": int(len(chunk))},
+                cursor={"rows_written": int(len(chunk)), "chunk_key": os.path.basename(target)},
+            )
             next_part += 1
             return True
     
@@ -7662,6 +8241,17 @@ class ThetaSyncManager:
         for i in range(0, total, batch):
             chunk = lines[i:i+batch]
             batch_idx = i // batch + 1
+            self._activity_heartbeat(
+                step="write_influx_batch_loop",
+                target={"chunk_id": batch_idx, "chunk_key": measurement},
+                counters={"chunks_done": batch_idx - 1, "chunks_total": total_batches},
+            )
+            self._activity_progress(
+                step="write_influx",
+                target={"chunk_id": batch_idx, "chunk_key": measurement},
+                counters={"chunks_done": batch_idx - 1, "chunks_total": total_batches, "rows_written": written},
+                cursor={"chunk_id": batch_idx, "chunks_total": total_batches},
+            )
 
             # Metadata per recovery
             metadata = {
@@ -7676,13 +8266,22 @@ class ThetaSyncManager:
                 lines=chunk,
                 measurement=measurement,
                 batch_idx=batch_idx,
-                metadata=metadata
+                metadata=metadata,
+                on_blocked=self._activity_blocked,
+                on_unblocked=self._activity_unblocked,
+                on_progress=self._activity_progress,
             )
 
             if success:
                 written += len(chunk)
                 log_console(f"[INFLUX][WRITE] measurement={measurement} "
                       f"batch={batch_idx}/{total_batches} points={len(chunk)} status=ok")
+                self._activity_progress(
+                    step="write_influx_done",
+                    target={"chunk_id": batch_idx, "chunk_key": measurement},
+                    counters={"chunks_done": batch_idx, "chunks_total": total_batches, "rows_written": written},
+                    cursor={"chunk_id": batch_idx, "rows_written": written},
+                )
             else:
                 all_chunks_ok = False
                 log_console(f"[INFLUX][WRITE] measurement={measurement} "
@@ -8205,6 +8804,13 @@ class ThetaSyncManager:
         missing_df = df.loc[missing_mask].copy()
         if missing_df.empty:
             return
+        self._activity_phase_started(
+            PHASE_POSTPROCESS,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_POSTPROCESS],
+            step="compute_features_missing_rows",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            cursor={"trading_date": day_iso},
+        )
 
         if "symbol" not in missing_df.columns:
             missing_df["symbol"] = symbol
@@ -8311,6 +8917,7 @@ class ThetaSyncManager:
             for idx, row in existing.iterrows():
                 existing_map[row["__key__"]] = idx
 
+        new_rows = []
         for _, row in missing_df.iterrows():
             key = row["__key__"]
             if key in existing_map:
@@ -8334,12 +8941,27 @@ class ThetaSyncManager:
                 merged.at[idx, "recovered"] = False
                 merged.at[idx, "recovered_at"] = ""
             else:
-                merged = pd.concat([merged, row.to_frame().T], ignore_index=True)
+                new_rows.append(row.to_dict())
+
+        if new_rows:
+            merged = pd.concat([merged, pd.DataFrame(new_rows)], ignore_index=True)
 
         if "__key__" in merged.columns:
             merged = merged.drop(columns=["__key__"])
 
         merged.to_csv(path, index=False)
+        self._activity_progress(
+            step="compute_features",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso, "chunk_key": os.path.basename(path)},
+            counters={"rows_written": int(len(merged))},
+            cursor={"rows_written": int(len(merged)), "last_persisted_ts": now_iso},
+        )
+        self._activity_phase_completed(
+            step="compute_features_completed",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval, "trading_date": day_iso},
+            counters={"rows_written": int(len(merged))},
+            cursor={"rows_written": int(len(merged))},
+        )
         try:
             self.logger.log_info(
                 symbol=symbol,
@@ -13713,6 +14335,18 @@ class ThetaSyncManager:
 
         # Initialize checker
         checker = CoherenceChecker(self)
+        self._activity_phase_started(
+            PHASE_POSTPROCESS,
+            segment_timeout_s=self._activity_segment_timeouts[PHASE_POSTPROCESS],
+            step="coherence_check_start",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval},
+            cursor={"start_date": start_date, "end_date": end_date},
+        )
+        self._activity_progress(
+            step="coherence_check_start",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval},
+            cursor={"start_date": start_date, "end_date": end_date, "auto_recover": auto_recover},
+        )
 
         # Log coherence check start with ALL parameters
         self.logger.log_info(
@@ -13741,6 +14375,12 @@ class ThetaSyncManager:
             sink=sink,
             start_date=start_date,
             end_date=end_date
+        )
+        self._activity_progress(
+            step="coherence_check_done",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval},
+            counters={"files_total": int(len(report.missing_enrichment_files))},
+            cursor={"issues_count": int(len(report.issues)), "is_coherent": bool(report.is_coherent)},
         )
 
         # Log coherence check end
@@ -13846,6 +14486,11 @@ class ThetaSyncManager:
                 start_date=start_date,
                 end_date=end_date
             )
+            self._activity_progress(
+                step="coherence_check_post_recovery",
+                target={"symbol": symbol, "asset_type": asset, "timeframe": interval},
+                cursor={"issues_count": int(len(report.issues)), "is_coherent": bool(report.is_coherent)},
+            )
 
             # Log post-recovery check result
             self.logger.log_info(
@@ -13861,6 +14506,11 @@ class ThetaSyncManager:
                 }
             )
 
+        self._activity_phase_completed(
+            step="coherence_phase_completed",
+            target={"symbol": symbol, "asset_type": asset, "timeframe": interval},
+            cursor={"issues_count": int(len(report.issues)), "is_coherent": bool(report.is_coherent)},
+        )
         return report
 
     # =========================================================================

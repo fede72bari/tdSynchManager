@@ -31,6 +31,7 @@ __version__ = _detect_version()
 from clients.ThetaDataV3Client import ThetaDataV3Client
 from .manager import ThetaSyncManager
 from .config import ManagerConfig, Task, DiscoverPolicy
+from .activity_reporter import ActivityRunReporter, RedisActivityEventProducer
 from .tick_bucket_analysis import analyze_tick_buckets, DayBucketAnalysisReport, BucketAnalysisResult
 from .credentials import load_credentials, get_influx_credentials, get_thetadata_credentials
 
@@ -40,6 +41,8 @@ __all__ = [
     "ManagerConfig",
     "Task",
     "DiscoverPolicy",
+    "ActivityRunReporter",
+    "RedisActivityEventProducer",
     "analyze_tick_buckets",
     "DayBucketAnalysisReport",
     "BucketAnalysisResult",

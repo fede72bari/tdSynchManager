@@ -57,7 +57,10 @@ class InfluxWriteRetry:
         lines: List[str],
         measurement: str,
         batch_idx: int,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        on_blocked=None,
+        on_unblocked=None,
+        on_progress=None,
     ) -> bool:
         """
         Scrive batch con retry automatico.
@@ -71,6 +74,17 @@ class InfluxWriteRetry:
 
         for attempt in range(self.max_retries):
             try:
+                if on_progress:
+                    try:
+                        on_progress(
+                            step="write_influx_attempt",
+                            target={"chunk_id": batch_idx, "chunk_key": measurement},
+                            counters={"chunks_done": attempt, "chunks_total": self.max_retries},
+                            attempt={"attempt_no": attempt + 1, "max_attempts": self.max_retries},
+                            cursor={"batch_idx": batch_idx, "attempt": attempt + 1},
+                        )
+                    except Exception:
+                        pass
                 # Tentativo di scrittura
                 ret = client.write(record=lines)
 
@@ -103,7 +117,33 @@ class InfluxWriteRetry:
                           f"attempt={attempt+1}/{self.max_retries} error={error_type} "
                           f"waiting {delay:.1f}s before retry...")
 
+                    if on_blocked:
+                        try:
+                            on_blocked(
+                                reason="NETWORK influx_write_retry",
+                                reason_code="NETWORK",
+                                detail=str(e),
+                                step="write_influx_retry_wait",
+                                target={"chunk_id": batch_idx, "chunk_key": measurement},
+                                attempt={"attempt_no": attempt + 1, "max_attempts": self.max_retries},
+                                timing_ms={"retry_sleep_ms": int(delay * 1000)},
+                                io_context={"provider": "influxdb", "endpoint": measurement},
+                            )
+                        except Exception:
+                            pass
+
                     time.sleep(delay)
+
+                    if on_unblocked:
+                        try:
+                            on_unblocked(
+                                step="write_influx_retry_resume",
+                                target={"chunk_id": batch_idx, "chunk_key": measurement},
+                                attempt={"attempt_no": attempt + 1, "max_attempts": self.max_retries},
+                                io_context={"provider": "influxdb", "endpoint": measurement},
+                            )
+                        except Exception:
+                            pass
                 else:
                     # Fallito dopo tutti i retry
                     self.stats['failed'] += 1
